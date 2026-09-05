@@ -1,0 +1,25 @@
+[Unit]
+Description=Hermes AI Office V3 Control Plane
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/projects/pixel-agents
+ExecStart=/opt/node-v24.18.0-linux-arm64/bin/node model-control-plane/dist/main.js
+ExecStartPre=/usr/bin/test -f /home/ubuntu/projects/pixel-agents/model-control-plane/dist/main.js
+Environment=NODE_ENV=production
+Environment=MODEL_CP_HOST=127.0.0.1
+Environment=MODEL_CP_PORT=8320
+Environment=MODEL_CP_DB=/srv/hermes-personal/data/model-control-plane/control-plane.sqlite
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/srv/hermes-personal/data/model-control-plane
+
+[Install]
+WantedBy=multi-user.target

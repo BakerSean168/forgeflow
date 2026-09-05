@@ -1,0 +1,27 @@
+{
+  "name": "forgeflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node dist/main.js",
+    "test": "tsx --test test/*.test.ts",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/main.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "fastify": "^5.8.5",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.x",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "version": "1.0.0-alpha.0",
+  "description": "Autonomous software engineering system with durable planning, execution, review, recovery, delivery, and self-improvement.",
+  "engines": {
+    "node": ">=24"
+  }
+}
