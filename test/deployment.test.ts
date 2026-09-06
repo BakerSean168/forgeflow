@@ -21,6 +21,7 @@ const artifactDigest = read('scripts/artifact-digest.sh');
 const headless = read('openhands_tools/headless_review_acp.mjs');
 const launcher = read('openhands_tools/harness_agent_launcher.sh');
 const forgeFlowEnv = read('deploy/forgeflow.env.example');
+const planWorktrees = read('src/core/adapters/planWorktrees.ts');
 
 test('ForgeFlow service is standalone, headless, and fail-closed around host writes', () => {
   assert.match(service, /Description=ForgeFlow Autonomous Software Engineering Control Plane/);
@@ -169,6 +170,14 @@ test('self-promotion runs outside the control-plane cgroup and is exact-canary g
   assert.match(selfPromoteScript, /release-gcp\.sh/);
   assert.match(selfPromoteScript, /rm -f -- \"\$request_file\"/);
   assert.match(artifactDigest, /find \. -type f -print0 \| sort -z \| xargs -0 sha256sum/);
+});
+
+test('literal worktree Git object access is read-minimized and revoked after Plan cleanup', () => {
+  assert.match(planWorktrees, /grantObjectStoreAcl\(objects, uid\)/);
+  assert.match(planWorktrees, /\['-R', '-m', `u:\$\{uid\}:rX`, '--', objects\]/);
+  assert.match(planWorktrees, /grantDirectoryAcl\(directories, uid, true\)/);
+  assert.match(planWorktrees, /revokeObjectStoreAcl\(path\.join\(common, 'objects'\), uid\)/);
+  assert.match(planWorktrees, /\['-R', '-x', `u:\$\{uid\}`, '--', objects\]/);
 });
 
 test('host cache maintenance remains bounded and never prunes Docker volumes', () => {

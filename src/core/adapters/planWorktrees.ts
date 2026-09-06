@@ -274,7 +274,7 @@ export class PlanWorktreeManager {
       await this.execAcl(['-m', `u:${uid}:rwx`, '--', common]);
       const objects = path.join(common, 'objects');
       this.ensureObjectDirectories(objects, source.uid, source.gid);
-      await this.grantDirectoryAcl(this.objectDirectories(objects), uid, true);
+      await this.grantObjectStoreAcl(objects, uid);
       const adminRaw = await this.gitInWorktree(current.repositoryPath, current.hostPath, [
         'rev-parse',
         '--git-dir',
@@ -517,7 +517,7 @@ export class PlanWorktreeManager {
     const source = fs.statSync(common);
     if (source.uid === uid || !fs.existsSync(this.setfaclBinary)) return;
     await this.execAcl(['-x', `u:${uid}`, '--', common], true);
-    await this.revokeDirectoryAcl(this.objectDirectories(path.join(common, 'objects')), uid);
+    await this.revokeObjectStoreAcl(path.join(common, 'objects'), uid);
     const plan = worktreeRefComponent(rootPlanId);
     for (const candidate of [
       path.join(common, 'refs', 'heads', 'forgeflow', plan),
@@ -1088,6 +1088,17 @@ export class PlanWorktreeManager {
     await this.grantDirectoryAcl(directories, uid, true);
   }
 
+  private async grantObjectStoreAcl(objects: string, uid: number): Promise<void> {
+    const directories = this.objectDirectories(objects);
+    // Existing loose and packed Git objects may be owner-only (for example pack/*.pack,
+    // pack/*.idx and pack/*.rev). A literal-worktree worker must be able to read the
+    // immutable object graph behind HEAD, but it never needs write access to existing
+    // object files. Directory write/default ACLs remain necessary so Git can add new
+    // loose objects without granting the worker mutation authority over old objects.
+    await this.execAcl(['-R', '-m', `u:${uid}:rX`, '--', objects]);
+    await this.grantDirectoryAcl(directories, uid, true);
+  }
+
   private async grantDirectoryAcl(
     directories: string[],
     uid: number,
@@ -1097,6 +1108,17 @@ export class PlanWorktreeManager {
       const chunk = directories.slice(index, index + 80);
       if (includeAccess) await this.execAcl(['-m', `u:${uid}:rwx`, '--', ...chunk]);
       await this.execAcl(['-m', `d:u:${uid}:rwx`, '--', ...chunk]);
+    }
+  }
+
+  private async revokeObjectStoreAcl(objects: string, uid: number): Promise<void> {
+    const directories = this.objectDirectories(objects);
+    // Remove access ACLs from both files and directories, including existing pack files,
+    // then remove the default ACLs installed on directories for newly-created objects.
+    // Revocation is fail-closed: a Plan cannot finish cleanup while worker access remains.
+    await this.execAcl(['-R', '-x', `u:${uid}`, '--', objects]);
+    for (let index = 0; index < directories.length; index += 80) {
+      await this.execAcl(['-x', `d:u:${uid}`, '--', ...directories.slice(index, index + 80)]);
     }
   }
 
