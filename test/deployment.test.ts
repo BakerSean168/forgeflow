@@ -14,6 +14,10 @@ const release = read('scripts/release-gcp.sh');
 const pin = read('scripts/pin-release-ref.sh');
 const cache = read('scripts/prune-host-cache.sh');
 const antigravityUnit = read('deploy/gcp/forgeflow-antigravity@.service');
+const selfPromoteUnit = read('deploy/gcp/forgeflow-self-promote.service');
+const selfPromotePath = read('deploy/gcp/forgeflow-self-promote.path');
+const selfPromoteScript = read('scripts/self-promote-gcp.sh');
+const artifactDigest = read('scripts/artifact-digest.sh');
 const headless = read('openhands_tools/headless_review_acp.mjs');
 const launcher = read('openhands_tools/harness_agent_launcher.sh');
 const forgeFlowEnv = read('deploy/forgeflow.env.example');
@@ -50,13 +54,20 @@ test('Improvement deployment is opt-in and self-change is disabled by default', 
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_AUTO_ADOPT_LOW_RISK=false/);
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_PROJECTS=\n/);
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED=false/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_ENABLED=false/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_AUTO_PROMOTION_ENABLED=false/);
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_PROJECT_KEY=forgeflow/);
   assert.match(
     forgeFlowEnv,
     /FORGEFLOW_IMPROVEMENT_SELF_REPOSITORY=\/home\/dev\/projects\/forgeflow/,
   );
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_CANARY_ROOT=\/var\/lib\/forgeflow\/self-canary/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_CANARY_TIMEOUT_MS=900000/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_REQUEST_FILE=\/var\/lib\/forgeflow\/self-promotion-request\.json/);
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_CYCLE_MS=30000/);
   assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED=true/);
+  assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_ENABLED=true/);
+  assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_AUTO_PROMOTION_ENABLED=true/);
   assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_AUTO_ADOPT_LOW_RISK=true/);
 });
 
@@ -86,9 +97,15 @@ test('installer provisions only ForgeFlow state and refuses unconfigured autonom
   assert.match(installer, /apparmor_parser -r \/etc\/apparmor\.d\/forgeflow-openhands-codex/);
   assert.match(installer, /FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands FORGEFLOW_DSH_SEED_DIR=/);
   assert.match(installer, /ReadWritePaths=%s/);
-  assert.match(installer, /systemctl enable forgeflow\.service forgeflow-host-cache\.timer/);
+  assert.match(installer, /forgeflow-self-promote\.service/);
+  assert.match(installer, /forgeflow-self-promote\.path/);
+  assert.match(installer, /forgeflow-self-promote\.sh/);
+  assert.match(installer, /artifact-digest\.sh/);
+  assert.doesNotMatch(installer, /self-promotion\.env/);
+  assert.match(installer, /systemctl enable forgeflow\.service forgeflow-host-cache\.timer forgeflow-self-promote\.path/);
   assert.match(installer, /systemctl restart forgeflow\.service/);
   assert.match(installer, /systemctl restart forgeflow-host-cache\.timer/);
+  assert.match(installer, /systemctl restart forgeflow-self-promote\.path/);
 });
 
 test('exact-SHA release is rooted in refs/forgeflow and validates v1 health', () => {
@@ -103,7 +120,13 @@ test('exact-SHA release is rooted in refs/forgeflow and validates v1 health', ()
   assert.match(release, /new DatabaseSync\(source, \{ readOnly: true \}\)/);
   assert.match(release, /sudo chmod 0600 \"\$backup\"/);
   assert.match(release, /candidate.*release-candidates/);
-  assert.match(release, /artifact_sha256=.*sha256sum/);
+  assert.match(release, /artifact-digest\.sh/);
+  assert.match(release, /FORGEFLOW_EXPECTED_ARTIFACT_SHA256/);
+  assert.match(release, /FORGEFLOW_RELEASE_SOURCE_SHA/);
+  assert.match(release, /FORGEFLOW_ADVANCE_RELEASE_REF_ON_SUCCESS/);
+  assert.match(release, /release source override must fast-forward the approved release/);
+  assert.match(release, /release artifact digest does not match the approved canary/);
+  assert.match(release, /ForgeFlow verified release promotion/);
   assert.match(release, /FORGEFLOW_RELEASE_PROVENANCE_FILE/);
   assert.match(release, /sudo install -o root -g root -m 0600 .*provenance_file/);
   assert.ok(
@@ -117,6 +140,29 @@ test('exact-SHA release is rooted in refs/forgeflow and validates v1 health', ()
   assert.match(release, /h\.service !== 'forgeflow-control-plane'/);
   assert.match(release, /h\.apiVersion !== 1/);
   assert.match(forgeFlowEnv, /FORGEFLOW_RELEASE_PROVENANCE_FILE=\/var\/lib\/forgeflow\/release-provenance\.json/);
+});
+
+test('self-promotion runs outside the control-plane cgroup and is exact-canary gated', () => {
+  assert.match(selfPromoteUnit, /Type=oneshot/);
+  assert.match(selfPromoteUnit, /UMask=0077/);
+  assert.doesNotMatch(selfPromoteUnit, /EnvironmentFile=/);
+  assert.match(selfPromoteUnit, /FORGEFLOW_HEALTH_URL=http:\/\/127\.0\.0\.1:8420\/api\/health/);
+  assert.match(selfPromoteUnit, /ExecStart=\/usr\/local\/libexec\/forgeflow-self-promote\.sh/);
+  assert.match(selfPromoteUnit, /TimeoutStartSec=30min/);
+  assert.match(selfPromoteUnit, /Restart=on-failure/);
+  assert.match(selfPromoteUnit, /StartLimitBurst=3/);
+  assert.match(selfPromotePath, /PathChanged=\/var\/lib\/forgeflow\/self-promotion-request\.json/);
+  assert.match(selfPromotePath, /Unit=forgeflow-self-promote\.service/);
+  assert.match(selfPromoteScript, /improvementRuntime\?\.selfPromotionEnabled !== true/);
+  assert.match(selfPromoteScript, /never from forgeflow\.env/);
+  assert.doesNotMatch(selfPromoteScript, /FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_ENABLED/);
+  assert.doesNotMatch(selfPromoteScript, /pin-release-ref\.sh/);
+  assert.match(selfPromoteScript, /FORGEFLOW_RELEASE_SOURCE_SHA/);
+  assert.match(selfPromoteScript, /FORGEFLOW_EXPECTED_ARTIFACT_SHA256/);
+  assert.match(selfPromoteScript, /FORGEFLOW_ADVANCE_RELEASE_REF_ON_SUCCESS=true/);
+  assert.match(selfPromoteScript, /release-gcp\.sh/);
+  assert.match(selfPromoteScript, /rm -f -- \"\$request_file\"/);
+  assert.match(artifactDigest, /find \. -type f -print0 \| sort -z \| xargs -0 sha256sum/);
 });
 
 test('host cache maintenance remains bounded and never prunes Docker volumes', () => {
@@ -144,6 +190,8 @@ test('checked-in deployment scripts are syntactically valid', () => {
     'deploy/gcp/install.sh',
     'scripts/pin-release-ref.sh',
     'scripts/release-gcp.sh',
+    'scripts/artifact-digest.sh',
+    'scripts/self-promote-gcp.sh',
     'scripts/prune-host-cache.sh',
     'scripts/build-openhands-source.sh',
     'scripts/install-openhands-tooling.sh',

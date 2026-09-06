@@ -21,6 +21,40 @@ export interface MaintenanceProgram {
   candidateRisk?: ImprovementCandidate['risk'];
 }
 
+export interface ImprovementCanaryAttestation {
+  attestationId: string;
+  candidateId: string;
+  planId: string;
+  sourceRevision: string;
+  artifactSha256: string;
+  result: 'PASSED' | 'FAILED';
+  checks: string[];
+  observedAt: string;
+  createdAt: string;
+}
+
+export interface ImprovementSelfPromotionRequest {
+  requestId: string;
+  candidateId: string;
+  planId: string;
+  sourceRevision: string;
+  artifactSha256: string;
+  canaryAttestationId: string;
+  requestedAt: string;
+  createdAt: string;
+}
+
+export interface ImprovementSelfPromotion {
+  promotionId: string;
+  candidateId: string;
+  planId: string;
+  sourceRevision: string;
+  artifactSha256: string;
+  canaryAttestationId: string;
+  releasedAt: string;
+  createdAt: string;
+}
+
 export interface ImprovementCandidate {
   candidateId: string;
   programId: string;
@@ -89,6 +123,108 @@ function decodeEvidence(value: string): string[] {
       error,
     );
   }
+}
+
+function validateCanaryAttestation(attestation: ImprovementCanaryAttestation): void {
+  failClosed(attestation.attestationId.trim().length > 0, 'IMPROVEMENT_CANARY_ATTESTATION_ID_REQUIRED');
+  failClosed(attestation.candidateId.trim().length > 0, 'CANDIDATE_ID_REQUIRED');
+  failClosed(attestation.planId.trim().length > 0, 'CANDIDATE_PLAN_INPUT_INVALID');
+  failClosed(/^[0-9a-f]{40}$/.test(attestation.sourceRevision), 'IMPROVEMENT_CANARY_REVISION_INVALID');
+  failClosed(/^[0-9a-f]{64}$/.test(attestation.artifactSha256), 'IMPROVEMENT_CANARY_ARTIFACT_INVALID');
+  failClosed(
+    attestation.result === 'PASSED' || attestation.result === 'FAILED',
+    'IMPROVEMENT_CANARY_RESULT_INVALID',
+  );
+  failClosed(
+    Array.isArray(attestation.checks) &&
+      attestation.checks.length > 0 &&
+      attestation.checks.length <= 32 &&
+      attestation.checks.every((item) => /^[A-Za-z0-9_.:/-]{1,200}$/.test(item)),
+    'IMPROVEMENT_CANARY_CHECKS_INVALID',
+  );
+  failClosed(
+    Number.isFinite(Date.parse(attestation.observedAt)) && Number.isFinite(Date.parse(attestation.createdAt)),
+    'IMPROVEMENT_CANARY_TIME_INVALID',
+  );
+}
+
+function canaryFromEvent(
+  event: ReturnType<EventStore['get']> extends infer T ? Exclude<T, undefined> : never,
+): ImprovementCanaryAttestation {
+  if (event.type !== 'IMPROVEMENT_CANARY_ATTESTED' || event.aggregateType !== 'MAINTENANCE')
+    throw new ForgeFlowError('CORRUPTED_IMPROVEMENT_CANARY_EVENT');
+  const payload = event.payload as Record<string, unknown>;
+  const attestation: ImprovementCanaryAttestation = {
+    attestationId: event.eventId,
+    candidateId: event.aggregateId,
+    planId: String(payload.planId ?? ''),
+    sourceRevision: String(payload.sourceRevision ?? ''),
+    artifactSha256: String(payload.artifactSha256 ?? ''),
+    result: payload.result as ImprovementCanaryAttestation['result'],
+    checks: Array.isArray(payload.checks) ? payload.checks.map(String) : [],
+    observedAt: String(payload.observedAt ?? ''),
+    createdAt: event.occurredAt,
+  };
+  validateCanaryAttestation(attestation);
+  return attestation;
+}
+
+function selfPromotionRequestFromEvent(
+  event: ReturnType<EventStore['get']> extends infer T ? Exclude<T, undefined> : never,
+): ImprovementSelfPromotionRequest {
+  if (event.type !== 'IMPROVEMENT_SELF_PROMOTION_REQUESTED' || event.aggregateType !== 'MAINTENANCE')
+    throw new ForgeFlowError('CORRUPTED_IMPROVEMENT_PROMOTION_REQUEST_EVENT');
+  const payload = event.payload as Record<string, unknown>;
+  const request: ImprovementSelfPromotionRequest = {
+    requestId: event.eventId,
+    candidateId: event.aggregateId,
+    planId: String(payload.planId ?? ''),
+    sourceRevision: String(payload.sourceRevision ?? ''),
+    artifactSha256: String(payload.artifactSha256 ?? ''),
+    canaryAttestationId: String(payload.canaryAttestationId ?? ''),
+    requestedAt: String(payload.requestedAt ?? ''),
+    createdAt: event.occurredAt,
+  };
+  failClosed(request.requestId.trim().length > 0, 'IMPROVEMENT_PROMOTION_REQUEST_ID_REQUIRED');
+  failClosed(request.candidateId.trim().length > 0, 'CANDIDATE_ID_REQUIRED');
+  failClosed(request.planId.trim().length > 0, 'CANDIDATE_PLAN_INPUT_INVALID');
+  failClosed(/^[0-9a-f]{40}$/.test(request.sourceRevision), 'IMPROVEMENT_PROMOTION_REVISION_INVALID');
+  failClosed(/^[0-9a-f]{64}$/.test(request.artifactSha256), 'IMPROVEMENT_PROMOTION_ARTIFACT_INVALID');
+  failClosed(request.canaryAttestationId.trim().length > 0, 'IMPROVEMENT_PROMOTION_CANARY_REQUIRED');
+  failClosed(
+    Number.isFinite(Date.parse(request.requestedAt)) && Number.isFinite(Date.parse(request.createdAt)),
+    'IMPROVEMENT_PROMOTION_TIME_INVALID',
+  );
+  return request;
+}
+
+function selfPromotionFromEvent(
+  event: ReturnType<EventStore['get']> extends infer T ? Exclude<T, undefined> : never,
+): ImprovementSelfPromotion {
+  if (event.type !== 'IMPROVEMENT_SELF_PROMOTED' || event.aggregateType !== 'MAINTENANCE')
+    throw new ForgeFlowError('CORRUPTED_IMPROVEMENT_PROMOTION_EVENT');
+  const payload = event.payload as Record<string, unknown>;
+  const promotion: ImprovementSelfPromotion = {
+    promotionId: event.eventId,
+    candidateId: event.aggregateId,
+    planId: String(payload.planId ?? ''),
+    sourceRevision: String(payload.sourceRevision ?? ''),
+    artifactSha256: String(payload.artifactSha256 ?? ''),
+    canaryAttestationId: String(payload.canaryAttestationId ?? ''),
+    releasedAt: String(payload.releasedAt ?? ''),
+    createdAt: event.occurredAt,
+  };
+  failClosed(promotion.promotionId.trim().length > 0, 'IMPROVEMENT_PROMOTION_ID_REQUIRED');
+  failClosed(promotion.candidateId.trim().length > 0, 'CANDIDATE_ID_REQUIRED');
+  failClosed(promotion.planId.trim().length > 0, 'CANDIDATE_PLAN_INPUT_INVALID');
+  failClosed(/^[0-9a-f]{40}$/.test(promotion.sourceRevision), 'IMPROVEMENT_PROMOTION_REVISION_INVALID');
+  failClosed(/^[0-9a-f]{64}$/.test(promotion.artifactSha256), 'IMPROVEMENT_PROMOTION_ARTIFACT_INVALID');
+  failClosed(promotion.canaryAttestationId.trim().length > 0, 'IMPROVEMENT_PROMOTION_CANARY_REQUIRED');
+  failClosed(
+    Number.isFinite(Date.parse(promotion.releasedAt)) && Number.isFinite(Date.parse(promotion.createdAt)),
+    'IMPROVEMENT_PROMOTION_TIME_INVALID',
+  );
+  return promotion;
 }
 
 function normalizedStringList(values: string[] | undefined, code: string): string[] {
@@ -534,6 +670,228 @@ export class MaintenanceCandidateRegistry {
       });
       return this.get(candidateId);
     });
+  }
+
+  recordCanary(
+    candidateId: string,
+    input: {
+      idempotencyKey: string;
+      planId: string;
+      sourceRevision: string;
+      artifactSha256: string;
+      result: ImprovementCanaryAttestation['result'];
+      checks: string[];
+      observedAt?: string;
+    },
+  ): ImprovementCanaryAttestation {
+    const candidate = this.get(candidateId);
+    failClosed(
+      input.idempotencyKey.trim().length > 0 && input.idempotencyKey.length <= 1_000,
+      'IMPROVEMENT_CANARY_IDEMPOTENCY_REQUIRED',
+    );
+    const attestationId =
+      'improvement-canary-' + createHash('sha256').update(input.idempotencyKey.trim()).digest('hex');
+    const normalized = {
+      planId: input.planId.trim(),
+      sourceRevision: input.sourceRevision.trim(),
+      artifactSha256: input.artifactSha256.trim(),
+      result: input.result,
+      checks: [...new Set(input.checks.map((item) => item.trim()))].sort(),
+    };
+    const existing = this.events.get(attestationId);
+    if (existing) {
+      const durable = canaryFromEvent(existing);
+      if (
+        durable.candidateId !== candidateId ||
+        durable.planId !== normalized.planId ||
+        durable.sourceRevision !== normalized.sourceRevision ||
+        durable.artifactSha256 !== normalized.artifactSha256 ||
+        durable.result !== normalized.result ||
+        JSON.stringify(durable.checks) !== JSON.stringify(normalized.checks) ||
+        (input.observedAt !== undefined && durable.observedAt !== input.observedAt)
+      )
+        throw new DuplicateKeyError(attestationId);
+      return durable;
+    }
+    const now = new Date().toISOString();
+    const attestation: ImprovementCanaryAttestation = {
+      attestationId,
+      candidateId,
+      ...normalized,
+      observedAt: input.observedAt ?? now,
+      createdAt: now,
+    };
+    validateCanaryAttestation(attestation);
+    failClosed(candidate.planId === attestation.planId, 'IMPROVEMENT_CANARY_PLAN_MISMATCH');
+    const event = this.events.append({
+      eventId: attestation.attestationId,
+      aggregateId: candidateId,
+      aggregateType: 'MAINTENANCE',
+      type: 'IMPROVEMENT_CANARY_ATTESTED',
+      payload: {
+        planId: attestation.planId,
+        sourceRevision: attestation.sourceRevision,
+        artifactSha256: attestation.artifactSha256,
+        result: attestation.result,
+        checks: attestation.checks,
+        observedAt: attestation.observedAt,
+      },
+      occurredAt: attestation.createdAt,
+      correlationId: candidate.programId,
+    });
+    return canaryFromEvent(event);
+  }
+
+  listCanaryAttestations(candidateId: string): ImprovementCanaryAttestation[] {
+    this.get(candidateId);
+    return this.events
+      .listByAggregate(candidateId)
+      .filter((event) => event.type === 'IMPROVEMENT_CANARY_ATTESTED')
+      .map(canaryFromEvent);
+  }
+
+  latestPassingCanary(
+    candidateId: string,
+    sourceRevision: string,
+  ): ImprovementCanaryAttestation | undefined {
+    return this.listCanaryAttestations(candidateId)
+      .filter((item) => item.sourceRevision === sourceRevision && item.result === 'PASSED')
+      .at(-1);
+  }
+
+  recordSelfPromotionRequest(
+    candidateId: string,
+    input: {
+      planId: string;
+      sourceRevision: string;
+      artifactSha256: string;
+      canaryAttestationId: string;
+      requestedAt?: string;
+    },
+  ): ImprovementSelfPromotionRequest {
+    const candidate = this.get(candidateId);
+    failClosed(candidate.planId === input.planId, 'IMPROVEMENT_PROMOTION_PLAN_MISMATCH');
+    failClosed(/^[0-9a-f]{40}$/.test(input.sourceRevision), 'IMPROVEMENT_PROMOTION_REVISION_INVALID');
+    failClosed(/^[0-9a-f]{64}$/.test(input.artifactSha256), 'IMPROVEMENT_PROMOTION_ARTIFACT_INVALID');
+    const canary = this.events.get(input.canaryAttestationId);
+    if (!canary) throw new ForgeFlowError('IMPROVEMENT_PROMOTION_CANARY_NOT_FOUND');
+    const attestation = canaryFromEvent(canary);
+    failClosed(attestation.candidateId === candidateId, 'IMPROVEMENT_PROMOTION_CANARY_MISMATCH');
+    failClosed(attestation.planId === input.planId, 'IMPROVEMENT_PROMOTION_CANARY_MISMATCH');
+    failClosed(attestation.sourceRevision === input.sourceRevision, 'IMPROVEMENT_PROMOTION_CANARY_MISMATCH');
+    failClosed(attestation.artifactSha256 === input.artifactSha256, 'IMPROVEMENT_PROMOTION_CANARY_MISMATCH');
+    failClosed(attestation.result === 'PASSED', 'IMPROVEMENT_PROMOTION_CANARY_FAILED');
+    const requestId =
+      'improvement-promotion-request-' +
+      createHash('sha256')
+        .update([candidateId, input.planId, input.sourceRevision, input.artifactSha256, input.canaryAttestationId].join('|'))
+        .digest('hex');
+    const existing = this.events.get(requestId);
+    if (existing) return selfPromotionRequestFromEvent(existing);
+    const now = new Date().toISOString();
+    const requestedAt = input.requestedAt ?? now;
+    failClosed(Number.isFinite(Date.parse(requestedAt)), 'IMPROVEMENT_PROMOTION_TIME_INVALID');
+    const event = this.events.append({
+      eventId: requestId,
+      aggregateId: candidateId,
+      aggregateType: 'MAINTENANCE',
+      type: 'IMPROVEMENT_SELF_PROMOTION_REQUESTED',
+      payload: {
+        planId: input.planId,
+        sourceRevision: input.sourceRevision,
+        artifactSha256: input.artifactSha256,
+        canaryAttestationId: input.canaryAttestationId,
+        requestedAt,
+      },
+      occurredAt: now,
+      correlationId: candidate.programId,
+    });
+    return selfPromotionRequestFromEvent(event);
+  }
+
+  listSelfPromotionRequests(candidateId: string): ImprovementSelfPromotionRequest[] {
+    this.get(candidateId);
+    return this.events
+      .listByAggregate(candidateId)
+      .filter((event) => event.type === 'IMPROVEMENT_SELF_PROMOTION_REQUESTED')
+      .map(selfPromotionRequestFromEvent);
+  }
+
+  latestSelfPromotionRequest(candidateId: string): ImprovementSelfPromotionRequest | undefined {
+    return this.listSelfPromotionRequests(candidateId).at(-1);
+  }
+
+  recordSelfPromotion(
+    candidateId: string,
+    input: {
+      planId: string;
+      sourceRevision: string;
+      artifactSha256: string;
+      canaryAttestationId: string;
+      releasedAt: string;
+    },
+  ): ImprovementSelfPromotion {
+    const candidate = this.get(candidateId);
+    failClosed(candidate.planId === input.planId, 'IMPROVEMENT_PROMOTION_PLAN_MISMATCH');
+    failClosed(/^[0-9a-f]{40}$/.test(input.sourceRevision), 'IMPROVEMENT_PROMOTION_REVISION_INVALID');
+    failClosed(/^[0-9a-f]{64}$/.test(input.artifactSha256), 'IMPROVEMENT_PROMOTION_ARTIFACT_INVALID');
+    failClosed(Number.isFinite(Date.parse(input.releasedAt)), 'IMPROVEMENT_PROMOTION_TIME_INVALID');
+    const request = this.latestSelfPromotionRequest(candidateId);
+    if (
+      !request ||
+      request.planId !== input.planId ||
+      request.sourceRevision !== input.sourceRevision ||
+      request.artifactSha256 !== input.artifactSha256 ||
+      request.canaryAttestationId !== input.canaryAttestationId
+    )
+      throw new ForgeFlowError('IMPROVEMENT_PROMOTION_REQUEST_MISMATCH');
+    failClosed(
+      Date.parse(input.releasedAt) >= Date.parse(request.requestedAt),
+      'IMPROVEMENT_PROMOTION_TIME_INVALID',
+    );
+    const eventId =
+      'improvement-promotion-' +
+      createHash('sha256')
+        .update([candidateId, input.planId, input.sourceRevision, input.artifactSha256, input.canaryAttestationId].join('|'))
+        .digest('hex');
+    const canary = this.events.get(input.canaryAttestationId);
+    if (!canary) throw new ForgeFlowError('IMPROVEMENT_PROMOTION_CANARY_NOT_FOUND');
+    const attestation = canaryFromEvent(canary);
+    failClosed(attestation.candidateId === candidateId, 'IMPROVEMENT_PROMOTION_CANARY_MISMATCH');
+    failClosed(attestation.planId === input.planId, 'IMPROVEMENT_PROMOTION_CANARY_MISMATCH');
+    failClosed(attestation.sourceRevision === input.sourceRevision, 'IMPROVEMENT_PROMOTION_CANARY_MISMATCH');
+    failClosed(attestation.artifactSha256 === input.artifactSha256, 'IMPROVEMENT_PROMOTION_CANARY_MISMATCH');
+    failClosed(attestation.result === 'PASSED', 'IMPROVEMENT_PROMOTION_CANARY_FAILED');
+    const existing = this.events.get(eventId);
+    if (existing) return selfPromotionFromEvent(existing);
+    const event = this.events.append({
+      eventId,
+      aggregateId: candidateId,
+      aggregateType: 'MAINTENANCE',
+      type: 'IMPROVEMENT_SELF_PROMOTED',
+      payload: {
+        planId: input.planId,
+        sourceRevision: input.sourceRevision,
+        artifactSha256: input.artifactSha256,
+        canaryAttestationId: input.canaryAttestationId,
+        releasedAt: input.releasedAt,
+      },
+      occurredAt: new Date().toISOString(),
+      correlationId: candidate.programId,
+    });
+    return selfPromotionFromEvent(event);
+  }
+
+  listSelfPromotions(candidateId: string): ImprovementSelfPromotion[] {
+    this.get(candidateId);
+    return this.events
+      .listByAggregate(candidateId)
+      .filter((event) => event.type === 'IMPROVEMENT_SELF_PROMOTED')
+      .map(selfPromotionFromEvent);
+  }
+
+  latestSelfPromotion(candidateId: string): ImprovementSelfPromotion | undefined {
+    return this.listSelfPromotions(candidateId).at(-1);
   }
 
   attachPullRequest(candidateId: string, pullRequestId: string): ImprovementCandidate {

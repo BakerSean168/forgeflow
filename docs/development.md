@@ -37,6 +37,8 @@ ForgeFlow is an autonomous software engineering system. UI decoration, game/char
 
 ## Deployment workflow
 
-Production promotion uses a fast-forward-only approval ref beneath `refs/forgeflow/`. `scripts/release-gcp.sh` builds and tests an exact detached worktree, backs up the durable database when present, hashes and atomically exchanges the build artifact, writes root-owned release provenance as `PENDING`, restarts the service, and requires the boot-bound source SHA/artifact digest to match before promoting that same provenance to `HEALTHY`. A failed restart or identity mismatch leaves no false healthy-release claim.
+Production promotion uses a fast-forward-only approval ref beneath `refs/forgeflow/`. `scripts/release-gcp.sh` builds and tests an exact detached worktree, hashes the emitted `dist/` with the shared `scripts/artifact-digest.sh`, backs up the durable database when present, atomically exchanges the artifact, writes root-owned release provenance as `PENDING`, restarts the service, and requires the boot-bound source SHA/artifact digest to match before promoting that same provenance to `HEALTHY`. A failed restart or identity mismatch leaves no false healthy-release claim.
 
-Do not point a production host at an uncommitted checkout and do not use environment files to weaken repository or review gates.
+The self-change path uses the same release builder with two additional fail-closed inputs: an exact `FORGEFLOW_RELEASE_SOURCE_SHA` and the canary's `FORGEFLOW_EXPECTED_ARTIFACT_SHA256`. The builder verifies that the source fast-forwards the currently approved release and that its rebuilt bytes exactly match the canary before installation. When `FORGEFLOW_ADVANCE_RELEASE_REF_ON_SUCCESS=true`, the approval ref advances only after the new process is verified `HEALTHY`; a failed self-release therefore cannot poison the operator approval ref. The systemd promotion runner is intentionally outside `forgeflow.service` so the release can restart the control plane without killing itself.
+
+Do not point a production host at an uncommitted checkout and do not use environment files to weaken repository, canary, review, or release gates.

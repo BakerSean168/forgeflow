@@ -4,7 +4,15 @@ import test from 'node:test';
 import { MaintenanceCandidateRegistry } from '../src/core/adapters/maintenance.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 import { PlanKernel } from '../src/core/kernel/planKernel.js';
-import { MaintenanceImprovementRuntime } from '../src/core/orchestration/maintenanceRuntime.js';
+import {
+  MaintenanceImprovementRuntime,
+  type ImprovementReleaseProvenance,
+} from '../src/core/orchestration/maintenanceRuntime.js';
+import type { SelfChangeCanaryPort } from '../src/core/adapters/selfChangeCanary.js';
+import type {
+  SelfChangePromotionQueuePort,
+  SelfChangePromotionRequest,
+} from '../src/core/adapters/selfChangePromotion.js';
 import { ProjectPlanQueueRuntime } from '../src/core/orchestration/projectPlanQueueRuntime.js';
 import { openDatabase } from '../src/core/persistence/database.js';
 import { createRepositories } from '../src/core/persistence/repositories.js';
@@ -14,8 +22,13 @@ function setup(options: {
   adoptionEnabled?: boolean;
   allowedProjectKeys?: string[];
   selfChangeEnabled?: boolean;
+  selfPromotionEnabled?: boolean;
+  selfAutoPromotionEnabled?: boolean;
   selfRepositoryPath?: string;
   autoAdoptLowRisk?: boolean;
+  selfCanary?: SelfChangeCanaryPort;
+  selfPromotionQueue?: SelfChangePromotionQueuePort;
+  releaseProvenance?: () => ImprovementReleaseProvenance;
 } = {}) {
   const db = openDatabase(':memory:', { environment: 'test', env: { NODE_ENV: 'test' } });
   const repositories = createRepositories(db);
@@ -28,9 +41,11 @@ function setup(options: {
     autoAdoptLowRisk: options.autoAdoptLowRisk ?? false,
     allowedProjectKeys: options.allowedProjectKeys ?? ['project-alpha'],
     selfChangeEnabled: options.selfChangeEnabled ?? false,
+    selfPromotionEnabled: options.selfPromotionEnabled ?? false,
+    selfAutoPromotionEnabled: options.selfAutoPromotionEnabled ?? false,
     selfProjectKey: 'forgeflow',
     selfRepositoryPath: options.selfRepositoryPath ?? '/srv/forgeflow',
-  });
+  }, options.selfCanary, options.selfPromotionQueue, options.releaseProvenance);
   return { db, repositories, registry, plans, queue, runtime };
 }
 
@@ -209,6 +224,293 @@ test('self-change remains hard-disabled even when the ForgeFlow project is accid
     (error: unknown) => error instanceof ForgeFlowError && error.code === 'IMPROVEMENT_SELF_CHANGE_DISABLED',
   );
   assert.equal(value.registry.get(candidate.candidateId).planId, undefined);
+  value.db.close();
+});
+
+test('self-change stays ADOPTED until exact canary and HEALTHY promoted provenance match', async () => {
+  const sourceRevision = 'a'.repeat(40);
+  const artifactSha256 = 'b'.repeat(64);
+  let canaryRuns = 0;
+  let queued: SelfChangePromotionRequest | undefined;
+  let release: ImprovementReleaseProvenance = { status: 'MISSING' };
+  const selfCanary: SelfChangeCanaryPort = {
+    run: async (input) => {
+      canaryRuns += 1;
+      return {
+        sourceRevision: input.sourceRevision,
+        artifactSha256,
+        result: 'PASSED',
+        checks: ['artifact-digest', 'artifact-smoke', 'build', 'tests', 'typecheck'],
+        observedAt: '2026-09-06T09:30:00.000Z',
+      };
+    },
+  };
+  const promotionQueue: SelfChangePromotionQueuePort = {
+    request: (input) => {
+      queued = input;
+      return input;
+    },
+    current: () => queued,
+  };
+  const value = setup({
+    allowedProjectKeys: ['forgeflow'],
+    selfRepositoryPath: '/srv/forgeflow',
+    selfChangeEnabled: true,
+    selfPromotionEnabled: true,
+    selfCanary,
+    selfPromotionQueue: promotionQueue,
+    releaseProvenance: () => release,
+  });
+  const selfProgram = {
+    ...program(),
+    programId: 'forgeflow-self-promotion',
+    projectKey: 'forgeflow',
+    repositoryPath: '/srv/forgeflow',
+  };
+  value.registry.upsertProgram(selfProgram);
+  const candidate = value.registry.create(selfProgram, {
+    title: 'Repair ForgeFlow itself safely',
+    evidence: ['failure-code:TEST_SELF_PROMOTION'],
+    risk: 'LOW',
+  }).candidate;
+  const adopted = value.runtime.adopt(candidate.candidateId, { baseRevision: sourceRevision });
+  value.repositories.plans.updateStatus(adopted.plan.planId, 'RUNNING');
+  value.repositories.plans.updateStatus(adopted.plan.planId, 'SUCCEEDED');
+
+  assert.equal(value.runtime.reconcile(candidate.candidateId).status, 'ADOPTED');
+  assert.throws(
+    () => value.runtime.requestSelfPromotion(candidate.candidateId),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'IMPROVEMENT_SELF_CANARY_REQUIRED',
+  );
+
+  const canary = await value.runtime.runSelfCanary(candidate.candidateId);
+  assert.equal(canary.result, 'PASSED');
+  assert.equal(canary.sourceRevision, sourceRevision);
+  assert.equal(canary.artifactSha256, artifactSha256);
+  assert.equal(canaryRuns, 1);
+  const replayCanary = await value.runtime.runSelfCanary(candidate.candidateId);
+  assert.equal(replayCanary.attestationId, canary.attestationId);
+  assert.equal(canaryRuns, 1);
+
+  const request = value.runtime.requestSelfPromotion(candidate.candidateId);
+  assert.equal(request.sourceRevision, sourceRevision);
+  assert.equal(request.artifactSha256, artifactSha256);
+  assert.equal(request.canaryAttestationId, canary.attestationId);
+  assert.deepEqual(queued, {
+    version: 1,
+    candidateId: candidate.candidateId,
+    planId: adopted.plan.planId,
+    sourceRevision,
+    artifactSha256,
+    canaryAttestationId: canary.attestationId,
+    requestedAt: request.requestedAt,
+  });
+  assert.equal(value.runtime.reconcile(candidate.candidateId).status, 'ADOPTED');
+
+  const releasedAt = new Date(Date.parse(request.requestedAt) + 1_000).toISOString();
+  release = {
+    status: 'HEALTHY',
+    version: 1,
+    sourceSha: sourceRevision,
+    artifactSha256,
+    releasedAt,
+  };
+  const completed = value.runtime.reconcile(candidate.candidateId);
+  assert.equal(completed.status, 'COMPLETED');
+  const promotion = value.registry.latestSelfPromotion(candidate.candidateId);
+  assert.equal(promotion?.sourceRevision, sourceRevision);
+  assert.equal(promotion?.artifactSha256, artifactSha256);
+  assert.equal(promotion?.canaryAttestationId, canary.attestationId);
+  assert.equal(promotion?.releasedAt, releasedAt);
+  value.db.close();
+});
+
+test('autonomous self-promotion requests once per process and re-wakes a durable request after restart', async () => {
+  let canaryRuns = 0;
+  let queueCalls = 0;
+  let queued: SelfChangePromotionRequest | undefined;
+  const value = setup({
+    allowedProjectKeys: ['forgeflow'],
+    selfRepositoryPath: '/srv/forgeflow',
+    selfChangeEnabled: true,
+    selfPromotionEnabled: true,
+    selfAutoPromotionEnabled: true,
+    selfCanary: {
+      run: async (input) => {
+        canaryRuns += 1;
+        return {
+          sourceRevision: input.sourceRevision,
+          artifactSha256: '9'.repeat(64),
+          result: 'PASSED',
+          checks: ['build', 'artifact-digest', 'tests', 'artifact-smoke'],
+          observedAt: '2026-09-06T09:42:00.000Z',
+        };
+      },
+    },
+    selfPromotionQueue: {
+      request: (input) => {
+        queueCalls += 1;
+        queued = input;
+        return input;
+      },
+      current: () => queued,
+    },
+    releaseProvenance: () => ({ status: 'MISSING' }),
+  });
+  const selfProgram = {
+    ...program(),
+    programId: 'forgeflow-auto-promotion',
+    projectKey: 'forgeflow',
+    repositoryPath: '/srv/forgeflow',
+    autonomousScope: 'STANDARD' as const,
+  };
+  value.registry.upsertProgram(selfProgram);
+  const candidate = value.registry.create(selfProgram, {
+    title: 'Autonomous self repair',
+    evidence: ['failure-code:TEST_SELF_AUTO_PROMOTION'],
+    risk: 'LOW',
+  }).candidate;
+  const adopted = value.runtime.adopt(candidate.candidateId, { baseRevision: '8'.repeat(40) });
+  value.repositories.plans.updateStatus(adopted.plan.planId, 'RUNNING');
+  value.repositories.plans.updateStatus(adopted.plan.planId, 'SUCCEEDED');
+
+  const first = await value.runtime.runAutonomousCycle();
+  assert.deepEqual(first.selfPromotion.requestedCandidateIds, [candidate.candidateId]);
+  assert.deepEqual(first.selfPromotion.errors, []);
+  assert.equal(canaryRuns, 1);
+  assert.equal(queueCalls, 1);
+  assert.equal(queued?.sourceRevision, '8'.repeat(40));
+
+  const second = await value.runtime.runAutonomousCycle();
+  assert.deepEqual(second.selfPromotion.requestedCandidateIds, []);
+  assert.deepEqual(second.selfPromotion.errors, []);
+  assert.equal(canaryRuns, 1);
+  assert.equal(queueCalls, 1);
+
+  const restarted = new MaintenanceImprovementRuntime(
+    value.db,
+    value.registry,
+    value.repositories,
+    value.plans,
+    value.queue,
+    {
+      discoveryEnabled: true,
+      adoptionEnabled: true,
+      autoAdoptLowRisk: false,
+      allowedProjectKeys: ['forgeflow'],
+      selfChangeEnabled: true,
+      selfPromotionEnabled: true,
+      selfAutoPromotionEnabled: true,
+      selfProjectKey: 'forgeflow',
+      selfRepositoryPath: '/srv/forgeflow',
+    },
+    {
+      run: async () => {
+        canaryRuns += 1;
+        throw new Error('durable passing canary should be reused');
+      },
+    },
+    {
+      request: (input) => {
+        queueCalls += 1;
+        queued = input;
+        return input;
+      },
+      current: () => queued,
+    },
+    () => ({ status: 'MISSING' }),
+  );
+  const afterRestart = await restarted.runAutonomousCycle();
+  assert.deepEqual(afterRestart.selfPromotion.requestedCandidateIds, []);
+  assert.deepEqual(afterRestart.selfPromotion.errors, []);
+  assert.equal(canaryRuns, 1);
+  assert.equal(queueCalls, 2);
+  value.db.close();
+});
+
+test('failed self-change canary can never authorize live promotion', async () => {
+  let queued: SelfChangePromotionRequest | undefined;
+  const value = setup({
+    allowedProjectKeys: ['forgeflow'],
+    selfRepositoryPath: '/srv/forgeflow',
+    selfChangeEnabled: true,
+    selfPromotionEnabled: true,
+    selfCanary: {
+      run: async (input) => ({
+        sourceRevision: input.sourceRevision,
+        artifactSha256: 'c'.repeat(64),
+        result: 'FAILED',
+        checks: ['build', 'failed:tests'],
+        observedAt: '2026-09-06T09:45:00.000Z',
+      }),
+    },
+    selfPromotionQueue: {
+      request: (input) => {
+        queued = input;
+        return input;
+      },
+      current: () => queued,
+    },
+    releaseProvenance: () => ({ status: 'MISSING' }),
+  });
+  const selfProgram = {
+    ...program(),
+    programId: 'forgeflow-failed-canary',
+    projectKey: 'forgeflow',
+    repositoryPath: '/srv/forgeflow',
+  };
+  value.registry.upsertProgram(selfProgram);
+  const candidate = value.registry.create(selfProgram, {
+    title: 'Unsafe self repair',
+    evidence: ['failure-code:TEST_SELF_CANARY_FAIL'],
+    risk: 'LOW',
+  }).candidate;
+  const adopted = value.runtime.adopt(candidate.candidateId, { baseRevision: 'd'.repeat(40) });
+  value.repositories.plans.updateStatus(adopted.plan.planId, 'RUNNING');
+  value.repositories.plans.updateStatus(adopted.plan.planId, 'SUCCEEDED');
+  const canary = await value.runtime.runSelfCanary(candidate.candidateId);
+  assert.equal(canary.result, 'FAILED');
+  assert.equal(value.registry.latestPassingCanary(candidate.candidateId, adopted.plan.currentRevision), undefined);
+  assert.throws(
+    () => value.runtime.requestSelfPromotion(candidate.candidateId),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'IMPROVEMENT_SELF_CANARY_REQUIRED',
+  );
+  assert.equal(queued, undefined);
+  assert.equal(value.runtime.reconcile(candidate.candidateId).status, 'ADOPTED');
+  value.db.close();
+});
+
+test('canary attestation idempotency replays the durable timestamp instead of inventing a duplicate', () => {
+  const value = setup();
+  const durableProgram = value.registry.upsertProgram(program());
+  const candidate = value.registry.create(durableProgram, {
+    title: 'Canary idempotency',
+    evidence: ['failure-code:TEST_CANARY_IDEMPOTENCY'],
+    risk: 'LOW',
+  }).candidate;
+  const plan = value.repositories.plans.createPlan({
+    idempotencyKey: 'canary-idempotency-plan',
+    projectKey: durableProgram.projectKey,
+    objective: 'bind canary evidence',
+    repositoryPath: durableProgram.repositoryPath!,
+    baseRevision: 'e'.repeat(40),
+  }).value!;
+  value.registry.attachPlan(candidate.candidateId, plan.planId);
+  const input = {
+    idempotencyKey: 'same-canary',
+    planId: plan.planId,
+    sourceRevision: 'e'.repeat(40),
+    artifactSha256: 'f'.repeat(64),
+    result: 'PASSED' as const,
+    checks: ['build', 'tests'],
+  };
+  const first = value.registry.recordCanary(candidate.candidateId, input);
+  const second = value.registry.recordCanary(candidate.candidateId, input);
+  assert.equal(second.attestationId, first.attestationId);
+  assert.equal(second.observedAt, first.observedAt);
+  assert.equal(value.registry.listCanaryAttestations(candidate.candidateId).length, 1);
   value.db.close();
 });
 

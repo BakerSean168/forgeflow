@@ -98,6 +98,8 @@ test('ForgeFlow runtime fails closed when execution automation is disabled', asy
     adoptionEnabled: false,
     autoAdoptLowRisk: false,
     selfChangeEnabled: false,
+    selfPromotionEnabled: false,
+    selfAutoPromotionEnabled: false,
     allowedProjectKeys: [],
   });
   const run = await runtime.app.inject({ method: 'POST', url: '/api/v1/plans/missing/run' });
@@ -2102,6 +2104,8 @@ test('Improvement API discovers repeated failures and adopts them only as an ord
     adoptionEnabled: true,
     autoAdoptLowRisk: false,
     selfChangeEnabled: false,
+    selfPromotionEnabled: false,
+    selfAutoPromotionEnabled: false,
     allowedProjectKeys: ['improvement-api'],
   });
 

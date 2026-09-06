@@ -16,6 +16,8 @@ import { ProjectScopedWorkspaceAdapter } from './core/adapters/projectScopedWork
 import { LiteLlmExecutionTelemetry } from './core/adapters/liteLlmTelemetry.js';
 import { GitHubCliDeliveryAdapter } from './core/adapters/githubDelivery.js';
 import { MaintenanceCandidateRegistry, type MaintenanceProgram } from './core/adapters/maintenance.js';
+import { ExactShaSelfChangeCanary } from './core/adapters/selfChangeCanary.js';
+import { FileSelfChangePromotionQueue } from './core/adapters/selfChangePromotion.js';
 import {
   createOpenHandsProviderFactory,
   OpenHandsCodexBusinessReviewProvider,
@@ -1247,6 +1249,24 @@ export async function buildControlPlane(
   options: BuildControlPlaneOptions = {},
 ): Promise<ControlPlaneRuntime> {
   const env = options.env ?? process.env;
+  const selfChangeEnabled = env.FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED === 'true';
+  const selfPromotionEnabled = env.FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_ENABLED === 'true';
+  const selfAutoPromotionEnabled =
+    env.FORGEFLOW_IMPROVEMENT_SELF_AUTO_PROMOTION_ENABLED === 'true';
+  if (selfPromotionEnabled && !selfChangeEnabled)
+    throw new ForgeFlowError('IMPROVEMENT_SELF_PROMOTION_REQUIRES_SELF_CHANGE');
+  if (selfAutoPromotionEnabled && !selfPromotionEnabled)
+    throw new ForgeFlowError('IMPROVEMENT_SELF_AUTO_PROMOTION_REQUIRES_PROMOTION');
+  const selfRepositoryPath = env.FORGEFLOW_IMPROVEMENT_SELF_REPOSITORY ?? process.cwd();
+  const selfPromotionRequestFile =
+    env.FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_REQUEST_FILE ??
+    '/var/lib/forgeflow/self-promotion-request.json';
+  if (
+    selfPromotionEnabled &&
+    (options.environment === 'production' || env.NODE_ENV === 'production') &&
+    path.resolve(selfPromotionRequestFile) !== '/var/lib/forgeflow/self-promotion-request.json'
+  )
+    throw new ForgeFlowError('IMPROVEMENT_SELF_PROMOTION_REQUEST_PATH_UNSUPPORTED');
   const releaseProvenance = bindReleaseProvenance(
     env.FORGEFLOW_RELEASE_PROVENANCE_FILE ?? '/var/lib/forgeflow/release-provenance.json',
   );
@@ -1292,6 +1312,23 @@ export async function buildControlPlane(
     delivery: new DeliveryKernel(),
   };
   const improvementRegistry = new MaintenanceCandidateRegistry(db);
+  const selfCanary = selfChangeEnabled
+    ? new ExactShaSelfChangeCanary({
+        repositoryPath: selfRepositoryPath,
+        worktreeRoot:
+          env.FORGEFLOW_IMPROVEMENT_SELF_CANARY_ROOT ?? '/var/lib/forgeflow/self-canary',
+        commandTimeoutMs: integerValue(
+          env.FORGEFLOW_IMPROVEMENT_SELF_CANARY_TIMEOUT_MS,
+          15 * 60_000,
+          30_000,
+          60 * 60_000,
+          'IMPROVEMENT_CANARY_TIMEOUT_INVALID',
+        ),
+      })
+    : undefined;
+  const selfPromotionQueue = selfPromotionEnabled
+    ? new FileSelfChangePromotionQueue(selfPromotionRequestFile)
+    : undefined;
   const improvements = new MaintenanceImprovementRuntime(
     db,
     improvementRegistry,
@@ -1303,10 +1340,15 @@ export async function buildControlPlane(
       adoptionEnabled: env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true',
       autoAdoptLowRisk: env.FORGEFLOW_IMPROVEMENT_AUTO_ADOPT_LOW_RISK === 'true',
       allowedProjectKeys: commaList(env.FORGEFLOW_IMPROVEMENT_PROJECTS),
-      selfChangeEnabled: env.FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED === 'true',
+      selfChangeEnabled,
+      selfPromotionEnabled,
+      selfAutoPromotionEnabled,
       selfProjectKey: env.FORGEFLOW_IMPROVEMENT_SELF_PROJECT_KEY ?? 'forgeflow',
-      selfRepositoryPath: env.FORGEFLOW_IMPROVEMENT_SELF_REPOSITORY ?? process.cwd(),
+      selfRepositoryPath,
     },
+    selfCanary,
+    selfPromotionQueue,
+    releaseProvenance,
   );
   const automation = await buildExecutionAutomation(env, repositories, options.fetchImpl ?? fetch);
   if (projectPlanQueue && automation) {
@@ -1871,6 +1913,7 @@ export async function buildControlPlane(
       candidate,
       program: improvementRegistry.getProgram(candidate.programId),
       plan: candidate.planId ? planView(candidate.planId) : null,
+      selfChange: improvements.selfChangeProjection(candidateId),
     };
   });
 
@@ -1880,7 +1923,7 @@ export async function buildControlPlane(
     return { program: improvementRegistry.getProgram(program.programId), items, count: items.length };
   });
 
-  app.post('/api/v1/improvements/cycle', async () => improvements.runCycle());
+  app.post('/api/v1/improvements/cycle', async () => await improvements.runAutonomousCycle());
 
   app.post('/api/v1/improvements/:candidateId/adopt', async (request) => {
     const candidateId = requiredText(
@@ -1914,6 +1957,28 @@ export async function buildControlPlane(
       'CANDIDATE_ID_REQUIRED',
     );
     return { candidate: improvements.reconcile(candidateId) };
+  });
+
+  app.post('/api/v1/improvements/:candidateId/self-canary', async (request) => {
+    const candidateId = requiredText(
+      (request.params as { candidateId?: string }).candidateId,
+      'CANDIDATE_ID_REQUIRED',
+    );
+    const canary = await improvements.runSelfCanary(candidateId);
+    return { canary, selfChange: improvements.selfChangeProjection(candidateId) };
+  });
+
+  app.post('/api/v1/improvements/:candidateId/self-promote', async (request, reply) => {
+    const candidateId = requiredText(
+      (request.params as { candidateId?: string }).candidateId,
+      'CANDIDATE_ID_REQUIRED',
+    );
+    const promotionRequest = improvements.requestSelfPromotion(candidateId);
+    void reply.code(202);
+    return {
+      promotionRequest,
+      selfChange: improvements.selfChangeProjection(candidateId),
+    };
   });
 
   app.post('/api/v1/improvements/:candidateId/reject', async (request) => {
@@ -2699,44 +2764,62 @@ export async function buildControlPlane(
       )
     : undefined;
 
-  const improvementInterval =
+  const improvementRuntimeEnabled =
     env.FORGEFLOW_IMPROVEMENT_DISCOVERY_ENABLED === 'true' ||
-    env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true'
-      ? setInterval(
-          () => {
-            try {
-              const result = improvements.runCycle();
-              if (result.programs.length > 0 || result.reconciledCandidateIds.length > 0)
-                app.log.info(
-                  {
-                    reconciledCandidates: result.reconciledCandidateIds.length,
-                    programs: result.programs.map((program) => ({
-                      programId: program.programId,
-                      projectKey: program.projectKey,
-                      discovered: program.discovered,
-                      created: program.created,
-                      adoptedPlans: program.adoptedPlanIds.length,
-                      errors: program.errors,
-                    })),
-                  },
-                  'improvement cycle',
-                );
-            } catch (error) {
-              app.log.error(
-                { error: error instanceof Error ? error.message : String(error) },
-                'improvement cycle failed',
-              );
-            }
-          },
-          integerValue(
-            env.FORGEFLOW_IMPROVEMENT_CYCLE_MS ?? env.FORGEFLOW_IMPROVEMENT_RECONCILE_MS,
-            30_000,
-            5_000,
-            3_600_000,
-            'IMPROVEMENT_CYCLE_INTERVAL_INVALID',
-          ),
+    env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true' ||
+    selfPromotionEnabled;
+  let improvementCycleRunning = false;
+  const runImprovementCycle = () => {
+    if (improvementCycleRunning) return;
+    improvementCycleRunning = true;
+    void improvements
+      .runAutonomousCycle()
+      .then((result) => {
+        if (
+          result.programs.length > 0 ||
+          result.reconciledCandidateIds.length > 0 ||
+          result.selfPromotion.requestedCandidateIds.length > 0 ||
+          result.selfPromotion.errors.length > 0
         )
-      : undefined;
+          app.log.info(
+            {
+              reconciledCandidates: result.reconciledCandidateIds.length,
+              programs: result.programs.map((program) => ({
+                programId: program.programId,
+                projectKey: program.projectKey,
+                discovered: program.discovered,
+                created: program.created,
+                adoptedPlans: program.adoptedPlanIds.length,
+                errors: program.errors,
+              })),
+              selfPromotion: result.selfPromotion,
+            },
+            'improvement cycle',
+          );
+      })
+      .catch((error) =>
+        app.log.error(
+          { error: error instanceof Error ? error.message : String(error) },
+          'improvement cycle failed',
+        ),
+      )
+      .finally(() => {
+        improvementCycleRunning = false;
+      });
+  };
+  if (improvementRuntimeEnabled) setImmediate(runImprovementCycle);
+  const improvementInterval = improvementRuntimeEnabled
+    ? setInterval(
+        runImprovementCycle,
+        integerValue(
+          env.FORGEFLOW_IMPROVEMENT_CYCLE_MS ?? env.FORGEFLOW_IMPROVEMENT_RECONCILE_MS,
+          30_000,
+          5_000,
+          3_600_000,
+          'IMPROVEMENT_CYCLE_INTERVAL_INVALID',
+        ),
+      )
+    : undefined;
 
   let automationCycleRunning = false;
   const automationInterval =

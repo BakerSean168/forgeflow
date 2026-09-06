@@ -14,7 +14,25 @@ provenance_file="${FORGEFLOW_RELEASE_PROVENANCE_FILE:-/var/lib/forgeflow/release
 exec 9>"$release_lock"
 flock -n 9 || { echo "another ForgeFlow release is active" >&2; exit 1; }
 [[ "$release_ref" == refs/forgeflow/* ]] || { echo "release ref must stay below refs/forgeflow" >&2; exit 1; }
-source_sha="$(git -C "$canonical_root" rev-parse "${release_ref}^{commit}")"
+approved_sha="$(git -C "$canonical_root" rev-parse --verify "${release_ref}^{commit}" 2>/dev/null || true)"
+source_override="${FORGEFLOW_RELEASE_SOURCE_SHA:-}"
+if [[ -n "$source_override" ]]; then
+  [[ "$source_override" =~ ^[0-9a-f]{40}$ ]] || { echo "release source override must be an exact commit SHA" >&2; exit 1; }
+  source_sha="$(git -C "$canonical_root" rev-parse "${source_override}^{commit}")"
+  [[ "$source_sha" == "$source_override" ]] || { echo "release source override must resolve exactly" >&2; exit 1; }
+  if [[ -n "$approved_sha" ]] && ! git -C "$canonical_root" merge-base --is-ancestor "$approved_sha" "$source_sha"; then
+    echo "release source override must fast-forward the approved release" >&2
+    exit 1
+  fi
+else
+  [[ -n "$approved_sha" ]] || { echo "release approval ref is missing" >&2; exit 1; }
+  source_sha="$approved_sha"
+fi
+advance_release_ref_on_success="${FORGEFLOW_ADVANCE_RELEASE_REF_ON_SUCCESS:-false}"
+[[ "$advance_release_ref_on_success" == "true" || "$advance_release_ref_on_success" == "false" ]] || {
+  echo "FORGEFLOW_ADVANCE_RELEASE_REF_ON_SUCCESS must be true or false" >&2
+  exit 1
+}
 release_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 git -C "$canonical_root" cat-file -e "${source_sha}^{commit}"
 mkdir -p "$release_root"
@@ -41,10 +59,21 @@ ln -s "$canonical_root/node_modules" "$worktree/node_modules"
 candidate="$canonical_root/.release-candidates/${source_sha}-$$"
 rm -rf "$candidate"
 mkdir -p "$(dirname "$candidate")"
-(cd "$worktree" && npm exec -- tsc -p tsconfig.json --outDir "$candidate")
+# Build in the exact detached worktree, identical to the self-change canary. This
+# keeps source-map paths and every emitted byte part of one reproducible artifact
+# identity instead of compiling the same SHA into two different output roots.
+(cd "$worktree" && npm run build)
+test -s "$worktree/dist/main.js"
+mkdir -p "$candidate"
+cp -a "$worktree/dist/." "$candidate/"
 test -s "$candidate/main.js"
-artifact_sha256="$(cd "$candidate" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+artifact_sha256="$("$canonical_root/scripts/artifact-digest.sh" "$candidate")"
 [[ "$artifact_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid release artifact digest" >&2; exit 1; }
+expected_artifact_sha256="${FORGEFLOW_EXPECTED_ARTIFACT_SHA256:-}"
+if [[ -n "$expected_artifact_sha256" && "$artifact_sha256" != "$expected_artifact_sha256" ]]; then
+  echo "release artifact digest does not match the approved canary" >&2
+  exit 1
+fi
 
 write_provenance() {
   local state="$1"
@@ -115,6 +144,10 @@ if (
   p.artifactSha256 !== process.env.ARTIFACT_SHA256
 ) process.exit(1);
 NODE
+      if [[ "$advance_release_ref_on_success" == "true" && "$source_sha" != "${approved_sha:-}" ]]; then
+        old_ref="${approved_sha:-0000000000000000000000000000000000000000}"
+        git -C "$canonical_root" update-ref -m "ForgeFlow verified release promotion" "$release_ref" "$source_sha" "$old_ref"
+      fi
       echo "ForgeFlow release healthy; source_sha=$source_sha artifact_sha256=$artifact_sha256"
       exit 0
     fi

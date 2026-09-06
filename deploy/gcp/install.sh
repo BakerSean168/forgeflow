@@ -86,8 +86,12 @@ install -o root -g root -m 0644 "$repo_root/deploy/gcp/forgeflow.service" /etc/s
 install -o root -g root -m 0644 "$repo_root/deploy/gcp/forgeflow-host-cache.service" /etc/systemd/system/forgeflow-host-cache.service
 install -o root -g root -m 0644 "$repo_root/deploy/gcp/forgeflow-host-cache.timer" /etc/systemd/system/forgeflow-host-cache.timer
 install -o root -g root -m 0644 "$repo_root/deploy/gcp/forgeflow-antigravity@.service" /etc/systemd/system/forgeflow-antigravity@.service
+install -o root -g root -m 0644 "$repo_root/deploy/gcp/forgeflow-self-promote.service" /etc/systemd/system/forgeflow-self-promote.service
+install -o root -g root -m 0644 "$repo_root/deploy/gcp/forgeflow-self-promote.path" /etc/systemd/system/forgeflow-self-promote.path
 install -o root -g root -m 0755 "$repo_root/scripts/prune-host-cache.sh" /usr/local/libexec/forgeflow-prune-host-cache.sh
 install -o root -g root -m 0755 "$repo_root/scripts/run-antigravity-unit.mjs" /usr/local/libexec/forgeflow-antigravity-unit.mjs
+install -o root -g root -m 0755 "$repo_root/scripts/artifact-digest.sh" /usr/local/libexec/forgeflow-artifact-digest.sh
+install -o root -g root -m 0755 "$repo_root/scripts/self-promote-gcp.sh" /usr/local/libexec/forgeflow-self-promote.sh
 systemctl daemon-reload
 
 if ! docker image inspect "$image" >/dev/null 2>&1; then
@@ -101,9 +105,10 @@ dsh_seed="$(awk -F= '$1=="FORGEFLOW_DSH_SEED_DIR"{sub(/^[^=]*=/,""); print; exit
 FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands FORGEFLOW_DSH_SEED_DIR="$dsh_seed" \
   "$repo_root/scripts/install-openhands-tooling.sh"
 
-systemctl enable forgeflow.service forgeflow-host-cache.timer
+systemctl enable forgeflow.service forgeflow-host-cache.timer forgeflow-self-promote.path
 systemctl restart forgeflow.service
 systemctl restart forgeflow-host-cache.timer
+systemctl restart forgeflow-self-promote.path
 for _ in $(seq 1 45); do
   if payload="$(curl -fsS http://127.0.0.1:8420/api/health 2>/dev/null)"; then
     HEALTH_JSON="$payload" node - <<'NODE'

@@ -29,7 +29,19 @@ Repeated verified failure
   -> the same implementation / independent review / integration / delivery gates
 ```
 
-Discovery, adoption, low-risk auto-adoption, and self-change are independent opt-in controls. `CONSERVATIVE` programs remain human-adopted even if the global auto-adopt switch is enabled, and Maintenance never receives a privileged repository writer.
+ForgeFlow self-change adds another independently gated release phase rather than a privileged writer:
+
+```text
+ForgeFlow self-change Plan SUCCEEDED
+  -> exact-SHA canary build + full verification + artifact digest
+  -> durable promotion request
+  -> out-of-process systemd promotion runner
+  -> exact source + exact canary artifact release
+  -> restarted control plane proves HEALTHY release provenance
+  -> Improvement Candidate COMPLETED
+```
+
+Discovery, adoption, low-risk auto-adoption, self-change, self-promotion, and autonomous self-promotion are separate opt-in controls and default off. `CONSERVATIVE` programs remain human-adopted even if the global auto-adopt switch is enabled, and Maintenance never receives a privileged repository writer.
 
 A bounded AI Supervisor observes durable state and handles exceptional cases such as replanning the remaining graph, changing an execution route, creating a repair/follow-up plan, or escalating a genuine external gate. Deterministic code retains authority over state transitions, leases, workspace ownership, review provenance, and delivery safety.
 
@@ -46,7 +58,7 @@ A bounded AI Supervisor observes durable state and handles exceptional cases suc
 - **Recoverable execution** — retries, process restarts, provider failures, and interrupted sessions preserve durable lineage; both ACP runtime-admission and Supervisor direct-admission TTLs survive restart. Runtime probes use a stable recovery group plus a unique attempt workspace, planned SIGTERM/SIGINT shutdown aborts new probe work but completes non-cancellable OpenHands cleanup, and recovered probe groups prune crash-residue workspaces only after the remote session is quiescent. Resource recovery wakes parked Supervisors through durable events with a bounded watchdog fallback.
 - **Fail-closed operator cancellation** — cancelling an active root Plan first parks it in `SAFETY_HOLD`, quiesces/cancels live provider sessions, cancels unfinished Reviews/WorkItems, retires the Plan workspace family, and only then releases the project lease or hands it to the next queued Plan. Non-terminal child Plans must be cancelled deepest-first through the same public endpoint; child cancellation never retires the shared root worktree family or releases the root project lease. Cleanup or provider-cancel failure keeps the original lease fenced.
 - **Explicit improvement adoption** — repeated failures become durable Candidates first; adoption creates an ordinary Plan rather than a privileged repair path.
-- **Hard-gated self-change** — even an allowlisted `forgeflow` Candidate cannot target ForgeFlow's own repository unless the separate self-change gate is explicitly enabled; all resulting changes still pass implementation, independent review, tests, and release gates.
+- **Hard-gated self-change** — even an allowlisted `forgeflow` Candidate cannot target ForgeFlow's own repository unless the separate self-change gate is enabled. A successful self-change Plan is not considered completed until an exact-SHA canary produces a deterministic artifact digest, the separate promotion gate authorizes an out-of-process release of exactly that artifact, and the restarted process reports matching `HEALTHY` release provenance. Autonomous promotion is a third, separately disabled gate.
 
 ## Repository layout
 
@@ -93,7 +105,7 @@ ForgeFlow defaults to its own local interfaces and state:
 - OpenHands execution plane: `127.0.0.1:18420`
 - State: `/var/lib/forgeflow`
 - Configuration: `/etc/forgeflow`
-- API: `/api/v1/*` (including `POST /api/v1/plans/:planId/cancel` for idempotent active-root cancellation)
+- API: `/api/v1/*` (including idempotent active-root cancellation plus explicit self-change canary/promotion endpoints under `/api/v1/improvements/:candidateId/*`)
 - Release approval: `refs/forgeflow/release-approved`
 
 These defaults allow ForgeFlow to coexist with another engineering system during migration or canary deployment without sharing mutable state.

@@ -3,9 +3,17 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import {
   MaintenanceCandidateRegistry,
+  type ImprovementCanaryAttestation,
   type ImprovementCandidate,
+  type ImprovementSelfPromotionRequest,
   type MaintenanceProgram,
 } from '../adapters/maintenance.js';
+import type {
+  SelfChangeCanaryPort,
+} from '../adapters/selfChangeCanary.js';
+import type {
+  SelfChangePromotionQueuePort,
+} from '../adapters/selfChangePromotion.js';
 import type { PlanDeliveryConfig } from '../domain/delivery.js';
 import { ForgeFlowError, failClosed } from '../domain/errors.js';
 import type { Plan } from '../domain/plan.js';
@@ -64,12 +72,25 @@ export interface ImprovementRuntimeOptions {
   autoAdoptLowRisk?: boolean;
   allowedProjectKeys: readonly string[];
   selfChangeEnabled?: boolean;
+  selfPromotionEnabled?: boolean;
+  selfAutoPromotionEnabled?: boolean;
   selfProjectKey?: string;
   selfRepositoryPath?: string;
 }
 
+export type ImprovementReleaseProvenance =
+  | { status: 'MISSING' | 'INVALID' | 'MISMATCH' }
+  | {
+      status: 'PENDING' | 'HEALTHY';
+      version: 1;
+      sourceSha: string;
+      artifactSha256: string;
+      releasedAt: string;
+    };
+
 export class MaintenanceImprovementRuntime {
   readonly allowedProjects: ReadonlySet<string>;
+  private readonly selfPromotionWakeKeys = new Set<string>();
 
   constructor(
     readonly db: DatabaseSync,
@@ -78,6 +99,9 @@ export class MaintenanceImprovementRuntime {
     readonly plans: PlanKernel,
     readonly projectPlanQueue: ProjectPlanQueueRuntime | undefined,
     readonly options: ImprovementRuntimeOptions,
+    readonly selfCanary?: SelfChangeCanaryPort,
+    readonly selfPromotionQueue?: SelfChangePromotionQueuePort,
+    readonly releaseProvenance?: () => ImprovementReleaseProvenance,
   ) {
     this.allowedProjects = new Set(options.allowedProjectKeys);
   }
@@ -92,17 +116,21 @@ export class MaintenanceImprovementRuntime {
     this.requireProject(projectKey);
   }
 
-  private requireAdoption(projectKey: string, repositoryPath: string): void {
-    if (!this.options.adoptionEnabled) throw new ForgeFlowError('IMPROVEMENT_ADOPTION_DISABLED');
-    this.requireProject(projectKey);
+  private isSelfTarget(projectKey: string, repositoryPath: string): boolean {
     const selfProject = this.options.selfProjectKey ?? 'forgeflow';
     const selfRepository = this.options.selfRepositoryPath
       ? path.resolve(this.options.selfRepositoryPath)
       : undefined;
-    const isSelf =
+    return (
       projectKey === selfProject ||
-      (selfRepository !== undefined && path.resolve(repositoryPath) === selfRepository);
-    if (isSelf && this.options.selfChangeEnabled !== true)
+      (selfRepository !== undefined && path.resolve(repositoryPath) === selfRepository)
+    );
+  }
+
+  private requireAdoption(projectKey: string, repositoryPath: string): void {
+    if (!this.options.adoptionEnabled) throw new ForgeFlowError('IMPROVEMENT_ADOPTION_DISABLED');
+    this.requireProject(projectKey);
+    if (this.isSelfTarget(projectKey, repositoryPath) && this.options.selfChangeEnabled !== true)
       throw new ForgeFlowError('IMPROVEMENT_SELF_CHANGE_DISABLED');
   }
 
@@ -176,6 +204,112 @@ export class MaintenanceImprovementRuntime {
       )
       .get(projectKey, repositoryPath) as { current_revision: string } | undefined;
     return row?.current_revision;
+  }
+
+  private selfContext(candidateId: string): {
+    candidate: ImprovementCandidate;
+    program: MaintenanceProgram;
+    plan: Plan;
+  } {
+    const candidate = this.registry.get(candidateId);
+    if (!candidate.planId) throw new ForgeFlowError('IMPROVEMENT_SELF_PLAN_REQUIRED');
+    const program = this.registry.getProgram(candidate.programId);
+    const plan = this.repositories.plans.getPlan(candidate.planId);
+    if (!this.isSelfTarget(program.projectKey, plan.repositoryPath))
+      throw new ForgeFlowError('IMPROVEMENT_NOT_SELF_CHANGE');
+    if (this.options.selfChangeEnabled !== true)
+      throw new ForgeFlowError('IMPROVEMENT_SELF_CHANGE_DISABLED');
+    if (plan.projectKey !== program.projectKey)
+      throw new ForgeFlowError('IMPROVEMENT_PLAN_PROJECT_MISMATCH');
+    return { candidate, program, plan };
+  }
+
+  async runSelfCanary(candidateId: string): Promise<ImprovementCanaryAttestation> {
+    const { candidate, plan } = this.selfContext(candidateId);
+    if (candidate.status !== 'ADOPTED') throw new ForgeFlowError('CANDIDATE_NOT_ADOPTED');
+    if (plan.status !== 'SUCCEEDED') throw new ForgeFlowError('IMPROVEMENT_SELF_PLAN_NOT_SUCCEEDED');
+    if (!this.selfCanary) throw new ForgeFlowError('IMPROVEMENT_SELF_CANARY_UNAVAILABLE');
+    failClosed(/^[0-9a-f]{40}$/.test(plan.currentRevision), 'IMPROVEMENT_CANARY_REVISION_INVALID');
+    const existing = this.registry.latestPassingCanary(candidateId, plan.currentRevision);
+    if (existing) return existing;
+    const result = await this.selfCanary.run({
+      candidateId,
+      planId: plan.planId,
+      sourceRevision: plan.currentRevision,
+    });
+    failClosed(
+      result.sourceRevision === plan.currentRevision,
+      'IMPROVEMENT_CANARY_REVISION_MISMATCH',
+    );
+    const key = [
+      'self-canary',
+      candidateId,
+      plan.planId,
+      result.sourceRevision,
+      result.artifactSha256,
+      result.result,
+      ...result.checks,
+    ].join('|');
+    return this.registry.recordCanary(candidateId, {
+      idempotencyKey: key,
+      planId: plan.planId,
+      sourceRevision: result.sourceRevision,
+      artifactSha256: result.artifactSha256,
+      result: result.result,
+      checks: result.checks,
+      observedAt: result.observedAt,
+    });
+  }
+
+  requestSelfPromotion(candidateId: string): ImprovementSelfPromotionRequest {
+    if (this.options.selfPromotionEnabled !== true)
+      throw new ForgeFlowError('IMPROVEMENT_SELF_PROMOTION_DISABLED');
+    const { candidate, plan } = this.selfContext(candidateId);
+    if (candidate.status !== 'ADOPTED') throw new ForgeFlowError('CANDIDATE_NOT_ADOPTED');
+    if (plan.status !== 'SUCCEEDED') throw new ForgeFlowError('IMPROVEMENT_SELF_PLAN_NOT_SUCCEEDED');
+    if (!this.selfPromotionQueue)
+      throw new ForgeFlowError('IMPROVEMENT_SELF_PROMOTION_UNAVAILABLE');
+    const canary = this.registry.latestPassingCanary(candidateId, plan.currentRevision);
+    if (!canary) throw new ForgeFlowError('IMPROVEMENT_SELF_CANARY_REQUIRED');
+    const request = this.registry.recordSelfPromotionRequest(candidateId, {
+      planId: plan.planId,
+      sourceRevision: plan.currentRevision,
+      artifactSha256: canary.artifactSha256,
+      canaryAttestationId: canary.attestationId,
+    });
+    this.selfPromotionQueue.request({
+      version: 1,
+      candidateId,
+      planId: request.planId,
+      sourceRevision: request.sourceRevision,
+      artifactSha256: request.artifactSha256,
+      canaryAttestationId: request.canaryAttestationId,
+      requestedAt: request.requestedAt,
+    });
+    this.selfPromotionWakeKeys.add(candidateId + '|' + request.sourceRevision);
+    return request;
+  }
+
+  selfChangeProjection(candidateId: string): {
+    selfChange: boolean;
+    selfPromotionEnabled: boolean;
+    canaries: ImprovementCanaryAttestation[];
+    promotionRequest: ImprovementSelfPromotionRequest | null;
+    promotion: ReturnType<MaintenanceCandidateRegistry['latestSelfPromotion']> | null;
+    releaseProvenance: ImprovementReleaseProvenance | null;
+  } {
+    const candidate = this.registry.get(candidateId);
+    const program = this.registry.getProgram(candidate.programId);
+    const plan = candidate.planId ? this.repositories.plans.getPlan(candidate.planId) : undefined;
+    const selfChange = Boolean(plan && this.isSelfTarget(program.projectKey, plan.repositoryPath));
+    return {
+      selfChange,
+      selfPromotionEnabled: this.options.selfPromotionEnabled === true,
+      canaries: selfChange ? this.registry.listCanaryAttestations(candidateId) : [],
+      promotionRequest: selfChange ? (this.registry.latestSelfPromotionRequest(candidateId) ?? null) : null,
+      promotion: selfChange ? (this.registry.latestSelfPromotion(candidateId) ?? null) : null,
+      releaseProvenance: selfChange && this.releaseProvenance ? this.releaseProvenance() : null,
+    };
   }
 
   adopt(candidateId: string, input: ImprovementAdoptionInput = {}): ImprovementAdoptionResult {
@@ -272,6 +406,7 @@ export class MaintenanceImprovementRuntime {
   reconcile(candidateId: string): ImprovementCandidate {
     let candidate = this.registry.get(candidateId);
     if (!candidate.planId) return candidate;
+    const program = this.registry.getProgram(candidate.programId);
     const plan = this.repositories.plans.getPlan(candidate.planId);
     if (plan.delivery?.pullRequestNumber && !candidate.pullRequestId) {
       candidate = this.registry.attachPullRequest(
@@ -279,8 +414,37 @@ export class MaintenanceImprovementRuntime {
         String(plan.delivery.pullRequestNumber),
       );
     }
-    if (candidate.status === 'ADOPTED' && plan.status === 'SUCCEEDED')
-      return this.registry.transition(candidate.candidateId, 'COMPLETED');
+    if (candidate.status === 'ADOPTED' && plan.status === 'SUCCEEDED') {
+      if (!this.isSelfTarget(program.projectKey, plan.repositoryPath))
+        return this.registry.transition(candidate.candidateId, 'COMPLETED');
+      const promotion = this.registry.latestSelfPromotion(candidateId);
+      if (
+        promotion &&
+        promotion.planId === plan.planId &&
+        promotion.sourceRevision === plan.currentRevision
+      )
+        return this.registry.transition(candidate.candidateId, 'COMPLETED');
+      const request = this.registry.latestSelfPromotionRequest(candidateId);
+      const release = this.releaseProvenance?.();
+      if (
+        request &&
+        request.planId === plan.planId &&
+        request.sourceRevision === plan.currentRevision &&
+        release?.status === 'HEALTHY' &&
+        release.sourceSha === request.sourceRevision &&
+        release.artifactSha256 === request.artifactSha256
+      ) {
+        this.registry.recordSelfPromotion(candidateId, {
+          planId: request.planId,
+          sourceRevision: request.sourceRevision,
+          artifactSha256: request.artifactSha256,
+          canaryAttestationId: request.canaryAttestationId,
+          releasedAt: release.releasedAt,
+        });
+        return this.registry.transition(candidate.candidateId, 'COMPLETED');
+      }
+      return candidate;
+    }
     if (candidate.status === 'ADOPTED' && plan.status === 'CANCELLED')
       return this.registry.transition(candidate.candidateId, 'STALE');
     return candidate;
@@ -303,9 +467,7 @@ export class MaintenanceImprovementRuntime {
       errors: string[];
     }>;
   } {
-    const reconciledCandidateIds = this.options.adoptionEnabled
-      ? this.reconcileAll().map((candidate) => candidate.candidateId)
-      : [];
+    const reconciledCandidateIds = this.reconcileAll().map((candidate) => candidate.candidateId);
     if (!this.options.discoveryEnabled) return { reconciledCandidateIds, programs: [] };
     const programs = [];
     for (const program of this.registry.listPrograms().slice(0, 100)) {
@@ -349,11 +511,79 @@ export class MaintenanceImprovementRuntime {
     return { reconciledCandidateIds, programs };
   }
 
+  async runAutonomousCycle(): Promise<
+    ReturnType<MaintenanceImprovementRuntime['runCycle']> & {
+      selfPromotion: {
+        enabled: boolean;
+        requestedCandidateIds: string[];
+        errors: Array<{ candidateId: string; code: string }>;
+      };
+    }
+  > {
+    const base = this.runCycle();
+    const selfPromotion = {
+      enabled: this.options.selfAutoPromotionEnabled === true,
+      requestedCandidateIds: [] as string[],
+      errors: [] as Array<{ candidateId: string; code: string }>,
+    };
+    if (!selfPromotion.enabled) return { ...base, selfPromotion };
+    for (const candidate of this.registry.list({ status: 'ADOPTED', limit: 100 })) {
+      if (!candidate.planId) continue;
+      const program = this.registry.getProgram(candidate.programId);
+      const plan = this.repositories.plans.getPlan(candidate.planId);
+      if (!this.isSelfTarget(program.projectKey, plan.repositoryPath) || plan.status !== 'SUCCEEDED')
+        continue;
+      const existing = this.registry.latestSelfPromotionRequest(candidate.candidateId);
+      if (existing?.sourceRevision === plan.currentRevision) {
+        const wakeKey = candidate.candidateId + '|' + existing.sourceRevision;
+        if (this.selfPromotionWakeKeys.has(wakeKey)) continue;
+        try {
+          if (!this.selfPromotionQueue)
+            throw new ForgeFlowError('IMPROVEMENT_SELF_PROMOTION_UNAVAILABLE');
+          this.selfPromotionQueue.request({
+            version: 1,
+            candidateId: candidate.candidateId,
+            planId: existing.planId,
+            sourceRevision: existing.sourceRevision,
+            artifactSha256: existing.artifactSha256,
+            canaryAttestationId: existing.canaryAttestationId,
+            requestedAt: existing.requestedAt,
+          });
+          this.selfPromotionWakeKeys.add(wakeKey);
+        } catch (error) {
+          selfPromotion.errors.push({
+            candidateId: candidate.candidateId,
+            code: error instanceof ForgeFlowError ? error.code : 'IMPROVEMENT_SELF_PROMOTION_FAILED',
+          });
+        }
+        continue;
+      }
+      try {
+        const canary = await this.runSelfCanary(candidate.candidateId);
+        if (canary.result !== 'PASSED')
+          throw new ForgeFlowError('IMPROVEMENT_SELF_CANARY_FAILED');
+        this.requestSelfPromotion(candidate.candidateId);
+        selfPromotion.requestedCandidateIds.push(candidate.candidateId);
+        // A promotion request may immediately restart this control plane through
+        // the systemd path unit. Emit at most one live-release request per cycle.
+        break;
+      } catch (error) {
+        selfPromotion.errors.push({
+          candidateId: candidate.candidateId,
+          code: error instanceof ForgeFlowError ? error.code : 'IMPROVEMENT_SELF_PROMOTION_FAILED',
+        });
+      }
+    }
+    return { ...base, selfPromotion };
+  }
+
   status(): {
     discoveryEnabled: boolean;
     adoptionEnabled: boolean;
     autoAdoptLowRisk: boolean;
     selfChangeEnabled: boolean;
+    selfPromotionEnabled: boolean;
+    selfAutoPromotionEnabled: boolean;
     allowedProjectKeys: string[];
   } {
     return {
@@ -361,6 +591,8 @@ export class MaintenanceImprovementRuntime {
       adoptionEnabled: this.options.adoptionEnabled,
       autoAdoptLowRisk: this.options.autoAdoptLowRisk === true,
       selfChangeEnabled: this.options.selfChangeEnabled === true,
+      selfPromotionEnabled: this.options.selfPromotionEnabled === true,
+      selfAutoPromotionEnabled: this.options.selfAutoPromotionEnabled === true,
       allowedProjectKeys: [...this.allowedProjects].sort(),
     };
   }
