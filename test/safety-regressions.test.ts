@@ -14,7 +14,7 @@ function seed() {
   const repos = createRepositories(db);
   const plan = repos.plans.createPlan({
     idempotencyKey: 'cursor-plan',
-    projectKey: 'pixel',
+    projectKey: 'forgeflow-test',
     objective: 'cursor test',
     repositoryPath: '/repo',
     baseRevision: 'base',
@@ -38,7 +38,7 @@ test('invalid graph input fails before creating or superseding a graph version',
   const { db, repos } = seed();
   const plan = repos.plans.createPlan({
     idempotencyKey: 'invalid-graph-plan',
-    projectKey: 'pixel',
+    projectKey: 'forgeflow-test',
     objective: 'invalid graph',
     repositoryPath: '/repo',
     baseRevision: 'base',

@@ -29,7 +29,7 @@ function fixture() {
   git(repository, ['add', 'README.md']);
   git(repository, ['commit', '-m', 'chore: base']);
   const revision = git(repository, ['rev-parse', 'HEAD']);
-  const db = openDatabase(path.join(root, 'pixel.sqlite'), { environment: 'test' });
+  const db = openDatabase(path.join(root, 'forgeflow.sqlite'), { environment: 'test' });
   const repositories = createRepositories(db);
   const plan = repositories.plans.createPlan({
     planId: 'plan-literal',

@@ -556,7 +556,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
       executionId,
       'completion-evidence.json',
     );
-    const controllerRoot = path.join(parentHost, '.pixel-controller');
+    const controllerRoot = path.join(parentHost, '.forgeflow-controller');
     const descriptorFile = path.join(controllerRoot, executionId + '.json');
     this.ensurePrivateExecutionDirectory(executionsRoot, executionDirectory);
     for (const relative of [
@@ -650,7 +650,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
         path.posix.join(parentExecution, '.executions', executionId, 'completion-evidence.json'),
       'WORKSPACE_PROVENANCE_MISMATCH',
     );
-    const descriptorFile = path.join(parentHost, '.pixel-controller', executionId + '.json');
+    const descriptorFile = path.join(parentHost, '.forgeflow-controller', executionId + '.json');
     const stored = readJson(descriptorFile, 'WORKSPACE_DESCRIPTOR_INVALID');
     for (const [key, value] of Object.entries({ version: 1, ...workspace }))
       if (stored[key] !== value) throw new ForgeFlowError('WORKSPACE_DESCRIPTOR_MISMATCH');

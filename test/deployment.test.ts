@@ -20,6 +20,7 @@ const launcher = read('openhands_tools/harness_agent_launcher.sh');
 test('ForgeFlow service is standalone, headless, and fail-closed around host writes', () => {
   assert.match(service, /Description=ForgeFlow Autonomous Software Engineering Control Plane/);
   assert.match(service, /WorkingDirectory=\/home\/dev\/projects\/forgeflow/);
+  assert.match(service, /UMask=0077/);
   assert.match(service, /FORGEFLOW_PORT=8420/);
   assert.match(service, /FORGEFLOW_DB=\/var\/lib\/forgeflow\/forgeflow\.sqlite/);
   assert.match(service, /FORGEFLOW_RESOURCE_SELECTOR_ENABLED=true/);
@@ -33,6 +34,7 @@ test('ForgeFlow service is standalone, headless, and fail-closed around host wri
 
 test('OpenHands execution plane uses ForgeFlow-only paths and no visualization surface', () => {
   assert.match(compose, /container_name: forgeflow-openhands/);
+  assert.match(compose, /dns:\s*\n\s*- 100\.100\.100\.100/);
   assert.match(compose, /"18420"/);
   assert.match(compose, /\/var\/lib\/forgeflow\/workspaces:\/workspace/);
   assert.match(compose, /\/opt\/forgeflow-tools:ro/);
@@ -51,6 +53,8 @@ test('installer provisions only ForgeFlow state and refuses unconfigured autonom
   assert.match(installer, /configure FORGEFLOW_OPENHANDS_TOKEN first/);
   assert.match(installer, /configure FORGEFLOW_LITELLM_BASE_URL first/);
   assert.match(installer, /configure FORGEFLOW_LITELLM_API_KEY first/);
+  assert.match(installer, /LiteLLM admin API preflight failed: \/model\/info HTTP/);
+  assert.match(installer, /-m 0711 \/var\/lib\/forgeflow/);
   assert.match(installer, /apparmor_parser -r \/etc\/apparmor\.d\/forgeflow-openhands-codex/);
   assert.match(installer, /FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands FORGEFLOW_DSH_SEED_DIR=/);
   assert.match(installer, /ReadWritePaths=%s/);

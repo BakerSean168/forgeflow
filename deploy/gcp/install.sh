@@ -11,7 +11,10 @@ for tool in node npm docker systemctl curl setfacl realpath apparmor_parser; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 
-install -d -o root -g root -m 0750 /etc/forgeflow /var/lib/forgeflow /var/lib/forgeflow/backups
+install -d -o root -g root -m 0750 /etc/forgeflow
+# Workers need execute-only traversal to their workspace subtree; state contents remain non-listable.
+install -d -o root -g root -m 0711 /var/lib/forgeflow
+install -d -o root -g root -m 0750 /var/lib/forgeflow/backups
 # OpenHands itself runs as uid/gid 10001 and owns only its mutable state/workspace roots.
 install -d -o 10001 -g 10001 -m 0750 /var/lib/forgeflow/openhands
 install -d -o 10001 -g 10001 -m 0751 /var/lib/forgeflow/workspaces
@@ -19,6 +22,7 @@ install -d -o 10001 -g 10001 -m 0751 /var/lib/forgeflow/workspaces/forgeflow /va
 if [[ ! -f "$config_file" ]]; then install -o root -g root -m 0600 "$repo_root/deploy/forgeflow.env.example" "$config_file"; fi
 if [[ ! -f "$openhands_env" ]]; then install -o root -g root -m 0600 "$repo_root/deploy/openhands.env.example" "$openhands_env"; fi
 chmod 0600 "$config_file" "$openhands_env"
+[[ ! -f /var/lib/forgeflow/forgeflow.sqlite ]] || chmod 0600 /var/lib/forgeflow/forgeflow.sqlite
 
 required_nonempty() {
   local key="$1" message="$2"
@@ -29,6 +33,21 @@ required_nonempty FORGEFLOW_REPOSITORY_WRITE_PATHS 'configure FORGEFLOW_REPOSITO
 required_nonempty FORGEFLOW_OPENHANDS_TOKEN 'configure FORGEFLOW_OPENHANDS_TOKEN first'
 grep -Eq '^FORGEFLOW_LITELLM_BASE_URL=https?://.+$' "$config_file" || { echo 'configure FORGEFLOW_LITELLM_BASE_URL first' >&2; exit 2; }
 required_nonempty FORGEFLOW_LITELLM_API_KEY 'configure FORGEFLOW_LITELLM_API_KEY first'
+
+admin_base="$(awk -F= '$1=="FORGEFLOW_LITELLM_ADMIN_BASE_URL"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
+[[ -n "$admin_base" ]] || admin_base="$(awk -F= '$1=="FORGEFLOW_LITELLM_BASE_URL"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
+admin_base="${admin_base%/}"
+admin_base="${admin_base%/v1}"
+admin_env="$(awk -F= '$1=="FORGEFLOW_LITELLM_ADMIN_ENV_FILE"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
+admin_key_name="$(awk -F= '$1=="FORGEFLOW_LITELLM_ADMIN_KEY_NAME"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
+[[ -n "$admin_env" ]] || admin_env=/etc/forgeflow/litellm.env
+[[ -n "$admin_key_name" ]] || admin_key_name=LITELLM_MASTER_KEY
+[[ -r "$admin_env" ]] || { echo 'LiteLLM admin credential file is not readable' >&2; exit 2; }
+admin_key="$(awk -F= -v key="$admin_key_name" '$1==key{sub(/^[^=]*=/,""); print; exit}' "$admin_env")"
+[[ -n "$admin_key" ]] || { echo 'LiteLLM admin key is missing' >&2; exit 2; }
+admin_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $admin_key" "$admin_base/model/info" || true)"
+[[ "$admin_status" =~ ^2[0-9][0-9]$ ]] || { echo "LiteLLM admin API preflight failed: /model/info HTTP $admin_status" >&2; exit 2; }
+unset admin_key
 
 allowed_raw="$(awk -F= '$1=="FORGEFLOW_ALLOWED_REPOSITORY_ROOTS"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
 writes_raw="$(awk -F= '$1=="FORGEFLOW_REPOSITORY_WRITE_PATHS"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"

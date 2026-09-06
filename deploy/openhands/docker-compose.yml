@@ -5,6 +5,8 @@ services:
     image: ${OPENHANDS_SOURCE_IMAGE:-forgeflow-openhands-agent-server:1.39.1-source}
     container_name: forgeflow-openhands
     network_mode: host
+    dns:
+      - 100.100.100.100
     command: ["--host", "127.0.0.1", "--port", "18420"]
     env_file:
       - ${FORGEFLOW_OPENHANDS_ENV_FILE:-/etc/forgeflow/openhands.env}

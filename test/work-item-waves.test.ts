@@ -106,7 +106,7 @@ test('wave selector respects dependencies, active writers and durable wave numbe
 
 test('parallel metadata and wave provenance survive schema migration and restart', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-wave-schema-'));
-  const file = path.join(root, 'pixel.sqlite');
+  const file = path.join(root, 'forgeflow.sqlite');
   let db = openDatabase(file, { environment: 'test', env: { NODE_ENV: 'test' } });
   db.exec("UPDATE schema_meta SET schema_version=8 WHERE schema_id='forgeflow';");
   for (const column of [

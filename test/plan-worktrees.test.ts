@@ -22,13 +22,13 @@ function fixture() {
   fs.mkdirSync(repository, { recursive: true });
   fs.mkdirSync(managed, { recursive: true });
   execFileSync('git', ['init', '-q', '-b', 'main', repository]);
-  git(repository, ['config', 'user.name', 'Pixel Worktree Test']);
-  git(repository, ['config', 'user.email', 'pixel-worktree@test.local']);
+  git(repository, ['config', 'user.name', 'ForgeFlow Worktree Test']);
+  git(repository, ['config', 'user.email', 'forgeflow-worktree@test.local']);
   fs.writeFileSync(path.join(repository, 'README.md'), 'base\n');
   git(repository, ['add', 'README.md']);
   git(repository, ['commit', '-m', 'chore: base']);
   const revision = git(repository, ['rev-parse', 'HEAD']);
-  const db = openDatabase(path.join(root, 'pixel.sqlite'), { environment: 'test' });
+  const db = openDatabase(path.join(root, 'forgeflow.sqlite'), { environment: 'test' });
   const repositories = createRepositories(db);
   const plan = repositories.plans.createPlan({
     planId: 'plan-a',
@@ -292,7 +292,7 @@ test('unknown worktree path residue is never silently adopted', async () => {
 
 test('schema v7 migrates additively to the durable worktree registry', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-worktree-schema-'));
-  const dbFile = path.join(root, 'pixel.sqlite');
+  const dbFile = path.join(root, 'forgeflow.sqlite');
   const current = openDatabase(dbFile, { environment: 'test' });
   current.exec(
     "DROP TABLE plan_worktrees; UPDATE schema_meta SET schema_version=7 WHERE schema_id='forgeflow';",
@@ -634,7 +634,7 @@ test('Plan cleanup retires every worktree and removes only the active Plan ref n
 
 test('schema v9 migrates additively to durable protected-ref snapshots', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-protected-ref-schema-'));
-  const dbFile = path.join(root, 'pixel.sqlite');
+  const dbFile = path.join(root, 'forgeflow.sqlite');
   const current = openDatabase(dbFile, { environment: 'test' });
   current.exec(
     "DROP TABLE plan_protected_refs; UPDATE schema_meta SET schema_version=9 WHERE schema_id='forgeflow';",

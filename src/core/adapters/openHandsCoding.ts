@@ -313,7 +313,7 @@ function phasePrompt(
         });
   const repositoryEvidenceStaging = evidencePath !== input.workspace.evidenceExecutionPath;
   const evidenceStagingRule = repositoryEvidenceStaging
-    ? 'The evidence path is a controller-owned staging file inside the Git workspace. Do not git add or commit it. Write it as your final filesystem action; it may be the only untracked residue when you finish, and Pixel will validate, promote, and remove it before the clean-tree gate.'
+    ? 'The evidence path is a controller-owned staging file inside the Git workspace. Do not git add or commit it. Write it as your final filesystem action; it may be the only untracked residue when you finish, and ForgeFlow will validate, promote, and remove it before the clean-tree gate.'
     : undefined;
   const rules =
     input.phase === 'REVIEW'
@@ -1054,7 +1054,7 @@ class OpenHandsModelNativeAcpProvider extends OpenHandsProviderBase {
     const launchInput: ProviderLaunchInput = {
       executionId: input.probeId,
       planId: 'runtime-admission',
-      projectKey: 'pixel-runtime-admission',
+      projectKey: 'forgeflow-runtime-admission',
       phase,
       objective: 'Verify model-native ACP runtime admission without product changes.',
       acceptanceCriteria: ['Run git status --short without editing files', 'Reply READY'],
@@ -1064,7 +1064,7 @@ class OpenHandsModelNativeAcpProvider extends OpenHandsProviderBase {
     };
     const secrets = this.runtimeProbeSecrets(launchInput);
     const prompt = [
-      'Pixel runtime admission probe.',
+      'ForgeFlow runtime admission probe.',
       'Do not modify, create, delete, stage, or commit repository files.',
       'Run exactly one harmless repository inspection command: git status --short.',
       'Then reply with READY and nothing else.',

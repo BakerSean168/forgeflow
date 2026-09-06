@@ -1223,7 +1223,7 @@ export class ExecutionWorker {
       ],
     });
     return [
-      'Finalize the existing Pixel implementation in the same workspace.',
+      'Finalize the existing ForgeFlow implementation in the same workspace.',
       'The provider already reported completion, but deterministic verification returned ' +
         triggerCode +
         '.',

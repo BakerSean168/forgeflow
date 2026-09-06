@@ -29,7 +29,7 @@ function seed() {
   const repositories = createRepositories(db);
   const plan = repositories.plans.createPlan({
     idempotencyKey: 'worker-plan',
-    projectKey: 'pixel-worker-test',
+    projectKey: 'forgeflow-worker-test',
     objective: 'exercise the execution worker',
     repositoryPath: '/repositories/project',
     baseRevision: 'base-sha',

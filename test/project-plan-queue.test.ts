@@ -33,7 +33,7 @@ function finish(repositories: ReturnType<typeof createRepositories>, planId: str
 
 test('single-active-plan scheduler keeps later root plans queued and hands off FIFO across restart', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-plan-queue-'));
-  const dbFile = path.join(root, 'pixel.sqlite');
+  const dbFile = path.join(root, 'forgeflow.sqlite');
   let db = openDatabase(dbFile, { environment: 'test' });
   let repositories = createRepositories(db);
   let runtime = new ProjectPlanQueueRuntime(repositories);
@@ -121,7 +121,7 @@ test('single-active-plan scheduler keeps later root plans queued and hands off F
 
 test('project lease is version fenced, repository bound and cannot be double acquired', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-plan-fence-'));
-  const dbFile = path.join(root, 'pixel.sqlite');
+  const dbFile = path.join(root, 'forgeflow.sqlite');
   const db1 = openDatabase(dbFile, { environment: 'test' });
   const r1 = createRepositories(db1);
   createRoot(r1, 'plan-a');
@@ -182,7 +182,7 @@ test('queued plan reprioritization is deterministic and cancellation provisions 
 
 test('schema v11 migrates the active logical project head into the durable lease', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-plan-v11-head-'));
-  const dbFile = path.join(root, 'pixel.sqlite');
+  const dbFile = path.join(root, 'forgeflow.sqlite');
   let db = openDatabase(dbFile, { environment: 'test' });
   let repositories = createRepositories(db);
   createRoot(repositories, 'plan-a');
@@ -217,7 +217,7 @@ test('schema v11 migrates the active logical project head into the durable lease
 
 test('schema v6 migrates additively to the single-active-plan scheduling schema', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-plan-schema-'));
-  const dbFile = path.join(root, 'pixel.sqlite');
+  const dbFile = path.join(root, 'forgeflow.sqlite');
   const current = openDatabase(dbFile, { environment: 'test' });
   current.exec('DROP TABLE project_plan_queue; DROP TABLE project_plan_leases;');
   current.prepare("UPDATE schema_meta SET schema_version=6 WHERE schema_id='forgeflow'").run();

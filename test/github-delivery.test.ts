@@ -37,7 +37,7 @@ function fixture() {
   const delivery: PlanDelivery = {
     planId: plan.planId,
     remote: 'origin',
-    branch: 'pixel/exact-delivery',
+    branch: 'forgeflow/exact-delivery',
     targetBranch: 'main',
     autoMerge: true,
     mergeMethod: 'merge',
@@ -103,7 +103,7 @@ test('GitHub delivery pushes the exact reviewed SHA and opens a PR without bypas
     calls.some(
       (call) =>
         call.command === '/usr/bin/git' &&
-        call.args.includes('head-sha:refs/heads/pixel/exact-delivery'),
+        call.args.includes('head-sha:refs/heads/forgeflow/exact-delivery'),
     ),
   );
   assert.ok(calls.some((call) => call.command === '/usr/bin/gh' && call.args[1] === 'create'));
@@ -143,7 +143,7 @@ test('GitHub delivery merges only the exact PR head after required checks and ve
         const ref = argv.at(-1);
         return ref === 'refs/heads/main'
           ? result('merge-sha\trefs/heads/main\n')
-          : result('head-sha\trefs/heads/pixel/exact-delivery\n');
+          : result('head-sha\trefs/heads/forgeflow/exact-delivery\n');
       }
     }
     if (command === '/usr/bin/gh') {
@@ -231,7 +231,7 @@ test('GitHub delivery reports a failed required check as durable repairable deli
       if (argv.includes('check-ref-format')) return result('');
       if (argv.includes('remote') && argv.includes('get-url'))
         return result('https://github.com/acme/repo.git\n');
-      if (argv.includes('ls-remote')) return result('head-sha\trefs/heads/pixel/exact-delivery\n');
+      if (argv.includes('ls-remote')) return result('head-sha\trefs/heads/forgeflow/exact-delivery\n');
     }
     if (command === '/usr/bin/gh' && argv[0] === 'pr' && argv[1] === 'list')
       return result(JSON.stringify([failedPr]));
@@ -268,8 +268,8 @@ test('GitHub delivery fast-forwards an existing delivery branch only when it is 
         return result('https://github.com/acme/repo.git\n');
       if (argv.includes('ls-remote')) {
         const ref = argv.at(-1);
-        return ref === 'refs/heads/pixel/exact-delivery'
-          ? result('old-sha\trefs/heads/pixel/exact-delivery\n')
+        return ref === 'refs/heads/forgeflow/exact-delivery'
+          ? result('old-sha\trefs/heads/forgeflow/exact-delivery\n')
           : result('');
       }
       if (argv.includes('merge-base')) return result('');
@@ -300,7 +300,7 @@ test('GitHub delivery fast-forwards an existing delivery branch only when it is 
     calls.some(
       (call) =>
         call.command === '/usr/bin/git' &&
-        call.args.includes('head-sha:refs/heads/pixel/exact-delivery'),
+        call.args.includes('head-sha:refs/heads/forgeflow/exact-delivery'),
     ),
   );
   fs.rmSync(value.root, { recursive: true, force: true });
@@ -333,8 +333,8 @@ test('GitHub delivery publishes exact-head ForgeFlow governance before satisfyin
         return result('https://github.com/acme/repo.git\n');
       if (argv.includes('ls-remote')) {
         const ref = argv.at(-1);
-        if (ref === 'refs/heads/pixel/exact-delivery')
-          return result('head-sha\trefs/heads/pixel/exact-delivery\n');
+        if (ref === 'refs/heads/forgeflow/exact-delivery')
+          return result('head-sha\trefs/heads/forgeflow/exact-delivery\n');
         if (ref === 'refs/heads/main') return result('merge-sha\trefs/heads/main\n');
       }
     }
@@ -403,7 +403,7 @@ test('GitHub delivery waits when GitHub still reports the PR blocked after confi
       if (argv.includes('check-ref-format')) return result('');
       if (argv.includes('remote') && argv.includes('get-url'))
         return result('https://github.com/acme/repo.git\n');
-      if (argv.includes('ls-remote')) return result('head-sha\trefs/heads/pixel/exact-delivery\n');
+      if (argv.includes('ls-remote')) return result('head-sha\trefs/heads/forgeflow/exact-delivery\n');
     }
     if (command === '/usr/bin/gh' && argv[0] === 'pr' && argv[1] === 'list') {
       return result(
@@ -439,7 +439,7 @@ test('GitHub delivery discovers an exact already-merged PR for a recovery Plan w
     state: 'MERGED',
     url: 'https://github.com/acme/repo/pull/165',
     headRefOid: 'head-sha',
-    headRefName: 'pixel/exact-delivery',
+    headRefName: 'forgeflow/exact-delivery',
     baseRefName: 'main',
     mergeCommit: { oid: 'merge-sha' },
   };
@@ -506,7 +506,7 @@ test('GitHub delivery refuses a durable merged PR whose head is not the exact re
           state: 'MERGED',
           url: 'https://github.com/acme/repo/pull/165',
           headRefOid: 'different-head',
-          headRefName: 'pixel/exact-delivery',
+          headRefName: 'forgeflow/exact-delivery',
           baseRefName: 'main',
           mergeCommit: { oid: 'merge-sha' },
         }),
@@ -537,7 +537,7 @@ test('GitHub delivery reconciles an exact durable merged PR after the canonical 
     state: 'MERGED',
     url: 'https://github.com/acme/repo/pull/165',
     headRefOid: 'head-sha',
-    headRefName: 'pixel/exact-delivery',
+    headRefName: 'forgeflow/exact-delivery',
     baseRefName: 'main',
     mergeCommit: { oid: 'merge-sha' },
     statusCheckRollup: [{ name: 'CI', status: 'COMPLETED', conclusion: 'SUCCESS' }],
@@ -647,7 +647,7 @@ test('GitHub delivery uses an exact linked worktree when canonical HEAD intentio
   const delivery: PlanDelivery = {
     planId: plan.planId,
     remote: 'origin',
-    branch: 'pixel/exact-worktree',
+    branch: 'forgeflow/exact-worktree',
     targetBranch: 'main',
     autoMerge: false,
     mergeMethod: 'merge',
@@ -716,7 +716,7 @@ test('GitHub delivery uses an exact linked worktree when canonical HEAD intentio
     calls.some(
       (call) =>
         call.command === '/usr/bin/git' &&
-        call.args.includes(candidate + ':refs/heads/pixel/exact-worktree'),
+        call.args.includes(candidate + ':refs/heads/forgeflow/exact-worktree'),
     ),
   );
 

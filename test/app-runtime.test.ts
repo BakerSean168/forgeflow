@@ -175,7 +175,7 @@ test('ForgeFlow creates a durable first execution through the public plan runtim
   const planId = created.json().plan.planId as string;
   const delivery = {
     remote: 'origin',
-    branch: 'pixel/app-runtime-plan',
+    branch: 'forgeflow/app-runtime-plan',
     targetBranch: 'main',
     autoMerge: false,
     mergeMethod: 'merge',
@@ -204,7 +204,7 @@ test('ForgeFlow creates a durable first execution through the public plan runtim
       repositoryPath: value.repository,
       delivery: {
         remote: 'origin',
-        branch: 'pixel/app-runtime-child',
+        branch: 'forgeflow/app-runtime-child',
         targetBranch: 'main',
         autoMerge: false,
         mergeMethod: 'merge',
@@ -740,7 +740,7 @@ test('runtime admission warms in background, single-flights probes, and uses exe
         '.agent-harness.json',
       );
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      assert.equal(manifest.id, 'pixel-runtime-admission');
+      assert.equal(manifest.id, 'forgeflow-runtime-admission');
       await probeBlocked;
       throw new Error('intentional blocked runtime probe');
     }

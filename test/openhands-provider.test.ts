@@ -228,9 +228,9 @@ test('Business Codex implementation injects exact literal-worktree Git provenanc
   git(repository, ['add', 'README.md']);
   git(repository, [
     '-c',
-    'user.name=Pixel Test',
+    'user.name=ForgeFlow Test',
     '-c',
-    'user.email=pixel@test.invalid',
+    'user.email=forgeflow@test.invalid',
     'commit',
     '-q',
     '-m',

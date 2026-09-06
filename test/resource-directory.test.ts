@@ -375,7 +375,7 @@ test('lifecycle probes expired free suspension once and disables failure', async
 test('PVR-7102 exhausted resource is durably disabled and restart selects the next resource', () => {
   const file = path.join(
     fs.mkdtempSync(path.join(os.tmpdir(), 'pvr-resource-exhaustion-')),
-    'pixel.sqlite',
+    'forgeflow.sqlite',
   );
   const resources = [pvrResource('earlier', 10), pvrResource('later', 20)];
 

@@ -437,7 +437,7 @@ export class ResourceStateService implements ResourceFeedbackPort {
   #effect(resource: ExecutionResource, state: ResourceState): void {
     if (!this.effect) return;
     void Promise.resolve(this.effect.apply(resource, state)).catch(() => {
-      // The durable local override remains authoritative for Pixel routing. The
+      // The durable local override remains authoritative for ForgeFlow routing. The
       // next lifecycle/management reconcile can retry a failed remote projection.
     });
   }

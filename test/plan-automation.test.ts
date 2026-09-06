@@ -642,7 +642,7 @@ test('plan automation requiring delivery never reports success when delivery is 
 test('plan automation persists delivery progress and succeeds only after remote verification', async () => {
   const config: PlanDeliveryConfig = {
     remote: 'origin',
-    branch: 'pixel/test-delivery',
+    branch: 'forgeflow/test-delivery',
     targetBranch: 'main',
     autoMerge: true,
     mergeMethod: 'merge',
@@ -686,7 +686,7 @@ test('plan automation persists delivery progress and succeeds only after remote 
 test('required CI failures create chained delivery repairs from the latest durable delivery head', async () => {
   const config: PlanDeliveryConfig = {
     remote: 'origin',
-    branch: 'pixel/delivery-repair-chain',
+    branch: 'forgeflow/delivery-repair-chain',
     targetBranch: 'main',
     autoMerge: true,
     mergeMethod: 'merge',
@@ -777,7 +777,7 @@ test('required CI failures create chained delivery repairs from the latest durab
 test('verified FOLLOW_UP child supersedes a stale parent delivery without another GitHub delivery attempt', async () => {
   const config: PlanDeliveryConfig = {
     remote: 'origin',
-    branch: 'pixel/shared-delivery',
+    branch: 'forgeflow/shared-delivery',
     targetBranch: 'main',
     autoMerge: true,
     mergeMethod: 'merge',
@@ -847,7 +847,7 @@ test('verified FOLLOW_UP child supersedes a stale parent delivery without anothe
 test('verified recovery sibling supersedes an older delivery only when its exact revision descends from the stale head', async () => {
   const config: PlanDeliveryConfig = {
     remote: 'origin',
-    branch: 'pixel/shared-recovery-delivery',
+    branch: 'forgeflow/shared-recovery-delivery',
     targetBranch: 'main',
     autoMerge: true,
     mergeMethod: 'merge',
@@ -947,7 +947,7 @@ test('verified recovery sibling supersedes an older delivery only when its exact
 test('recovery sibling cannot supersede a stale delivery without exact ancestry proof', async () => {
   const config: PlanDeliveryConfig = {
     remote: 'origin',
-    branch: 'pixel/shared-recovery-delivery-no-ancestry',
+    branch: 'forgeflow/shared-recovery-delivery-no-ancestry',
     targetBranch: 'main',
     autoMerge: true,
     mergeMethod: 'merge',
@@ -1031,13 +1031,13 @@ test('recovery sibling cannot supersede a stale delivery without exact ancestry 
 test('delivery supersession fails closed when the verified child does not share the parent delivery contract', async () => {
   const parentConfig: PlanDeliveryConfig = {
     remote: 'origin',
-    branch: 'pixel/parent',
+    branch: 'forgeflow/parent',
     targetBranch: 'main',
     autoMerge: true,
     mergeMethod: 'merge',
     requiredChecks: ['CI'],
   };
-  const childConfig: PlanDeliveryConfig = { ...parentConfig, branch: 'pixel/unrelated-child' };
+  const childConfig: PlanDeliveryConfig = { ...parentConfig, branch: 'forgeflow/unrelated-child' };
   const seeded = seed([], parentConfig);
   const parent = seeded.repositories.plans.getPlan(seeded.plan.planId);
   const childId = 'plan-unrelated-follow-up';

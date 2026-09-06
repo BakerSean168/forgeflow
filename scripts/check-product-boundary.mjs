@@ -20,6 +20,7 @@ const retired = [
   ['pixel', 'invalid'].join('.'),
   ['virtual', 'office'].join(' '),
   ['pixel', 'art'].join('-'),
+  ['pix', 'el'].join(''),
 ];
 const retiredWords = [['employee'].join(''), ['workforce'].join(''), ['of', 'fice'].join(''), ['her', 'mes'].join('')];
 const retiredPaths = ['/workspace/' + ['v', '4'].join('') + '/', '/api/' + ['v', '4'].join('') + '/', '/api/forge' + 'flow/'];

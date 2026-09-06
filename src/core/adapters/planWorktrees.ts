@@ -604,7 +604,7 @@ export class PlanWorktreeManager {
     await this.git(current.repositoryPath, ['worktree', 'prune', '--expire', 'now']);
     failClosed(!fs.existsSync(current.hostPath), 'WORKTREE_REMOVE_INCOMPLETE');
     const parent = path.dirname(current.hostPath);
-    for (const runtimeState of ['.agent-harness', '.executions', '.pixel-controller']) {
+    for (const runtimeState of ['.agent-harness', '.executions', '.forgeflow-controller']) {
       const candidate = path.join(parent, runtimeState);
       if (fs.existsSync(candidate)) fs.rmSync(candidate, { recursive: true, force: true });
     }
@@ -713,7 +713,7 @@ export class PlanWorktreeManager {
     this.enterSafetyHold(rootPlanId);
     throw new ForgeFlowError(
       'WORKTREE_PROTECTED_REF_DRIFT',
-      'Protected Git refs changed outside the active Pixel Plan namespace.',
+      'Protected Git refs changed outside the active ForgeFlow Plan namespace.',
     );
   }
 

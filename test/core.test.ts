@@ -36,7 +36,7 @@ function memory() {
 function seedPlan(db: DatabaseSync, idempotencyKey = 'seed-plan') {
   const repos = createRepositories(db);
   const plan = repos.plans.createPlan({
-    idempotencyKey, projectKey: 'pixel', objective: 'test objective', repositoryPath: '/repo', baseRevision: 'base-sha',
+    idempotencyKey, projectKey: 'forgeflow-test', objective: 'test objective', repositoryPath: '/repo', baseRevision: 'base-sha',
   }).value;
   assert.ok(plan);
   const graph = repos.plans.createGraphVersion({ planId: plan.planId, reason: 'test graph' }).value;
@@ -127,7 +127,7 @@ test('domain terminal transitions are monotonic and invalid transitions fail clo
 test('repositories enforce idempotency, CAS, exact review lineage and leases', () => {
   const db = memory();
   const { repos, plan, item, supervisor } = seedPlan(db);
-  const same = repos.plans.createPlan({ idempotencyKey: 'seed-plan', projectKey: 'pixel', objective: 'test objective', repositoryPath: '/repo', baseRevision: 'base-sha' });
+  const same = repos.plans.createPlan({ idempotencyKey: 'seed-plan', projectKey: 'forgeflow-test', objective: 'test objective', repositoryPath: '/repo', baseRevision: 'base-sha' });
   assert.equal(same.status, 'existing');
   assert.equal(repos.plans.compareAndSetStatus(plan.planId, 'DRAFT', 'RUNNING').status, 'rejected');
   assert.equal(repos.plans.compareAndSetStatus(plan.planId, 'READY', 'RUNNING').status, 'updated');
@@ -323,10 +323,10 @@ test('supervisor wake queue is durable, idempotent and atomically drained', () =
 test('maintenance candidates survive database restart with immutable plan binding', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-maintenance-'));
   const file = path.join(dir, 'control-plane.sqlite');
-  const program = { programId: 'program-db', projectKey: 'pixel', implementationRoutes: ['implementation-route'], reviewRoutes: ['review-route'], autonomousScope: 'CONSERVATIVE' as const, autoMerge: false, enabled: true };
+  const program = { programId: 'program-db', projectKey: 'forgeflow-test', implementationRoutes: ['implementation-route'], reviewRoutes: ['review-route'], autonomousScope: 'CONSERVATIVE' as const, autoMerge: false, enabled: true };
   let db = openDatabase(file, { environment: 'test', env: { NODE_ENV: 'test' } });
   const maintenancePlan = createRepositories(db).plans.createPlan({
-    idempotencyKey: 'maintenance-plan', projectKey: 'pixel', objective: 'Apply a durable improvement', repositoryPath: '/repo', baseRevision: 'base-sha',
+    idempotencyKey: 'maintenance-plan', projectKey: 'forgeflow-test', objective: 'Apply a durable improvement', repositoryPath: '/repo', baseRevision: 'base-sha',
   }).value;
   assert.ok(maintenancePlan);
   const first = new MaintenanceCandidateRegistry(db);

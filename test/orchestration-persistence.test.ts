@@ -389,7 +389,7 @@ test('schema v4 migrates delivery supersession metadata to v5 without losing exi
   const seeded = seed(db, 'v4-delivery-plan');
   const config = {
     remote: 'origin',
-    branch: 'pixel/existing',
+    branch: 'forgeflow/existing',
     targetBranch: 'main',
     autoMerge: true,
     mergeMethod: 'merge' as const,

@@ -270,7 +270,7 @@ const HOST_CACHE_REASONS = new Set([
   'FREE_SPACE_ABOVE_TRIGGER',
   'RELEASE_LOCK_HELD',
   'ACTIVE_EXECUTION_STATE_UNAVAILABLE',
-  'PIXEL_EXECUTION_RUNNING',
+  'FORGEFLOW_EXECUTION_RUNNING',
   'SAFE_RECLAIM_COMPLETED',
   'ABOVE_TRIGGER_BELOW_TARGET',
   'SAFE_RECLAIM_EXHAUSTED',
@@ -771,7 +771,7 @@ async function buildExecutionAutomation(
       }).trim();
     git(['init', '-q', '-b', 'main']);
     const readme = path.join(repository, 'README.md');
-    fs.writeFileSync(readme, '# Pixel runtime admission probe\n');
+    fs.writeFileSync(readme, '# ForgeFlow runtime admission probe\n');
     fs.chownSync(readme, workspaceUid, workspaceGid);
     const harnessManifest = path.join(repository, '.agent-harness.json');
     fs.writeFileSync(
@@ -779,7 +779,7 @@ async function buildExecutionAutomation(
       JSON.stringify(
         {
           version: 1,
-          id: 'pixel-runtime-admission',
+          id: 'forgeflow-runtime-admission',
           sharedMcpProfile: 'common',
           packs: [],
           capabilities: [],
@@ -793,9 +793,9 @@ async function buildExecutionAutomation(
     git(['add', 'README.md', '.agent-harness.json']);
     git([
       '-c',
-      'user.name=Pixel Runtime Probe',
+      'user.name=ForgeFlow Runtime Probe',
       '-c',
-      'user.email=pixel-runtime-probe@localhost',
+      'user.email=forgeflow-runtime-probe@localhost',
       'commit',
       '-q',
       '-m',
