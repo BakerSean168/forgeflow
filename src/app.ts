@@ -45,7 +45,7 @@ import {
 import type { PlanDeliveryConfig } from './core/domain/delivery.js';
 import { ForgeFlowError } from './core/domain/errors.js';
 import { EXECUTION_STATUSES, type ExecutionStatus } from './core/domain/execution.js';
-import { PLAN_STATUSES, type PlanStatus } from './core/domain/plan.js';
+import { isTerminalPlanStatus, PLAN_STATUSES, type PlanStatus } from './core/domain/plan.js';
 import {
   DEFAULT_AFFINITY_POLICY,
   createExecutionResourceSelection,
@@ -289,7 +289,7 @@ function assertOpenHandsGitCommonDirMounted(
   try {
     const rawCommon = execFileSync(
       '/usr/bin/git',
-      ['-C', repositoryPath, 'rev-parse', '--git-common-dir'],
+      ['-c', `safe.directory=${repositoryPath}`, '-C', repositoryPath, 'rev-parse', '--git-common-dir'],
       {
         encoding: 'utf8',
         timeout: commandTimeoutMs,
@@ -1463,7 +1463,7 @@ export async function buildControlPlane(
       for (const lease of repositories.projectPlans.listLeases()) {
         if (!lease.activeRootPlanId) continue;
         const plan = repositories.plans.getPlan(lease.activeRootPlanId);
-        if (literalProjects.has(plan.projectKey))
+        if (literalProjects.has(plan.projectKey) && !isTerminalPlanStatus(plan.status))
           await automation.planWorktreeManager.ensurePlanActivated(lease.activeRootPlanId);
       }
     }

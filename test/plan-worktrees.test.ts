@@ -143,6 +143,78 @@ test('PlanWorktreeManager creates one literal shared-common-dir worktree per rol
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+test('work-item provisioning cannot bypass a failed root Plan admission', async () => {
+  const value = fixture();
+  const manager = new PlanWorktreeManager({
+    repositories: value.repositories,
+    allowedRepositoryRoots: [value.repositoriesRoot],
+    managedHostRoot: value.managed,
+    executionRoot: '/workspace',
+    projectAdmission: () => {
+      throw new ForgeFlowError('TEST_PROJECT_ADMISSION_BLOCKED');
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      manager.ensureWorkItem({
+        projectKey: value.plan.projectKey,
+        rootPlanId: value.plan.planId,
+        workItemId: value.itemA.workItemId,
+        repositoryPath: value.repository,
+        baseRevision: value.revision,
+      }),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'TEST_PROJECT_ADMISSION_BLOCKED',
+  );
+  assert.equal(value.repositories.plans.getPlan(value.plan.planId).status, 'SAFETY_HOLD');
+  assert.deepEqual(value.repositories.planWorktrees.listByPlan(value.plan.planId), []);
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('parallel work-item provisioning single-flights root Plan activation', async () => {
+  const value = fixture();
+  let admissions = 0;
+  const manager = new PlanWorktreeManager({
+    repositories: value.repositories,
+    allowedRepositoryRoots: [value.repositoriesRoot],
+    managedHostRoot: value.managed,
+    executionRoot: '/workspace',
+    projectAdmission: async () => {
+      admissions += 1;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    },
+  });
+
+  const [itemA, itemB] = await Promise.all([
+    manager.ensureWorkItem({
+      projectKey: value.plan.projectKey,
+      rootPlanId: value.plan.planId,
+      workItemId: value.itemA.workItemId,
+      repositoryPath: value.repository,
+      baseRevision: value.revision,
+    }),
+    manager.ensureWorkItem({
+      projectKey: value.plan.projectKey,
+      rootPlanId: value.plan.planId,
+      workItemId: value.itemB.workItemId,
+      repositoryPath: value.repository,
+      baseRevision: value.revision,
+    }),
+  ]);
+
+  assert.equal(admissions, 1);
+  assert.equal(itemA.role, 'WORK_ITEM');
+  assert.equal(itemB.role, 'WORK_ITEM');
+  assert.ok(value.repositories.planWorktrees.findIntegration(value.plan.planId));
+
+  await manager.retirePlan(value.plan.planId, process.getuid?.() ?? 1000);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('WorkItem worktree survives provider retries and enforces one durable writer at a time', async () => {
   const value = fixture();
   let worktree = await value.manager.ensureWorkItem({
@@ -627,6 +699,42 @@ test('Plan cleanup retires every worktree and removes only the active Plan ref n
     value.repositories.plans.getPlan(value.plan.planId).currentRevision,
   );
   assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.revision);
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('Plan cleanup retires a durable PROVISIONING record whose physical worktree was never created', async () => {
+  const value = fixture();
+  await value.manager.ensurePlanActivated(value.plan.planId);
+  const orphanPath = path.join(
+    value.managed,
+    'forgeflow',
+    'plans',
+    value.plan.projectKey,
+    value.plan.planId,
+    'items',
+    'orphan',
+    'repo',
+  );
+  const orphan = value.repositories.planWorktrees.create({
+    worktreeId: 'worktree:work_item:plan-a:orphan',
+    projectKey: value.plan.projectKey,
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    role: 'WORK_ITEM',
+    repositoryPath: value.repository,
+    hostPath: orphanPath,
+    executionPath: '/workspace/forgeflow/plans/project-gamma/plan-a/items/orphan/repo',
+    branchRef: 'refs/heads/forgeflow/plan-a/items/orphan/head',
+    baseRevision: value.revision,
+  }).value!;
+  assert.equal(orphan.state, 'PROVISIONING');
+  assert.equal(fs.existsSync(orphan.hostPath), false);
+
+  await value.manager.retirePlan(value.plan.planId, process.getuid?.() ?? 1000);
+  assert.equal(value.repositories.planWorktrees.get(orphan.worktreeId).state, 'RETIRED');
+  assert.equal(fs.existsSync(orphan.hostPath), false);
 
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });

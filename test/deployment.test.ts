@@ -183,8 +183,10 @@ test('literal worktree deployment is project-mounted, runtime-verified, and smok
   assert.match(forgeFlowEnv, /FORGEFLOW_LITERAL_WORKTREE_REPOSITORIES=\n/);
   assert.match(forgeFlowEnv, /FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands/);
   assert.match(appSource, /WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED/);
+  assert.match(appSource, /safe\.directory=\$\{repositoryPath\}/);
   assert.match(appSource, /docker'[\s\S]*inspect'[\s\S]*\{\{json \.Mounts\}\}/);
   assert.match(appSource, /mount\.Source === common && mount\.Destination === common && mount\.RW === true/);
+  assert.match(appSource, /literalProjects\.has\(plan\.projectKey\) && !isTerminalPlanStatus\(plan\.status\)/);
   assert.match(literalSmoke, /FORGEFLOW_WORKTREE_SMOKE_USE_RUNNING_CONTAINER/);
   assert.match(literalSmoke, /useRunningContainer[\s\S]*'exec'/);
 });

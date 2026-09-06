@@ -96,6 +96,7 @@ export class PlanWorktreeManager {
   readonly maxBufferBytes: number;
   readonly setfaclBinary: string;
   readonly projectAdmission?: (repositoryPath: string) => void | Promise<void>;
+  private readonly activationInFlight = new Map<string, Promise<PlanWorktree>>();
 
   constructor(options: PlanWorktreeManagerOptions) {
     failClosed(options.allowedRepositoryRoots.length > 0, 'WORKTREE_ALLOWED_ROOT_REQUIRED');
@@ -112,20 +113,38 @@ export class PlanWorktreeManager {
   }
 
   async ensurePlanActivated(rootPlanId: string): Promise<PlanWorktree> {
+    const existing = this.activationInFlight.get(rootPlanId);
+    if (existing) return await existing;
+    const activation = this.activatePlan(rootPlanId);
+    this.activationInFlight.set(rootPlanId, activation);
+    try {
+      return await activation;
+    } finally {
+      if (this.activationInFlight.get(rootPlanId) === activation)
+        this.activationInFlight.delete(rootPlanId);
+    }
+  }
+
+  private async activatePlan(rootPlanId: string): Promise<PlanWorktree> {
     const plan = this.repositories.plans.getPlan(rootPlanId);
     failClosed(!plan.parentPlanId, 'WORKTREE_ROOT_PLAN_REQUIRED');
     const lease = this.repositories.projectPlans.getLease(plan.projectKey);
     failClosed(lease?.activeRootPlanId === rootPlanId, 'WORKTREE_ACTIVE_PLAN_REQUIRED');
     failClosed(lease.repositoryPath === plan.repositoryPath, 'WORKTREE_REPOSITORY_MISMATCH');
-    if (this.projectAdmission) await this.projectAdmission(plan.repositoryPath);
-    await this.ensureProtectedRefSnapshot(rootPlanId);
-    await this.assertProtectedRefsStable(rootPlanId);
-    return await this.ensureIntegration({
-      projectKey: plan.projectKey,
-      rootPlanId: plan.planId,
-      repositoryPath: plan.repositoryPath,
-      baseRevision: plan.currentRevision,
-    });
+    try {
+      if (this.projectAdmission) await this.projectAdmission(plan.repositoryPath);
+      await this.ensureProtectedRefSnapshot(rootPlanId);
+      await this.assertProtectedRefsStable(rootPlanId);
+      return await this.ensureIntegration({
+        projectKey: plan.projectKey,
+        rootPlanId: plan.planId,
+        repositoryPath: plan.repositoryPath,
+        baseRevision: plan.currentRevision,
+      });
+    } catch (error) {
+      this.enterSafetyHold(rootPlanId);
+      throw error;
+    }
   }
 
   async assertPlanSafety(rootPlanId: string): Promise<void> {
@@ -178,6 +197,7 @@ export class PlanWorktreeManager {
   }
 
   async ensureWorkItem(input: WorkItemWorktreeRequest): Promise<PlanWorktree> {
+    await this.ensurePlanActivated(input.rootPlanId);
     const item = this.repositories.plans.getWorkItem(input.workItemId);
     failClosed(
       this.rootPlanIdFor(item.planId) === input.rootPlanId,
@@ -195,6 +215,7 @@ export class PlanWorktreeManager {
   }
 
   async ensureDeliveryRepair(input: DeliveryRepairWorktreeRequest): Promise<PlanWorktree> {
+    await this.ensurePlanActivated(input.rootPlanId);
     const repairComponent = worktreeRefComponent(input.repairId);
     return await this.ensureBranched({
       ...input,
@@ -207,6 +228,7 @@ export class PlanWorktreeManager {
   }
 
   async createReview(input: ReviewWorktreeRequest): Promise<PlanWorktree> {
+    await this.ensurePlanActivated(input.rootPlanId);
     this.assertActivePlan(input);
     const repositoryPath = await this.repositoryRoot(input.repositoryPath);
     await this.ensureProtectedRefSnapshot(input.rootPlanId);
@@ -256,7 +278,7 @@ export class PlanWorktreeManager {
       'WORKTREE_AGENT_IDENTITY_INVALID',
     );
     const current = this.repositories.planWorktrees.get(worktreeIdValue);
-    await this.assertProtectedRefsStable(current.rootPlanId);
+    await this.ensurePlanActivated(current.rootPlanId);
     failClosed(current.role !== 'INTEGRATION', 'WORKTREE_INTEGRATION_CONTROLLER_ONLY');
     await this.verifyRegistered(
       current,
@@ -315,6 +337,7 @@ export class PlanWorktreeManager {
   ): Promise<PlanWorktree> {
     failClosed(expectedRevision.trim().length > 0, 'WORKTREE_CURRENT_REVISION_REQUIRED');
     let current = this.repositories.planWorktrees.get(worktreeIdValue);
+    await this.ensurePlanActivated(current.rootPlanId);
     failClosed(
       current.role === 'WORK_ITEM' || current.role === 'DELIVERY_REPAIR',
       'WORKTREE_MODEL_WRITER_ROLE_INVALID',
@@ -639,26 +662,44 @@ export class PlanWorktreeManager {
     await this.assertProtectedRefsStable(current.rootPlanId);
     failClosed(!current.ownerExecutionId, 'WORKTREE_WRITER_HELD');
     if (current.state === 'RETIRED') return current;
-    await this.verifyRegistered(
-      current,
-      current.currentRevision,
-      current.branchRef,
-      current.role === 'REVIEW',
-      false,
-    );
-    const sourceIdentity = this.repositoryIdentity(current.repositoryPath);
-    if (fs.existsSync(current.hostPath))
-      this.chownTreeNoFollow(current.hostPath, sourceIdentity.uid, sourceIdentity.gid);
-    await this.git(current.repositoryPath, ['worktree', 'unlock', '--', current.hostPath], true);
-    await this.git(current.repositoryPath, ['worktree', 'remove', '--', current.hostPath]);
-    await this.git(current.repositoryPath, ['worktree', 'prune', '--expire', 'now']);
-    failClosed(!fs.existsSync(current.hostPath), 'WORKTREE_REMOVE_INCOMPLETE');
+    const listed = await this.worktreeAt(current.repositoryPath, current.hostPath);
+    if (listed) {
+      await this.verifyRegistered(
+        current,
+        current.currentRevision,
+        current.branchRef,
+        current.role === 'REVIEW',
+        false,
+      );
+      const sourceIdentity = this.repositoryIdentity(current.repositoryPath);
+      if (fs.existsSync(current.hostPath))
+        this.chownTreeNoFollow(current.hostPath, sourceIdentity.uid, sourceIdentity.gid);
+      await this.git(current.repositoryPath, ['worktree', 'unlock', '--', current.hostPath], true);
+      await this.git(current.repositoryPath, ['worktree', 'remove', '--', current.hostPath]);
+      await this.git(current.repositoryPath, ['worktree', 'prune', '--expire', 'now']);
+      failClosed(!fs.existsSync(current.hostPath), 'WORKTREE_REMOVE_INCOMPLETE');
+    } else {
+      failClosed(
+        current.state === 'PROVISIONING' && !fs.existsSync(current.hostPath),
+        'WORKTREE_REGISTRY_FILESYSTEM_MISSING',
+      );
+    }
     const parent = path.dirname(current.hostPath);
     for (const runtimeState of ['.agent-harness', '.executions', '.forgeflow-controller']) {
       const candidate = path.join(parent, runtimeState);
       if (fs.existsSync(candidate)) fs.rmSync(candidate, { recursive: true, force: true });
     }
     current = this.repositories.planWorktrees.get(worktreeIdValue);
+    if (current.state === 'PROVISIONING') {
+      const failed = this.repositories.planWorktrees.transition(
+        worktreeIdValue,
+        current.version,
+        'FAILED',
+      );
+      if (!failed.value || failed.status === 'rejected')
+        throw new ForgeFlowError(failed.reason ?? 'WORKTREE_STATE_STALE');
+      current = failed.value;
+    }
     const result = this.repositories.planWorktrees.transition(
       worktreeIdValue,
       current.version,
