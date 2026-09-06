@@ -278,6 +278,66 @@ test('Supervisor retries malformed decisions without poisoning resource health a
     .filter((event) => event.type === 'SUPERVISOR_RESOURCE_FAILED');
   assert.equal(failures.length, 1);
   assert.equal(failures[0]?.payload.failureClass, 'INVALID_DECISION');
+  assert.equal(failures[0]?.payload.failureStage, 'PROTOCOL_VALIDATE');
+  assert.equal(failures[0]?.payload.failureCode, 'DECISION_VERSION_UNSUPPORTED');
+  assert.equal(failures[0]?.payload.projectionDigest, input.projection.digest);
+  assert.equal(failures[0]?.payload.observationCursor, input.projection.cursor);
+  value.db.close();
+});
+
+test('Supervisor durably excludes a malformed resource for the unchanged projection across wakes', async () => {
+  let calls = 0;
+  const value = fixture(
+    [reasoningResource('reasoning-invalid', 10, 'route-reasoning-invalid')],
+    (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{\"not\":\"a decision\"}' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch,
+    3,
+  );
+  await assert.rejects(
+    () => value.client.decide(input),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'SUPERVISOR_RESOURCE_ATTEMPTS_EXHAUSTED',
+  );
+  assert.equal(calls, 1);
+  await assert.rejects(
+    () => value.client.decide(input),
+    (error: unknown) =>
+      error instanceof ForgeFlowError &&
+      error.code === 'SUPERVISOR_RESOURCE_DECISION_QUALITY_EXHAUSTED',
+  );
+  assert.equal(calls, 1);
+  const failed = value.repositories.events
+    .listByAggregate(input.supervisorId)
+    .filter((event) => event.type === 'SUPERVISOR_RESOURCE_FAILED');
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0]?.payload.failureStage, 'PROTOCOL_VALIDATE');
+  assert.equal(failed[0]?.payload.failureCode, 'DECISION_VERSION_UNSUPPORTED');
+  value.db.close();
+});
+
+test('Supervisor records response-shape failures without persisting provider bodies', async () => {
+  const value = fixture(
+    [reasoningResource('reasoning-shape', 10, 'route-reasoning-shape', 'openai-responses')],
+    (async () =>
+      new Response(JSON.stringify({ output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'private-provider-body' }] }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch,
+    1,
+  );
+  await assert.rejects(() => value.client.decide(input), ForgeFlowError);
+  const failed = value.repositories.events
+    .listByAggregate(input.supervisorId)
+    .find((event) => event.type === 'SUPERVISOR_RESOURCE_FAILED');
+  assert.equal(failed?.payload.failureClass, 'INVALID_DECISION');
+  assert.equal(failed?.payload.failureStage, 'RESPONSE_EXTRACT');
+  assert.equal(failed?.payload.failureCode, 'SUPERVISOR_DECISION_INVALID');
+  assert.equal(JSON.stringify(failed).includes('private-provider-body'), false);
   value.db.close();
 });
 

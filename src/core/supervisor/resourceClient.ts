@@ -111,9 +111,15 @@ function extractOpenAIResponsesSupervisorDecision(payload: unknown): string {
   throw new ForgeFlowError('SUPERVISOR_DECISION_INVALID');
 }
 
-function selectionEventPayload(selection: ExecutionResourceSelection, attempt: number) {
+function selectionEventPayload(
+  selection: ExecutionResourceSelection,
+  attempt: number,
+  input: SupervisorDecisionInput,
+) {
   return {
     attempt,
+    observationCursor: input.projection.cursor,
+    projectionDigest: input.projection.digest,
     resourceId: selection.resourceId,
     resourceTier: selection.resourceTier,
     modelFamily: selection.modelFamily,
@@ -160,6 +166,56 @@ export class ResourceSelectedSupervisorDecisionClient implements SupervisorDecis
     });
   }
 
+  private durableInvalidDecisionExclusions(
+    input: SupervisorDecisionInput,
+  ): ResourceSelectionExclusion[] {
+    const values = new Map<string, ResourceSelectionExclusion>();
+    for (const event of this.events.listRecentByAggregate(input.supervisorId, 500)) {
+      if (event.type !== 'SUPERVISOR_RESOURCE_FAILED') continue;
+      const payload =
+        event.payload !== null && typeof event.payload === 'object' && !Array.isArray(event.payload)
+          ? (event.payload as Record<string, unknown>)
+          : {};
+      if (
+        payload.failureClass !== 'INVALID_DECISION' ||
+        payload.projectionDigest !== input.projection.digest ||
+        typeof payload.resourceId !== 'string' ||
+        typeof payload.modelFamily !== 'string'
+      )
+        continue;
+      const value: ResourceSelectionExclusion = {
+        resourceId: payload.resourceId,
+        modelFamily: payload.modelFamily,
+        ...(typeof payload.bindingId === 'string' ? { bindingId: payload.bindingId } : {}),
+      };
+      values.set(
+        [value.resourceId, value.bindingId ?? '', value.modelFamily ?? ''].join('|'),
+        value,
+      );
+    }
+    return [...values.values()];
+  }
+
+  private appendInvalidDecision(
+    input: SupervisorDecisionInput,
+    provenance: Record<string, unknown>,
+    failureStage: 'RESPONSE_JSON' | 'RESPONSE_EXTRACT' | 'PROTOCOL_VALIDATE',
+    error: unknown,
+  ): void {
+    const failureCode =
+      error instanceof ForgeFlowError
+        ? error.code
+        : failureStage === 'RESPONSE_JSON'
+          ? 'SUPERVISOR_RESPONSE_JSON_INVALID'
+          : 'SUPERVISOR_DECISION_INVALID';
+    this.append(input, 'SUPERVISOR_RESOURCE_FAILED', {
+      ...provenance,
+      failureClass: 'INVALID_DECISION',
+      failureStage,
+      failureCode,
+    });
+  }
+
   private async request(
     selection: ExecutionResourceSelection,
     input: SupervisorDecisionInput,
@@ -191,7 +247,8 @@ export class ResourceSelectedSupervisorDecisionClient implements SupervisorDecis
   }
 
   async decide(input: SupervisorDecisionInput): Promise<string> {
-    const priorAttempts: ResourceSelectionExclusion[] = [];
+    const priorAttempts = this.durableInvalidDecisionExclusions(input);
+    const durableInvalidDecisionCount = priorAttempts.length;
     let attempted = 0;
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       const selected = this.selector.select({
@@ -207,7 +264,9 @@ export class ResourceSelectedSupervisorDecisionClient implements SupervisorDecis
       if (selected.status !== 'SELECTED')
         throw new ForgeFlowError(
           attempted === 0
-            ? 'SUPERVISOR_RESOURCE_UNAVAILABLE'
+            ? durableInvalidDecisionCount > 0
+              ? 'SUPERVISOR_RESOURCE_DECISION_QUALITY_EXHAUSTED'
+              : 'SUPERVISOR_RESOURCE_UNAVAILABLE'
             : 'SUPERVISOR_RESOURCE_ATTEMPTS_EXHAUSTED',
         );
       const routeModel = selected.profile.routeModel;
@@ -217,7 +276,7 @@ export class ResourceSelectedSupervisorDecisionClient implements SupervisorDecis
         ['supervisor', input.supervisorId, input.projection.supervisor.observationCursor, attempt].join(':'),
         selected.profile,
       );
-      const provenance = selectionEventPayload(selection, attempt);
+      const provenance = selectionEventPayload(selection, attempt, input);
       this.append(input, 'SUPERVISOR_RESOURCE_SELECTED', provenance);
       priorAttempts.push({
         resourceId: selection.resourceId,
@@ -254,19 +313,29 @@ export class ResourceSelectedSupervisorDecisionClient implements SupervisorDecis
         continue;
       }
 
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        this.appendInvalidDecision(input, provenance, 'RESPONSE_JSON', error);
+        continue;
+      }
+
       let raw: string;
       try {
-        const payload = await response.json();
         raw =
           selection.protocol === 'openai-responses'
             ? extractOpenAIResponsesSupervisorDecision(payload)
             : extractOpenAICompatibleSupervisorDecision(payload);
+      } catch (error) {
+        this.appendInvalidDecision(input, provenance, 'RESPONSE_EXTRACT', error);
+        continue;
+      }
+
+      try {
         parseSupervisorDecision(raw);
-      } catch {
-        this.append(input, 'SUPERVISOR_RESOURCE_FAILED', {
-          ...provenance,
-          failureClass: 'INVALID_DECISION',
-        });
+      } catch (error) {
+        this.appendInvalidDecision(input, provenance, 'PROTOCOL_VALIDATE', error);
         continue;
       }
 

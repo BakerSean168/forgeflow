@@ -93,6 +93,16 @@ function recoverableSupervisorConversationError(error: unknown): string | undefi
   return match?.[0];
 }
 
+const SUPERVISOR_RESOURCE_WAIT_CODES = new Set([
+  'SUPERVISOR_RESOURCE_UNAVAILABLE',
+  'SUPERVISOR_RESOURCE_ATTEMPTS_EXHAUSTED',
+  'SUPERVISOR_RESOURCE_DECISION_QUALITY_EXHAUSTED',
+]);
+
+function shouldWaitForSupervisorResource(error: unknown): boolean {
+  return error instanceof ForgeFlowError && SUPERVISOR_RESOURCE_WAIT_CODES.has(error.code);
+}
+
 export class SupervisorRuntime {
   private cycleRunning = false;
 
@@ -182,7 +192,14 @@ export class SupervisorRuntime {
       return { supervisorId: supervisor.supervisorId, status: result.status === 'SUCCEEDED' || result.status === 'DUPLICATE' ? 'SUCCEEDED' : 'FAILED', code: result.code };
     } catch (error) {
       const current = this.supervisors.getById(request.supervisorId);
-      if (current.status === 'OBSERVING') this.supervisors.updateStatus(current.supervisorId, 'SLEEPING');
+      if (current.status === 'OBSERVING') {
+        if (shouldWaitForSupervisorResource(error)) {
+          this.supervisors.updateStatus(current.supervisorId, 'DIAGNOSING');
+          this.supervisors.updateStatus(current.supervisorId, 'WAITING_FOR_RESOURCE');
+        } else {
+          this.supervisors.updateStatus(current.supervisorId, 'SLEEPING');
+        }
+      }
       this.supervisors.deferWake(request.supervisorId, new Date(Date.now() + Math.min(this.leaseTtlMs, 30_000)).toISOString());
       const code = error instanceof ForgeFlowError ? (error.code + (error.message !== error.code ? ':' + error.message.replace(/[^A-Za-z0-9_.=:-]/g, '_').slice(0, 100) : '')) : error instanceof Error ? error.message.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 120) : 'SUPERVISOR_RUNTIME_FAILED';
       return { supervisorId: request.supervisorId, status: 'FAILED', code };

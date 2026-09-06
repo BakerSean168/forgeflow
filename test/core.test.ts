@@ -97,6 +97,7 @@ test('event append is monotonic, immutable by id and replayable', () => {
   const second = store.append({ eventId: 'event-2', aggregateId: 'plan-1', aggregateType: 'PLAN', type: 'UPDATED', payload: { value: 2 }, occurredAt: new Date().toISOString(), correlationId: 'corr-1' });
   assert.equal(first.sequence, 1);
   assert.equal(second.sequence, 2);
+  assert.deepEqual(store.listRecentByAggregate('plan-1', 1).map((event) => event.eventId), ['event-2']);
   assert.throws(() => store.append({ ...first, eventId: 'event-3' }), (error: unknown) => error instanceof ForgeFlowError && error.code === 'EVENT_SEQUENCE_CONFLICT');
   assert.throws(() => store.append({ ...first }), (error: unknown) => error instanceof ForgeFlowError && error.code === 'DUPLICATE_KEY');
   assert.deepEqual(store.replay('plan-1', 0, (value, event) => value + Number((event.payload as { value: number }).value)), 3);
@@ -605,6 +606,23 @@ test('supervisor runtime releases lease after model failure and can be retried',
   scheduler.schedule({ supervisorId: supervisor.supervisorId, observationCursor: supervisor.observationCursor, reason: 'OPERATOR_REQUEST', requestedAt: new Date().toISOString() });
   assert.equal((await runtime.runOnce())[0]?.status, 'FAILED');
   assert.equal(seeded.repos.supervisors.getById(supervisor.supervisorId).lease, undefined);
+  db.close();
+});
+
+test('supervisor runtime parks exhausted reasoning resources without losing the durable wake', async () => {
+  const db = memory();
+  const seeded = seedPlan(db, 'runtime-resource-wait-plan');
+  const scheduler = new SupervisorWakeScheduler(seeded.repos.supervisors, db);
+  scheduler.schedule({ supervisorId: seeded.supervisor.supervisorId, observationCursor: 0, reason: 'UNKNOWN_FAILURE', requestedAt: new Date().toISOString() });
+  const host = new OpenHandsSupervisorAdapter({ createSupervisorConversation: () => ({ conversationId: 'conversation-resource-wait', replaced: false }), resumeSupervisorConversation: () => ({ conversationId: 'conversation-resource-wait', replaced: false }) });
+  const runtime = new SupervisorRuntime(db, seeded.repos.supervisors, scheduler, host, new SupervisorActionExecutor(seeded.repos.actions, seeded.repos.decisions, {}), { decide: async () => { throw new ForgeFlowError('SUPERVISOR_RESOURCE_DECISION_QUALITY_EXHAUSTED'); } }, 'runtime-resource-wait-owner');
+  const result = await runtime.runOnce();
+  assert.equal(result[0]?.status, 'FAILED');
+  assert.equal(result[0]?.code, 'SUPERVISOR_RESOURCE_DECISION_QUALITY_EXHAUSTED');
+  const supervisor = seeded.repos.supervisors.getById(seeded.supervisor.supervisorId);
+  assert.equal(supervisor.lease, undefined);
+  assert.equal(supervisor.status, 'WAITING_FOR_RESOURCE');
+  assert.ok(Date.parse(supervisor.nextWakeAt) > Date.now());
   db.close();
 });
 
