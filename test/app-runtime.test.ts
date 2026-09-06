@@ -550,6 +550,7 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
       checked: 0,
       ready: 0,
       unready: 0,
+      durableCache: { checked: 0, ready: 0, unready: 0 },
     },
     maxResourceAttempts: 3,
   });
@@ -560,8 +561,14 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
   assert.equal(supervisorAdmission.statusCode, 200);
   assert.deepEqual(supervisorAdmission.json(), {
     enabled: true,
+    demandDriven: true,
+    hasDemand: false,
     summary: { checked: 0, ready: 0, unready: 0 },
     items: [],
+    durableCache: {
+      summary: { checked: 0, ready: 0, unready: 0 },
+      items: [],
+    },
   });
   assert.equal(JSON.stringify(supervisorAdmission.json()).includes('test-litellm-key'), false);
 
@@ -1064,10 +1071,51 @@ test('Supervisor direct admission failure TTL survives control-plane restart wit
     const endpoint = await second.app.inject({ method: 'GET', url: '/api/v1/supervisor-admission' });
     assert.equal(endpoint.statusCode, 200);
     assert.equal(endpoint.json().items[0].errorCode, 'SUPERVISOR_DIRECT_ADMISSION_HTTP_502');
+    assert.equal(endpoint.json().durableCache.items[0].errorCode, 'SUPERVISOR_DIRECT_ADMISSION_HTTP_502');
+    assert.deepEqual(endpoint.json().durableCache.summary, { checked: 1, ready: 0, unready: 1 });
     assert.equal(JSON.stringify(endpoint.json()).includes('private diagnostic'), false);
     assert.equal(JSON.stringify(endpoint.json()).includes('test-litellm-key'), false);
   } finally {
     await second.app.close();
+  }
+
+  const callsBeforeDisabledRead = admissionCalls;
+  const disabled = await buildControlPlane({
+    dbFile,
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env: { ...env, FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED: 'false' },
+  });
+  try {
+    const disabledHealth = await disabled.app.inject({ method: 'GET', url: '/api/health' });
+    assert.equal(disabledHealth.statusCode, 200);
+    assert.deepEqual(disabledHealth.json().supervisorRuntime.directAdmission, {
+      enabled: false,
+      demandDriven: true,
+      hasDemand: true,
+      checked: 0,
+      ready: 0,
+      unready: 0,
+      durableCache: { checked: 1, ready: 0, unready: 1 },
+    });
+    const endpoint = await disabled.app.inject({
+      method: 'GET',
+      url: '/api/v1/supervisor-admission',
+    });
+    assert.equal(endpoint.statusCode, 200);
+    assert.equal(endpoint.json().enabled, false);
+    assert.deepEqual(endpoint.json().summary, { checked: 0, ready: 0, unready: 0 });
+    assert.deepEqual(endpoint.json().items, []);
+    assert.deepEqual(endpoint.json().durableCache.summary, { checked: 1, ready: 0, unready: 1 });
+    assert.equal(endpoint.json().durableCache.items[0].resourceId, 'durable-admission-provider');
+    assert.equal(endpoint.json().durableCache.items[0].errorCode, 'SUPERVISOR_DIRECT_ADMISSION_HTTP_502');
+    assert.equal('admissionKey' in endpoint.json().durableCache.items[0], false);
+    assert.equal(JSON.stringify(endpoint.json()).includes('private diagnostic'), false);
+    assert.equal(JSON.stringify(endpoint.json()).includes('test-litellm-key'), false);
+    assert.equal(admissionCalls, callsBeforeDisabledRead);
+  } finally {
+    await disabled.app.close();
     fs.rmSync(value.root, { recursive: true, force: true });
   }
 });

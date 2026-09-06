@@ -1504,6 +1504,33 @@ export async function buildControlPlane(
     await reconcileSupervisorDirectAdmission();
     return reconcileSupervisorResourceAvailability();
   };
+  const durableSupervisorAdmissionSummary = () => {
+    const items = repositories.supervisorDirectAdmissions.list();
+    return {
+      checked: items.length,
+      ready: items.filter((item) => item.ready).length,
+      unready: items.filter((item) => !item.ready).length,
+    };
+  };
+  const projectSupervisorAdmission = (item: {
+    resourceId: string;
+    bindingId: string;
+    modelFamily: string;
+    routeModel: string;
+    protocol: string;
+    ready: boolean;
+    checkedAt: string;
+    errorCode?: string;
+  }) => ({
+    resourceId: item.resourceId,
+    bindingId: item.bindingId,
+    modelFamily: item.modelFamily,
+    routeModel: item.routeModel,
+    protocol: item.protocol,
+    ready: item.ready,
+    checkedAt: item.checkedAt,
+    errorCode: item.errorCode ?? null,
+  });
   const affinityEntries = [
     ...DEFAULT_AFFINITY_POLICY.capabilities.IMPLEMENTATION,
     ...DEFAULT_AFFINITY_POLICY.capabilities.REASONING,
@@ -1612,6 +1639,7 @@ export async function buildControlPlane(
         demandDriven: true,
         hasDemand: repositories.supervisors.hasNonTerminal(),
         ...supervisorDirectAdmission.summary(),
+        durableCache: durableSupervisorAdmissionSummary(),
       },
       maxResourceAttempts: supervisorMaxResourceAttempts,
     },
@@ -1750,20 +1778,24 @@ export async function buildControlPlane(
     cleanup: await runWorkspaceStorageMaintenance(),
   }));
 
-  app.get('/api/v1/supervisor-admission', async () => ({
-    enabled: supervisorDirectAdmissionEnabled,
-    summary: supervisorDirectAdmission.summary(),
-    items: supervisorDirectAdmission.list().map((item) => ({
-      resourceId: item.resourceId,
-      bindingId: item.bindingId,
-      modelFamily: item.modelFamily,
-      routeModel: item.routeModel,
-      protocol: item.protocol,
-      ready: item.ready,
-      checkedAt: item.checkedAt,
-      errorCode: item.errorCode ?? null,
-    })),
-  }));
+  app.get('/api/v1/supervisor-admission', async () => {
+    const durableItems = repositories.supervisorDirectAdmissions.list();
+    return {
+      enabled: supervisorDirectAdmissionEnabled,
+      demandDriven: true,
+      hasDemand: repositories.supervisors.hasNonTerminal(),
+      summary: supervisorDirectAdmission.summary(),
+      items: supervisorDirectAdmission.list().map(projectSupervisorAdmission),
+      durableCache: {
+        summary: {
+          checked: durableItems.length,
+          ready: durableItems.filter((item) => item.ready).length,
+          unready: durableItems.filter((item) => !item.ready).length,
+        },
+        items: durableItems.map(projectSupervisorAdmission),
+      },
+    };
+  });
 
   app.get('/api/v1/runtime-admission', async () => {
     const runtime = requireAutomation();

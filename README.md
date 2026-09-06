@@ -39,7 +39,7 @@ A bounded AI Supervisor observes durable state and handles exceptional cases suc
 - **Durable before conversational** — the database, not chat history, is the source of truth.
 - **Single-writer safety** — one mutable writer owns a worktree at a time.
 - **Exact-revision review** — implementation and review are separate phases with immutable Git provenance.
-- **Evidence over claims** — tests, commits, reviews, CI, merges, and releases are accepted only from verifiable evidence.
+- **Evidence over claims** — tests, commits, reviews, CI, merges, releases, and sanitized Supervisor admission diagnostics remain inspectable as durable evidence rather than ephemeral process state.
 - **Resource-aware execution** — models/providers are selected through a governed resource directory rather than hard-coded attempt ladders; transient recovery must pass a protocol-correct health probe before a resource re-enters selection, and paid Supervisor admission probes run only while non-terminal Supervisor demand exists.
 - **Bounded intelligence** — AI may diagnose and propose typed actions; Supervisor reasoning must pass its own exact direct-protocol admission and cannot bypass deterministic safety gates.
 - **Recoverable execution** — retries, process restarts, provider failures, and interrupted sessions preserve durable lineage; Supervisor direct-admission TTLs survive restart, and resource recovery wakes parked Supervisors through durable events with a bounded watchdog fallback.
