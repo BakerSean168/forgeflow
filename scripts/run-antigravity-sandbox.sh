@@ -51,7 +51,7 @@ if [[ ! -d "$auth" ]]; then
   exit 66
 fi
 
-stash="$(mktemp -d /run/hermes-antigravity.XXXXXX)"
+stash="$(mktemp -d /run/forgeflow-antigravity.XXXXXX)"
 mkdir -p "$stash/workspace" "$stash/auth"
 touch "$stash/agy"
 mount --bind "$workspace" "$stash/workspace"
@@ -100,7 +100,7 @@ mount --bind "$stash/auth" "$home/.gemini/antigravity-cli"
 mount --bind "$stash/agy" "$home/.local/bin/agy"
 mount -o remount,bind,ro "$home/.local/bin/agy"
 
-# Hide every other AI Office workspace. Re-bind exactly one execution workspace at
+# Hide every other ForgeFlow workspace. Re-bind exactly one execution workspace at
 # the same absolute path so tools that honor cwd cannot escape into sibling runs.
 workspace_relative="${workspace#"$workspace_root"/}"
 mount -t tmpfs -o mode=0755 tmpfs "$workspace_root"

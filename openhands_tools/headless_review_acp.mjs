@@ -6,52 +6,52 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 
-const DRIVER = process.env.AI_OFFICE_HEADLESS_DRIVER ?? '';
-const DEFAULT_MODEL = process.env.AI_OFFICE_HEADLESS_MODEL ?? 'gpt-5.6-sol';
-const LITELLM_BASE_URL = (process.env.AI_OFFICE_LITELLM_BASE_URL ?? '').replace(/\/$/, '');
-const LITELLM_API_KEY = process.env.AI_OFFICE_LITELLM_API_KEY ?? '';
-const HEADLESS_TRANSPORT = process.env.AI_OFFICE_HEADLESS_TRANSPORT ?? 'litellm-managed';
-const HEADLESS_ROLE = process.env.AI_OFFICE_HEADLESS_ROLE ?? 'review';
+const DRIVER = process.env.FORGEFLOW_HEADLESS_DRIVER ?? '';
+const DEFAULT_MODEL = process.env.FORGEFLOW_HEADLESS_MODEL ?? 'gpt-5.6-sol';
+const LITELLM_BASE_URL = (process.env.FORGEFLOW_LITELLM_BASE_URL ?? '').replace(/\/$/, '');
+const LITELLM_API_KEY = process.env.FORGEFLOW_LITELLM_API_KEY ?? '';
+const HEADLESS_TRANSPORT = process.env.FORGEFLOW_HEADLESS_TRANSPORT ?? 'litellm-managed';
+const HEADLESS_ROLE = process.env.FORGEFLOW_HEADLESS_ROLE ?? 'review';
 const IS_WORKER = HEADLESS_ROLE === 'worker';
 const IS_PLANNER = HEADLESS_ROLE === 'planner';
 const HEADLESS_REASONING_EFFORT =
-  process.env.AI_OFFICE_HEADLESS_REASONING_EFFORT ?? (IS_WORKER ? 'xhigh' : 'medium');
-const EXPECTED_GIT_COMMON_DIR = process.env.AI_OFFICE_EXPECTED_GIT_COMMON_DIR ?? '';
-const EXPECTED_WORKTREE_GIT_FILE = process.env.AI_OFFICE_EXPECTED_WORKTREE_GIT_FILE ?? '';
-const CODEX_AUTH_HOME = process.env.AI_OFFICE_CODEX_AUTH_HOME ?? '';
-const HARNESS_CTL = process.env.AI_OFFICE_HARNESS_CTL ?? '/opt/agent-harness/bin/harnessctl.py';
+  process.env.FORGEFLOW_HEADLESS_REASONING_EFFORT ?? (IS_WORKER ? 'xhigh' : 'medium');
+const EXPECTED_GIT_COMMON_DIR = process.env.FORGEFLOW_EXPECTED_GIT_COMMON_DIR ?? '';
+const EXPECTED_WORKTREE_GIT_FILE = process.env.FORGEFLOW_EXPECTED_WORKTREE_GIT_FILE ?? '';
+const CODEX_AUTH_HOME = process.env.FORGEFLOW_CODEX_AUTH_HOME ?? '';
+const HARNESS_CTL = process.env.FORGEFLOW_HARNESS_CTL ?? '/opt/agent-harness/bin/harnessctl.py';
 const HARNESS_PROFILE =
-  process.env.AI_OFFICE_HARNESS_PROFILE ??
+  process.env.FORGEFLOW_HARNESS_PROFILE ??
   (HEADLESS_ROLE === 'review' ? 'openhands-review' : 'openhands');
 const CODEX_BIN =
-  process.env.AI_OFFICE_CODEX_BIN ?? '/openhands-state/tooling/node_modules/.bin/codex';
+  process.env.FORGEFLOW_CODEX_BIN ?? '/openhands-state/tooling/node_modules/.bin/codex';
 const CLAUDE_BIN =
-  process.env.AI_OFFICE_CLAUDE_BIN ?? '/openhands-state/tooling/node_modules/.bin/claude';
-const WORKSPACE_ROOT = path.resolve(process.env.AI_OFFICE_WORKSPACE_ROOT ?? '/workspace');
+  process.env.FORGEFLOW_CLAUDE_BIN ?? '/openhands-state/tooling/node_modules/.bin/claude';
+const WORKSPACE_ROOT = path.resolve(process.env.FORGEFLOW_WORKSPACE_ROOT ?? '/workspace');
 const STATE_ROOT = path.resolve(
-  process.env.AI_OFFICE_HEADLESS_STATE_ROOT ?? '/openhands-state/ai-office-headless-review',
+  process.env.FORGEFLOW_HEADLESS_STATE_ROOT ?? '/openhands-state/forgeflow-headless',
 );
 const TIMEOUT_MS = Math.max(
   30_000,
-  Math.min(30 * 60_000, Number(process.env.AI_OFFICE_HEADLESS_TIMEOUT_SECONDS ?? '900') * 1000),
+  Math.min(30 * 60_000, Number(process.env.FORGEFLOW_HEADLESS_TIMEOUT_SECONDS ?? '900') * 1000),
 );
 const HEARTBEAT_MS = 15_000;
 const IDLE_EXIT_MS = Math.max(
   30_000,
-  Math.min(15 * 60_000, Number(process.env.AI_OFFICE_HEADLESS_IDLE_EXIT_SECONDS ?? '120') * 1000),
+  Math.min(15 * 60_000, Number(process.env.FORGEFLOW_HEADLESS_IDLE_EXIT_SECONDS ?? '120') * 1000),
 );
 let idleExitTimer;
 const OUTPUT_LIMIT = 16 * 1024 * 1024;
 const EVIDENCE_LIMIT = 768 * 1024;
 const UNTRACKED_FILE_LIMIT = 128 * 1024;
 const MAX_UNTRACKED_FILES = 80;
-const PIXEL_V4_REVIEW_EVIDENCE_PATH = process.env.PIXEL_V4_REVIEW_EVIDENCE_PATH ?? '';
-const PIXEL_V4_IMPLEMENTATION_EVIDENCE_PATH =
-  process.env.PIXEL_V4_IMPLEMENTATION_EVIDENCE_PATH ?? '';
-const PIXEL_V4_EXECUTION_ID = process.env.PIXEL_V4_EXECUTION_ID ?? '';
-const PIXEL_V4_REVIEWED_SHA = process.env.PIXEL_V4_REVIEWED_SHA ?? '';
-const PIXEL_V4_SOURCE_SHA = process.env.PIXEL_V4_SOURCE_SHA ?? '';
-const PIXEL_V4_IMPLEMENTATION_PHASE = process.env.PIXEL_V4_IMPLEMENTATION_PHASE ?? 'IMPLEMENT';
+const FORGEFLOW_REVIEW_EVIDENCE_PATH = process.env.FORGEFLOW_REVIEW_EVIDENCE_PATH ?? '';
+const FORGEFLOW_IMPLEMENTATION_EVIDENCE_PATH =
+  process.env.FORGEFLOW_IMPLEMENTATION_EVIDENCE_PATH ?? '';
+const FORGEFLOW_EXECUTION_ID = process.env.FORGEFLOW_EXECUTION_ID ?? '';
+const FORGEFLOW_REVIEWED_SHA = process.env.FORGEFLOW_REVIEWED_SHA ?? '';
+const FORGEFLOW_SOURCE_SHA = process.env.FORGEFLOW_SOURCE_SHA ?? '';
+const FORGEFLOW_IMPLEMENTATION_PHASE = process.env.FORGEFLOW_IMPLEMENTATION_PHASE ?? 'IMPLEMENT';
 
 const REVIEW_SCHEMA = {
   type: 'object',
@@ -94,7 +94,7 @@ function redact(value) {
   let text = String(value ?? '');
   for (const secret of [
     LITELLM_API_KEY,
-    process.env.AI_OFFICE_LITELLM_API_KEY,
+    process.env.FORGEFLOW_LITELLM_API_KEY,
     process.env.DEEPSEEK_API_KEY,
     process.env.ZCODE_API_KEY,
     process.env.SESSION_API_KEY,
@@ -134,9 +134,9 @@ function assertWorkspace(cwd) {
 
 function prepareHarness(session, host) {
   if (!fs.existsSync(HARNESS_CTL)) throw new Error('HEADLESS_REVIEW_HARNESS_MISSING');
-  const executionId = String(process.env.HERMES_V3_EXECUTION_ID ?? '');
+  const executionId = String(process.env.FORGEFLOW_EXECUTION_ID ?? '');
   const literal =
-    /^\/workspace\/v4\/plans\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/(?:items|reviews|repairs)\/[A-Za-z0-9._-]+\/repo$/.test(
+    /^\/workspace\/forgeflow\/plans\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/(?:items|reviews|repairs)\/[A-Za-z0-9._-]+\/repo$/.test(
       session.cwd,
     );
   if (literal && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(executionId))
@@ -305,18 +305,18 @@ function codexWritableArgs(session, harness) {
 function collectEvidence(cwd) {
   const sections = [];
   const implementationHead = git(cwd, ['rev-parse', 'HEAD']).trim();
-  const reviewBase = optionalGit(cwd, ['rev-parse', '--verify', 'refs/ai-office/review-base']);
+  const reviewBase = optionalGit(cwd, ['rev-parse', '--verify', 'refs/forgeflow/review-base']);
 
   sections.push(`IMPLEMENTATION HEAD:\n${implementationHead}`);
   if (reviewBase) {
-    sections.push(`ORIGINAL IMPLEMENTATION BASE (refs/ai-office/review-base):\n${reviewBase}`);
+    sections.push(`ORIGINAL IMPLEMENTATION BASE (refs/forgeflow/review-base):\n${reviewBase}`);
     sections.push(
       `COMMITTED IMPLEMENTATION DIFF AGAINST REVIEW BASE:\n${
         git(cwd, [
           'diff',
           '--no-ext-diff',
           '--unified=60',
-          'refs/ai-office/review-base..HEAD',
+          'refs/forgeflow/review-base..HEAD',
           '--',
           '.',
         ]) || '(no committed implementation diff)\n'
@@ -324,7 +324,7 @@ function collectEvidence(cwd) {
     );
     sections.push(
       `COMMITTED DIFF CHECK:\n${
-        git(cwd, ['diff', '--check', 'refs/ai-office/review-base..HEAD', '--', '.']) ||
+        git(cwd, ['diff', '--check', 'refs/forgeflow/review-base..HEAD', '--', '.']) ||
         'PASS (git diff --check exited 0)\n'
       }`,
     );
@@ -586,11 +586,11 @@ function normalizedReviewChecks(value, stdout) {
   return normalized.length ? normalized : successfulCodexChecks(stdout);
 }
 
-function assertPixelV4EvidenceTarget(session, target, code) {
+function assertForgeFlowEvidenceTarget(session, target, code) {
   const executionRoot = path.dirname(session.cwd);
   const legacyTarget = path.join(executionRoot, 'completion-evidence.json');
-  const literalTarget = PIXEL_V4_EXECUTION_ID
-    ? path.join(executionRoot, '.executions', PIXEL_V4_EXECUTION_ID, 'completion-evidence.json')
+  const literalTarget = FORGEFLOW_EXECUTION_ID
+    ? path.join(executionRoot, '.executions', FORGEFLOW_EXECUTION_ID, 'completion-evidence.json')
     : '';
   if (
     path.basename(target) !== 'completion-evidence.json' ||
@@ -600,40 +600,40 @@ function assertPixelV4EvidenceTarget(session, target, code) {
   }
 }
 
-function writePixelV4ImplementationEvidence(session, summary, stdout) {
-  if (!PIXEL_V4_IMPLEMENTATION_EVIDENCE_PATH) return;
-  if (!PIXEL_V4_EXECUTION_ID || !PIXEL_V4_SOURCE_SHA) {
-    throw new Error('PIXEL_V4_IMPLEMENTATION_EVIDENCE_METADATA_MISSING');
+function writeForgeFlowImplementationEvidence(session, summary, stdout) {
+  if (!FORGEFLOW_IMPLEMENTATION_EVIDENCE_PATH) return;
+  if (!FORGEFLOW_EXECUTION_ID || !FORGEFLOW_SOURCE_SHA) {
+    throw new Error('FORGEFLOW_IMPLEMENTATION_EVIDENCE_METADATA_MISSING');
   }
   if (
-    PIXEL_V4_IMPLEMENTATION_PHASE !== 'IMPLEMENT' &&
-    PIXEL_V4_IMPLEMENTATION_PHASE !== 'IMPLEMENT_FIX'
+    FORGEFLOW_IMPLEMENTATION_PHASE !== 'IMPLEMENT' &&
+    FORGEFLOW_IMPLEMENTATION_PHASE !== 'IMPLEMENT_FIX'
   ) {
-    throw new Error('PIXEL_V4_IMPLEMENTATION_PHASE_INVALID');
+    throw new Error('FORGEFLOW_IMPLEMENTATION_PHASE_INVALID');
   }
-  const target = path.resolve(PIXEL_V4_IMPLEMENTATION_EVIDENCE_PATH);
-  assertPixelV4EvidenceTarget(session, target, 'PIXEL_V4_IMPLEMENTATION_EVIDENCE_PATH_INVALID');
+  const target = path.resolve(FORGEFLOW_IMPLEMENTATION_EVIDENCE_PATH);
+  assertForgeFlowEvidenceTarget(session, target, 'FORGEFLOW_IMPLEMENTATION_EVIDENCE_PATH_INVALID');
   const status = git(session.cwd, ['status', '--porcelain=v1', '-z']);
-  if (status.length > 0) throw new Error('PIXEL_V4_IMPLEMENTATION_WORKSPACE_DIRTY');
+  if (status.length > 0) throw new Error('FORGEFLOW_IMPLEMENTATION_WORKSPACE_DIRTY');
   const resultRevision = git(session.cwd, ['rev-parse', '--verify', 'HEAD^{commit}']).trim();
-  if (!/^[0-9a-f]{7,64}$/i.test(PIXEL_V4_SOURCE_SHA))
-    throw new Error('PIXEL_V4_IMPLEMENTATION_SOURCE_SHA_INVALID');
+  if (!/^[0-9a-f]{7,64}$/i.test(FORGEFLOW_SOURCE_SHA))
+    throw new Error('FORGEFLOW_IMPLEMENTATION_SOURCE_SHA_INVALID');
   const sourceRevision = git(session.cwd, [
     'rev-parse',
     '--verify',
-    `${PIXEL_V4_SOURCE_SHA}^{commit}`,
+    `${FORGEFLOW_SOURCE_SHA}^{commit}`,
   ]).trim();
   if (resultRevision !== sourceRevision)
     git(session.cwd, ['merge-base', '--is-ancestor', sourceRevision, resultRevision]);
   const tests = successfulCodexChecks(stdout);
   if (!tests.some((item) => item.status === 'PASS')) {
-    throw new Error('PIXEL_V4_IMPLEMENTATION_TEST_EVIDENCE_MISSING');
+    throw new Error('FORGEFLOW_IMPLEMENTATION_TEST_EVIDENCE_MISSING');
   }
   const outcome = resultRevision === sourceRevision ? 'SATISFIED' : 'CHANGED';
   const evidence = {
     version: 1,
-    executionId: PIXEL_V4_EXECUTION_ID,
-    phase: PIXEL_V4_IMPLEMENTATION_PHASE,
+    executionId: FORGEFLOW_EXECUTION_ID,
+    phase: FORGEFLOW_IMPLEMENTATION_PHASE,
     sourceRevision,
     resultRevision,
     outcome,
@@ -654,28 +654,28 @@ function writePixelV4ImplementationEvidence(session, summary, stdout) {
   fs.renameSync(temporary, target);
 }
 
-function isPixelV4ImplementationFinalizationError(error) {
+function isForgeFlowImplementationFinalizationError(error) {
   const message = error instanceof Error ? error.message : String(error ?? '');
   return (
-    message === 'PIXEL_V4_IMPLEMENTATION_WORKSPACE_DIRTY' ||
-    message === 'PIXEL_V4_IMPLEMENTATION_TEST_EVIDENCE_MISSING'
+    message === 'FORGEFLOW_IMPLEMENTATION_WORKSPACE_DIRTY' ||
+    message === 'FORGEFLOW_IMPLEMENTATION_TEST_EVIDENCE_MISSING'
   );
 }
 
-function writePixelV4ReviewEvidence(session, value, stdout) {
-  if (!PIXEL_V4_REVIEW_EVIDENCE_PATH) return;
-  if (!PIXEL_V4_EXECUTION_ID || !PIXEL_V4_REVIEWED_SHA) {
-    throw new Error('PIXEL_V4_REVIEW_EVIDENCE_METADATA_MISSING');
+function writeForgeFlowReviewEvidence(session, value, stdout) {
+  if (!FORGEFLOW_REVIEW_EVIDENCE_PATH) return;
+  if (!FORGEFLOW_EXECUTION_ID || !FORGEFLOW_REVIEWED_SHA) {
+    throw new Error('FORGEFLOW_REVIEW_EVIDENCE_METADATA_MISSING');
   }
-  const target = path.resolve(PIXEL_V4_REVIEW_EVIDENCE_PATH);
-  assertPixelV4EvidenceTarget(session, target, 'PIXEL_V4_REVIEW_EVIDENCE_PATH_INVALID');
+  const target = path.resolve(FORGEFLOW_REVIEW_EVIDENCE_PATH);
+  assertForgeFlowEvidenceTarget(session, target, 'FORGEFLOW_REVIEW_EVIDENCE_PATH_INVALID');
   const checks = normalizedReviewChecks(value, stdout);
   if (
     value?.verdict === 'PASS' &&
     (!checks.some((item) => item.status === 'PASS') ||
       checks.some((item) => item.status === 'FAIL'))
   ) {
-    throw new Error('PIXEL_V4_REVIEW_CHECK_EVIDENCE_INVALID');
+    throw new Error('FORGEFLOW_REVIEW_CHECK_EVIDENCE_INVALID');
   }
   const findings = Array.isArray(value?.findings)
     ? value.findings
@@ -692,9 +692,9 @@ function writePixelV4ReviewEvidence(session, value, stdout) {
     : [];
   const evidence = {
     version: 1,
-    executionId: PIXEL_V4_EXECUTION_ID,
+    executionId: FORGEFLOW_EXECUTION_ID,
     phase: 'REVIEW',
-    reviewedSha: PIXEL_V4_REVIEWED_SHA,
+    reviewedSha: FORGEFLOW_REVIEWED_SHA,
     verdict: value.verdict,
     findings,
     checks,
@@ -750,18 +750,18 @@ function codexCommand(session, prompt, evidence) {
       configPath,
       [
         `model = ${JSON.stringify(session.model)}`,
-        'model_provider = "hermes-litellm"',
+        'model_provider = "forgeflow-litellm"',
         `model_reasoning_effort = ${JSON.stringify(HEADLESS_REASONING_EFFORT)}`,
         'model_verbosity = "high"',
         'approval_policy = "never"',
         'sandbox_mode = "workspace-write"',
-        '[model_providers.hermes-litellm]',
-        'name = "Hermes LiteLLM"',
+        '[model_providers.forgeflow-litellm]',
+        'name = "ForgeFlow LiteLLM"',
         `base_url = ${JSON.stringify(baseUrl)}`,
         'env_key = "CODEX_API_KEY"',
         'wire_api = "responses"',
-        '[model_providers.hermes-litellm.env_http_headers]',
-        '"X-LiteLLM-End-User-ID" = "HERMES_V3_EXECUTION_ID"',
+        '[model_providers.forgeflow-litellm.env_http_headers]',
+        '"X-LiteLLM-End-User-ID" = "FORGEFLOW_EXECUTION_ID"',
         '[features]',
         'unified_exec = false',
         'multi_agent = false',
@@ -785,10 +785,10 @@ function codexCommand(session, prompt, evidence) {
   }
 
   if (IS_WORKER) {
-    const pixelV4EvidenceNote = PIXEL_V4_IMPLEMENTATION_EVIDENCE_PATH
-      ? `\n\nPixel V4 controller note: the outer headless adapter, not this Codex sandbox, persists ${PIXEL_V4_IMPLEMENTATION_EVIDENCE_PATH} after validating your committed HEAD, clean workspace, and command evidence. Do NOT attempt to write that controller-owned evidence path yourself. This note overrides any earlier instruction asking you to write the V4 completion-evidence file directly.`
+    const forgeFlowEvidenceNote = FORGEFLOW_IMPLEMENTATION_EVIDENCE_PATH
+      ? `\n\nForgeFlow controller note: the outer headless adapter, not this Codex sandbox, persists ${FORGEFLOW_IMPLEMENTATION_EVIDENCE_PATH} after validating your committed HEAD, clean workspace, and command evidence. Do NOT attempt to write that controller-owned evidence path yourself. This note overrides any earlier instruction asking you to write the ForgeFlow completion-evidence file directly.`
       : '';
-    const workerPrompt = `${prompt}\n\nYou are the implementation worker. Work directly in the current repository and complete the requested change, not merely analyze it. Inspect the relevant repository instructions, active plan, code, and tests; preserve existing contracts outside scope; implement the acceptance criteria; run focused verification first and then the appropriate wider checks. Commit the completed change with a concise conventional commit and leave the workspace clean. Do not wait for human confirmation for ordinary implementation choices. If a genuine external blocker remains, report the exact blocker and the evidence you collected.${pixelV4EvidenceNote}`;
+    const workerPrompt = `${prompt}\n\nYou are the implementation worker. Work directly in the current repository and complete the requested change, not merely analyze it. Inspect the relevant repository instructions, active plan, code, and tests; preserve existing contracts outside scope; implement the acceptance criteria; run focused verification first and then the appropriate wider checks. Commit the completed change with a concise conventional commit and leave the workspace clean. Do not wait for human confirmation for ordinary implementation choices. If a genuine external blocker remains, report the exact blocker and the evidence you collected.${forgeFlowEvidenceNote}`;
     return {
       command: CODEX_BIN,
       args: [
@@ -842,10 +842,10 @@ function codexCommand(session, prompt, evidence) {
   const schemaPath = path.join(sessionDir, 'review-schema.json');
   fs.writeFileSync(schemaPath, JSON.stringify(REVIEW_SCHEMA), { mode: 0o600 });
   const lastMessage = path.join(sessionDir, 'codex-last-message.json');
-  const pixelV4EvidenceNote = PIXEL_V4_REVIEW_EVIDENCE_PATH
-    ? `\n\nPixel V4 controller note: the outer headless adapter, not this Codex sandbox, persists ${PIXEL_V4_REVIEW_EVIDENCE_PATH} from your structured response. Do NOT attempt to write that controller-owned evidence path yourself, and do not treat inability to write it as a finding or environment failure. This note overrides any earlier instruction asking you to write the V4 completion-evidence file directly.`
+  const forgeFlowEvidenceNote = FORGEFLOW_REVIEW_EVIDENCE_PATH
+    ? `\n\nForgeFlow controller note: the outer headless adapter, not this Codex sandbox, persists ${FORGEFLOW_REVIEW_EVIDENCE_PATH} from your structured response. Do NOT attempt to write that controller-owned evidence path yourself, and do not treat inability to write it as a finding or environment failure. This note overrides any earlier instruction asking you to write the ForgeFlow completion-evidence file directly.`
     : '';
-  const reviewPrompt = `${prompt}\n\nFrozen Git evidence captured by AI Office before the reviewer starts:\n\n${evidence}\n\nBefore returning a verdict, you MUST independently inspect repository files and execute at least one focused verification command using terminal tools. When the output schema exposes a checks field, record the exact focused verification commands you ran, their real exit codes, and concise results. Do not return FAIL merely because verification has not yet been attempted. The frozen evidence is a starting point, not a substitute for independent inspection. Keep tracked repository files unchanged. Verification may create ignored dependency or tool-cache artifacts in the supplied workspace when the sandbox permits it; only use a disposable /tmp copy if a required check truly cannot run without tracked writes. Do not modify tracked snapshot content.${pixelV4EvidenceNote}`;
+  const reviewPrompt = `${prompt}\n\nFrozen Git evidence captured by ForgeFlow before the reviewer starts:\n\n${evidence}\n\nBefore returning a verdict, you MUST independently inspect repository files and execute at least one focused verification command using terminal tools. When the output schema exposes a checks field, record the exact focused verification commands you ran, their real exit codes, and concise results. Do not return FAIL merely because verification has not yet been attempted. The frozen evidence is a starting point, not a substitute for independent inspection. Keep tracked repository files unchanged. Verification may create ignored dependency or tool-cache artifacts in the supplied workspace when the sandbox permits it; only use a disposable /tmp copy if a required check truly cannot run without tracked writes. Do not modify tracked snapshot content.${forgeFlowEvidenceNote}`;
   return {
     command: CODEX_BIN,
     args: [
@@ -877,7 +877,7 @@ function codexCommand(session, prompt, evidence) {
 function claudeCommand(session, prompt, evidence) {
   const harness = prepareHarness(session, 'claude');
   const claudeRoot = path.join(harness.root, 'claude');
-  const reviewPrompt = `${prompt}\n\nFrozen Git evidence captured by AI Office before the reviewer starts:\n\n${evidence}\n\nBefore returning a verdict, you MUST independently inspect repository files and execute at least one focused verification command using terminal tools. Do not return FAIL merely because verification has not yet been attempted. The frozen evidence is a starting point, not a substitute for independent inspection. Keep tracked repository files unchanged. Verification may create ignored dependency or tool-cache artifacts in the supplied workspace when the sandbox permits it; only use a disposable /tmp copy if a required check truly cannot run without tracked writes. Do not modify tracked snapshot content.`;
+  const reviewPrompt = `${prompt}\n\nFrozen Git evidence captured by ForgeFlow before the reviewer starts:\n\n${evidence}\n\nBefore returning a verdict, you MUST independently inspect repository files and execute at least one focused verification command using terminal tools. Do not return FAIL merely because verification has not yet been attempted. The frozen evidence is a starting point, not a substitute for independent inspection. Keep tracked repository files unchanged. Verification may create ignored dependency or tool-cache artifacts in the supplied workspace when the sandbox permits it; only use a disposable /tmp copy if a required check truly cannot run without tracked writes. Do not modify tracked snapshot content.`;
   return {
     command: CLAUDE_BIN,
     args: [
@@ -911,8 +911,8 @@ function claudeCommand(session, prompt, evidence) {
       CLAUDE_CODE_SUBAGENT_MODEL: session.model,
       ANTHROPIC_CUSTOM_HEADERS: [
         process.env.ANTHROPIC_CUSTOM_HEADERS ?? '',
-        process.env.HERMES_V3_EXECUTION_ID
-          ? `X-LiteLLM-End-User-ID: ${process.env.HERMES_V3_EXECUTION_ID}`
+        process.env.FORGEFLOW_EXECUTION_ID
+          ? `X-LiteLLM-End-User-ID: ${process.env.FORGEFLOW_EXECUTION_ID}`
           : '',
       ]
         .filter(Boolean)
@@ -1177,13 +1177,13 @@ class HeadlessReviewAgent {
       let evidenceStdout = result.stdout;
       if (IS_WORKER) {
         try {
-          writePixelV4ImplementationEvidence(session, parsed, evidenceStdout);
+          writeForgeFlowImplementationEvidence(session, parsed, evidenceStdout);
         } catch (error) {
-          if (!isPixelV4ImplementationFinalizationError(error)) throw error;
+          if (!isForgeFlowImplementationFinalizationError(error)) throw error;
           const finalizationPrompt = [
             prompt,
             '',
-            'Pixel V4 controller finalization retry:',
+            'ForgeFlow controller finalization retry:',
             '- The first implementation turn returned before deterministic completion verification passed.',
             '- Preserve the intended current workspace changes; do not reset or discard them.',
             '- Inspect the current diff, run the focused checks for the original objective, commit every intended tracked change, and verify git status is clean.',
@@ -1218,10 +1218,10 @@ class HeadlessReviewAgent {
           }
           parsed = finalizationSpec.parse(finalizationResult.stdout);
           evidenceStdout = `${evidenceStdout}\n${finalizationResult.stdout}`;
-          writePixelV4ImplementationEvidence(session, parsed, evidenceStdout);
+          writeForgeFlowImplementationEvidence(session, parsed, evidenceStdout);
         }
       } else if (!IS_PLANNER) {
-        writePixelV4ReviewEvidence(session, parsed, result.stdout);
+        writeForgeFlowReviewEvidence(session, parsed, result.stdout);
       }
       const canonical =
         IS_WORKER || IS_PLANNER ? redact(String(parsed).trim()) : canonicalReview(parsed);
@@ -1290,7 +1290,7 @@ const stream = acp.ndJsonStream(input, output);
 const agent = new HeadlessReviewAgent();
 acp
   .agent({
-    name: `ai-office-${DRIVER || 'headless'}-${IS_WORKER ? 'worker' : IS_PLANNER ? 'planner' : 'review'}`,
+    name: `forgeflow-${DRIVER || 'headless'}-${IS_WORKER ? 'worker' : IS_PLANNER ? 'planner' : 'review'}`,
   })
   .onRequest('initialize', (ctx) => agent.initialize(ctx.params))
   .onRequest('session/new', (ctx) => agent.newSession(ctx.params))

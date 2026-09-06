@@ -1,25 +1,84 @@
 # ForgeFlow
 
-**ForgeFlow** is an autonomous software engineering system.
+**ForgeFlow** is a headless autonomous software engineering control plane.
 
-It accepts a software-engineering objective and owns the durable path from planning through implementation, independent review, repair, integration, delivery, recovery, and continuous improvement.
+Give ForgeFlow an engineering objective. It turns that objective into a durable plan, executes dependency-ready work in isolated workspaces, independently reviews exact revisions, repairs failed work, integrates accepted changes, and closes delivery through real repository and CI evidence.
 
-## Product boundary
+ForgeFlow is designed for long-running software work where correctness, recoverability, provenance, and controlled autonomy matter more than a single model response.
 
-ForgeFlow is intentionally headless. It is **not** a pixel-art visualization, virtual office, employee/workforce simulator, or VS Code decoration layer.
+## Engineering loop
 
-The v1 product consists of:
+```text
+Objective
+  -> Plan / dependency graph
+  -> Implementation
+  -> Exact-revision independent review
+  -> Repair + re-review when needed
+  -> Integration
+  -> CI / delivery verification
+  -> Complete
+```
 
-- a durable Plan and work-graph engine;
-- an AI Supervisor for diagnosis, replanning, and exceptional recovery;
-- isolated execution/worktree management;
-- model/provider resource selection and bounded fallback;
-- exact-revision independent review and repair loops;
-- deterministic integration, CI, PR, merge, and delivery governance;
-- system-repair child plans and a bounded self-improvement pipeline.
+A bounded AI Supervisor observes durable state and handles exceptional cases such as replanning the remaining graph, changing an execution route, creating a repair/follow-up plan, or escalating a genuine external gate. Deterministic code retains authority over state transitions, leases, workspace ownership, review provenance, and delivery safety.
 
-## v1 migration status
+## V1 principles
 
-This repository was bootstrapped from the proven Pixel Agent V4 control-plane kernel. Migration work removes legacy naming and infrastructure coupling while preserving tested execution, provenance, review, and safety invariants.
+- **Headless by default** — the product surface is plans, executions, reviews, repairs, resources, incidents, and deliveries.
+- **Durable before conversational** — the database, not chat history, is the source of truth.
+- **Single-writer safety** — one mutable writer owns a worktree at a time.
+- **Exact-revision review** — implementation and review are separate phases with immutable Git provenance.
+- **Evidence over claims** — tests, commits, reviews, CI, merges, and releases are accepted only from verifiable evidence.
+- **Resource-aware execution** — models/providers are selected through a governed resource directory rather than hard-coded attempt ladders.
+- **Bounded intelligence** — AI may diagnose and propose typed actions; it does not bypass deterministic safety gates.
+- **Recoverable execution** — retries, process restarts, provider failures, and interrupted sessions preserve durable lineage.
+- **Explicit self-change** — ForgeFlow may create a system-repair plan, but changes to ForgeFlow itself still pass implementation, independent review, tests, and release gates. It never silently rewrites its live policy.
 
-The old Pixel Agents visual product, Office Bridge, VS Code extension, game assets, and office/employee/workforce domain are intentionally not part of this repository.
+## Repository layout
+
+```text
+src/
+  app.ts              HTTP/control-plane composition
+  main.ts             production entrypoint
+  core/
+    domain/            plans, executions, reviews, resources, worktrees
+    kernel/            deterministic state-changing operations
+    orchestration/     execution/review/repair/delivery progression
+    supervisor/        bounded AI observation and typed decisions
+    adapters/          Git, OpenHands, providers, delivery and telemetry
+    persistence/       SQLite schema, repositories and event store
+
+deploy/
+  gcp/                 hardened systemd deployment
+  openhands/           isolated execution plane
+openhands_tools/       execution/review ACP adapters
+scripts/               release, probes and bounded maintenance
+test/                  core, adapter, recovery and deployment contracts
+```
+
+## Development
+
+Requirements: Node.js 24+ and npm 10+.
+
+```bash
+npm ci
+npm run check
+```
+
+`npm run check` performs product-boundary validation, type checking, the full test suite, and a clean production build.
+
+See [Architecture](docs/architecture.md) and [Development](docs/development.md) for the system model and contribution workflow.
+
+## Deployment safety
+
+The checked-in deployment is intentionally fail-closed. The example environment contains no enabled projects or credentials. A host operator must explicitly configure project allowlists and runtime credentials before `deploy/gcp/install.sh` will start autonomous execution.
+
+ForgeFlow defaults to its own local interfaces and state:
+
+- Control plane: `127.0.0.1:8420`
+- OpenHands execution plane: `127.0.0.1:18420`
+- State: `/var/lib/forgeflow`
+- Configuration: `/etc/forgeflow`
+- API: `/api/v1/*`
+- Release approval: `refs/forgeflow/release-approved`
+
+These defaults allow ForgeFlow to coexist with another engineering system during migration or canary deployment without sharing mutable state.

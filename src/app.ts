@@ -8,13 +8,13 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import {
   AntigravityExecutionProvider,
   AntigravityReviewProvider,
-} from './v4/adapters/antigravity.js';
-import { LocalGitWorkspaceAdapter } from './v4/adapters/gitWorkspace.js';
-import { LiteralWorktreeWorkspaceAdapter } from './v4/adapters/literalWorktreeWorkspace.js';
-import { PlanWorktreeManager } from './v4/adapters/planWorktrees.js';
-import { ProjectScopedWorkspaceAdapter } from './v4/adapters/projectScopedWorkspace.js';
-import { LiteLlmExecutionTelemetry } from './v4/adapters/liteLlmTelemetry.js';
-import { GitHubCliDeliveryAdapter } from './v4/adapters/githubDelivery.js';
+} from './core/adapters/antigravity.js';
+import { LocalGitWorkspaceAdapter } from './core/adapters/gitWorkspace.js';
+import { LiteralWorktreeWorkspaceAdapter } from './core/adapters/literalWorktreeWorkspace.js';
+import { PlanWorktreeManager } from './core/adapters/planWorktrees.js';
+import { ProjectScopedWorkspaceAdapter } from './core/adapters/projectScopedWorkspace.js';
+import { LiteLlmExecutionTelemetry } from './core/adapters/liteLlmTelemetry.js';
+import { GitHubCliDeliveryAdapter } from './core/adapters/githubDelivery.js';
 import {
   createOpenHandsProviderFactory,
   OpenHandsCodexBusinessReviewProvider,
@@ -22,11 +22,11 @@ import {
   OpenHandsExecutionProvider,
   OpenHandsReviewProvider,
   type OpenHandsAgentBackend,
-} from './v4/adapters/openHandsCoding.js';
+} from './core/adapters/openHandsCoding.js';
 import {
   HttpOpenHandsSupervisorClient,
   OpenHandsSupervisorAdapter,
-} from './v4/adapters/openhands.js';
+} from './core/adapters/openhands.js';
 import {
   CompositeResourceDirectory,
   LiteLlmResourceDirectory,
@@ -36,18 +36,18 @@ import {
   StaticResourceDirectory,
   providerNativeResources,
   type ResourceProbePort,
-} from './v4/adapters/resourceDirectory.js';
-import type { PlanDeliveryConfig } from './v4/domain/delivery.js';
-import { V4Error } from './v4/domain/errors.js';
-import { EXECUTION_STATUSES, type ExecutionStatus } from './v4/domain/execution.js';
-import { PLAN_STATUSES, type PlanStatus } from './v4/domain/plan.js';
+} from './core/adapters/resourceDirectory.js';
+import type { PlanDeliveryConfig } from './core/domain/delivery.js';
+import { ForgeFlowError } from './core/domain/errors.js';
+import { EXECUTION_STATUSES, type ExecutionStatus } from './core/domain/execution.js';
+import { PLAN_STATUSES, type PlanStatus } from './core/domain/plan.js';
 import {
   DEFAULT_AFFINITY_POLICY,
   createExecutionResourceSelection,
   type ExecutionResource,
   type ExecutionResourceSelection,
   type ResourceState,
-} from './v4/domain/resourceRouting.js';
+} from './core/domain/resourceRouting.js';
 import {
   DeliveryKernel,
   ExecutionKernel,
@@ -55,35 +55,35 @@ import {
   RecoveryKernel,
   ReviewKernel,
   WorkGraphKernel,
-} from './v4/kernel/index.js';
-import { ExecutionWorker, type ExecutionWorkerRoute } from './v4/orchestration/executionWorker.js';
-import { ProjectPlanQueueRuntime } from './v4/orchestration/projectPlanQueueRuntime.js';
-import type { ExecutionProviderPort, WorkspaceProviderPort } from './v4/orchestration/contracts.js';
+} from './core/kernel/index.js';
+import { ExecutionWorker, type ExecutionWorkerRoute } from './core/orchestration/executionWorker.js';
+import { ProjectPlanQueueRuntime } from './core/orchestration/projectPlanQueueRuntime.js';
+import type { ExecutionProviderPort, WorkspaceProviderPort } from './core/orchestration/contracts.js';
 import {
   ResourceSelector,
   selectExecutableProfile,
   type ResourceSelectionCandidate,
-} from './v4/orchestration/resourceSelector.js';
+} from './core/orchestration/resourceSelector.js';
 import {
   RuntimeAdmissionRegistry,
   requiresAcpRuntimeAdmission,
   runtimeAdmissionKey,
-} from './v4/orchestration/runtimeAdmission.js';
+} from './core/orchestration/runtimeAdmission.js';
 import {
   PlanAutomationRuntime,
   StaticPlanAutomationPolicyResolver,
   type PlanAutomationPolicy,
-} from './v4/orchestration/planAutomationRuntime.js';
-import { bootstrapV4 } from './v4/persistence/bootstrap-v4.js';
-import { createRepositories, type V4Repositories } from './v4/persistence/repositories.js';
-import { SupervisorActionExecutor, type SupervisorKernelPort } from './v4/supervisor/executor.js';
-import { buildBoundedProjection } from './v4/supervisor/projection.js';
+} from './core/orchestration/planAutomationRuntime.js';
+import { bootstrapForgeFlow } from './core/persistence/bootstrap.js';
+import { createRepositories, type ForgeFlowRepositories } from './core/persistence/repositories.js';
+import { SupervisorActionExecutor, type SupervisorKernelPort } from './core/supervisor/executor.js';
+import { buildBoundedProjection } from './core/supervisor/projection.js';
 import {
   HttpSupervisorDecisionClient,
   OpenAICompatibleSupervisorDecisionClient,
   SupervisorRuntime,
-} from './v4/supervisor/runtime.js';
-import { SupervisorWakeScheduler } from './v4/supervisor/scheduler.js';
+} from './core/supervisor/runtime.js';
+import { SupervisorWakeScheduler } from './core/supervisor/scheduler.js';
 
 export interface BuildControlPlaneOptions {
   env?: NodeJS.ProcessEnv;
@@ -123,11 +123,11 @@ export interface ExecutionAutomationRuntime {
 
 export interface ControlPlaneRuntime {
   app: FastifyInstance;
-  db: ReturnType<typeof bootstrapV4>['db'];
+  db: ReturnType<typeof bootstrapForgeFlow>['db'];
   dbFile: string;
   host: string;
   port: number;
-  repositories: V4Repositories;
+  repositories: ForgeFlowRepositories;
   kernels: {
     plan: PlanKernel;
     graph: WorkGraphKernel;
@@ -150,29 +150,29 @@ export interface ControlPlaneRuntime {
 
 function bodyRecord(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value))
-    throw new V4Error('REQUEST_OBJECT_REQUIRED');
+    throw new ForgeFlowError('REQUEST_OBJECT_REQUIRED');
   return value as Record<string, unknown>;
 }
 
 function requiredText(value: unknown, code: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) throw new V4Error(code);
+  if (typeof value !== 'string' || value.trim().length === 0) throw new ForgeFlowError(code);
   return value.trim();
 }
 
 function planDeliveryConfig(value: unknown): PlanDeliveryConfig | undefined {
   if (value === undefined || value === null) return undefined;
   const body = bodyRecord(value);
-  if (typeof body.autoMerge !== 'boolean') throw new V4Error('DELIVERY_AUTO_MERGE_INVALID');
+  if (typeof body.autoMerge !== 'boolean') throw new ForgeFlowError('DELIVERY_AUTO_MERGE_INVALID');
   const mergeMethod = requiredText(body.mergeMethod ?? 'merge', 'DELIVERY_MERGE_METHOD_INVALID');
   if (mergeMethod !== 'merge' && mergeMethod !== 'squash' && mergeMethod !== 'rebase')
-    throw new V4Error('DELIVERY_MERGE_METHOD_INVALID');
+    throw new ForgeFlowError('DELIVERY_MERGE_METHOD_INVALID');
   const requiredChecks =
     body.requiredChecks === undefined
       ? []
       : Array.isArray(body.requiredChecks)
         ? body.requiredChecks.map((item) => requiredText(item, 'DELIVERY_REQUIRED_CHECKS_INVALID'))
         : (() => {
-            throw new V4Error('DELIVERY_REQUIRED_CHECKS_INVALID');
+            throw new ForgeFlowError('DELIVERY_REQUIRED_CHECKS_INVALID');
           })();
   return {
     remote: requiredText(body.remote ?? 'origin', 'DELIVERY_REMOTE_REQUIRED'),
@@ -196,8 +196,8 @@ function routeSpecs(value: string | undefined, fallback: string[]): RouteSpec[] 
     const separator = item.indexOf('=');
     const route = (separator < 0 ? item : item.slice(0, separator)).trim();
     const model = (separator < 0 ? item : item.slice(separator + 1)).trim();
-    if (!route || !model) throw new V4Error('EXECUTION_ROUTE_SPEC_INVALID');
-    if (seen.has(route)) throw new V4Error('EXECUTION_ROUTE_DUPLICATE');
+    if (!route || !model) throw new ForgeFlowError('EXECUTION_ROUTE_SPEC_INVALID');
+    if (seen.has(route)) throw new ForgeFlowError('EXECUTION_ROUTE_DUPLICATE');
     seen.add(route);
     return { route, model };
   });
@@ -229,7 +229,7 @@ function integerValue(
   code: string,
 ): number {
   const parsed = value === undefined ? fallback : Number(value);
-  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new V4Error(code);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new ForgeFlowError(code);
   return parsed;
 }
 
@@ -328,7 +328,7 @@ function readHostCacheMaintenance(file: string | undefined): HostCacheMaintenanc
   }
 }
 
-function statusFor(error: V4Error): number {
+function statusFor(error: ForgeFlowError): number {
   if (error.code.endsWith('_NOT_FOUND')) return 404;
   if (
     error.code.includes('STALE') ||
@@ -343,56 +343,56 @@ function statusFor(error: V4Error): number {
 
 async function buildExecutionAutomation(
   env: NodeJS.ProcessEnv,
-  repositories: V4Repositories,
+  repositories: ForgeFlowRepositories,
   fetchImpl: typeof fetch,
 ): Promise<ExecutionAutomationRuntime | undefined> {
-  if (env.MODEL_CP_EXECUTION_RUNTIME_ENABLED !== 'true') return undefined;
-  const openHandsUrl = requiredText(env.MODEL_CP_OPENHANDS_URL, 'OPENHANDS_BASE_URL_REQUIRED');
-  const sessionApiKey = requiredText(env.SESSION_API_KEY, 'OPENHANDS_SESSION_KEY_REQUIRED');
-  const liteLlmApiKey = requiredText(env.LITELLM_V3_KEY, 'OPENHANDS_LITELLM_KEY_REQUIRED');
+  if (env.FORGEFLOW_EXECUTION_RUNTIME_ENABLED !== 'true') return undefined;
+  const openHandsUrl = requiredText(env.FORGEFLOW_OPENHANDS_URL, 'OPENHANDS_BASE_URL_REQUIRED');
+  const sessionApiKey = requiredText(env.FORGEFLOW_OPENHANDS_TOKEN, 'OPENHANDS_SESSION_KEY_REQUIRED');
+  const liteLlmApiKey = requiredText(env.FORGEFLOW_LITELLM_API_KEY, 'OPENHANDS_LITELLM_KEY_REQUIRED');
   const liteLlmBaseUrl = requiredText(
-    env.LITELLM_V3_BASE_URL ?? env.MODEL_CP_V3_LITELLM_URL,
+    env.FORGEFLOW_LITELLM_BASE_URL,
     'OPENHANDS_LITELLM_URL_REQUIRED',
   );
-  const allowedRepositoryRoots = rootList(env.MODEL_CP_V4_ALLOWED_REPOSITORY_ROOTS);
-  if (allowedRepositoryRoots.length === 0) throw new V4Error('WORKSPACE_ALLOWED_ROOT_REQUIRED');
+  const allowedRepositoryRoots = rootList(env.FORGEFLOW_ALLOWED_REPOSITORY_ROOTS);
+  if (allowedRepositoryRoots.length === 0) throw new ForgeFlowError('WORKSPACE_ALLOWED_ROOT_REQUIRED');
   const managedHostRoot = requiredText(
-    env.MODEL_CP_V4_WORKSPACE_HOST_ROOT,
+    env.FORGEFLOW_WORKSPACE_HOST_ROOT,
     'WORKSPACE_MANAGED_ROOT_REQUIRED',
   );
   const executionRoot = requiredText(
-    env.MODEL_CP_V4_WORKSPACE_EXECUTION_ROOT ?? '/workspace',
+    env.FORGEFLOW_WORKSPACE_EXECUTION_ROOT ?? '/workspace',
     'WORKSPACE_EXECUTION_ROOT_REQUIRED',
   );
-  const automationProjectKeys = commaList(env.MODEL_CP_V4_AUTOMATION_PROJECTS);
-  const literalWorktreesEnabled = env.MODEL_CP_V4_LITERAL_WORKTREES_ENABLED === 'true';
+  const automationProjectKeys = commaList(env.FORGEFLOW_AUTOMATION_PROJECTS);
+  const literalWorktreesEnabled = env.FORGEFLOW_LITERAL_WORKTREES_ENABLED === 'true';
   const literalWorktreeProjectKeys = literalWorktreesEnabled
-    ? commaList(env.MODEL_CP_V4_LITERAL_WORKTREE_PROJECTS)
+    ? commaList(env.FORGEFLOW_LITERAL_WORKTREE_PROJECTS)
     : [];
   if (literalWorktreesEnabled && literalWorktreeProjectKeys.length === 0)
-    throw new V4Error('LITERAL_WORKTREE_PROJECTS_REQUIRED');
+    throw new ForgeFlowError('LITERAL_WORKTREE_PROJECTS_REQUIRED');
   if (
     automationProjectKeys.length > 0 &&
     literalWorktreeProjectKeys.some((projectKey) => !automationProjectKeys.includes(projectKey))
   )
-    throw new V4Error('LITERAL_WORKTREE_PROJECT_NOT_AUTOMATED');
-  const resourceSelectorEnabled = env.MODEL_CP_V4_RESOURCE_SELECTOR_ENABLED === 'true';
-  // Selector-enabled V4 never reads the legacy route ladders. They remain only
+    throw new ForgeFlowError('LITERAL_WORKTREE_PROJECT_NOT_AUTOMATED');
+  const resourceSelectorEnabled = env.FORGEFLOW_RESOURCE_SELECTOR_ENABLED === 'true';
+  // Selector-enabled ForgeFlow never reads the legacy route ladders. They remain only
   // as an explicit rollback path when the selector gate is disabled. This keeps
   // exactly one routing authority for every newly-created execution.
   const implementationSpecs = resourceSelectorEnabled
     ? []
-    : routeSpecs(env.MODEL_CP_V4_IMPLEMENTATION_ROUTES, ['gpt-5.6-luna']);
+    : routeSpecs(env.FORGEFLOW_IMPLEMENTATION_ROUTES, ['gpt-5.6-luna']);
   const reviewSpecs = resourceSelectorEnabled
     ? []
-    : routeSpecs(env.MODEL_CP_V4_REVIEW_ROUTES, [
+    : routeSpecs(env.FORGEFLOW_REVIEW_ROUTES, [
         'codex-business-review=gpt-5.6-sol',
         'gpt-5.6-sol',
       ]);
   const compatibilityImplementationRoutes = implementationSpecs.map((item) => item.route);
   const compatibilityReviewRoutes = reviewSpecs.map((item) => item.route);
   if (compatibilityImplementationRoutes.some((route) => compatibilityReviewRoutes.includes(route)))
-    throw new V4Error('EXECUTION_ROUTE_ROLE_CONFLICT');
+    throw new ForgeFlowError('EXECUTION_ROUTE_ROLE_CONFLICT');
   const implementationRoutes = resourceSelectorEnabled
     ? DEFAULT_AFFINITY_POLICY.capabilities.IMPLEMENTATION.map((item) => item.modelFamily)
     : compatibilityImplementationRoutes;
@@ -407,21 +407,21 @@ async function buildExecutionAutomation(
     liteLlmBaseUrl,
     fetchImpl,
     requestTimeoutMs: integerValue(
-      env.MODEL_CP_V4_PROVIDER_REQUEST_TIMEOUT_MS,
+      env.FORGEFLOW_PROVIDER_REQUEST_TIMEOUT_MS,
       30_000,
       1_000,
       120_000,
       'OPENHANDS_TIMEOUT_INVALID',
     ),
     llmTimeoutSeconds: integerValue(
-      env.MODEL_CP_V4_PROVIDER_LLM_TIMEOUT_SECONDS,
+      env.FORGEFLOW_PROVIDER_LLM_TIMEOUT_SECONDS,
       600,
       30,
       1_800,
       'OPENHANDS_LLM_TIMEOUT_INVALID',
     ),
     maxIterations: integerValue(
-      env.MODEL_CP_V4_PROVIDER_MAX_ITERATIONS,
+      env.FORGEFLOW_PROVIDER_MAX_ITERATIONS,
       500,
       1,
       1_000,
@@ -429,19 +429,19 @@ async function buildExecutionAutomation(
     ),
   };
   const liteLlmAdminBaseUrl = (
-    env.MODEL_CP_V4_LITELLM_ADMIN_BASE_URL ??
-    env.MODEL_CP_V3_LITELLM_URL ??
+    env.FORGEFLOW_LITELLM_ADMIN_BASE_URL ??
+    env.FORGEFLOW_LITELLM_BASE_URL ??
     liteLlmBaseUrl
   )
     .replace(/\/$/, '')
     .replace(/\/v1$/, '');
   const liteLlmResources = new LiteLlmResourceDirectory({
     baseUrl: liteLlmAdminBaseUrl,
-    envFile: env.MODEL_CP_LITELLM_ADMIN_ENV_FILE ?? '/srv/hermes-personal/secrets/litellm.env',
-    keyName: env.MODEL_CP_LITELLM_ADMIN_KEY_NAME ?? 'LITELLM_MASTER_KEY',
+    envFile: env.FORGEFLOW_LITELLM_ADMIN_ENV_FILE ?? '/etc/forgeflow/litellm.env',
+    keyName: env.FORGEFLOW_LITELLM_ADMIN_KEY_NAME ?? 'LITELLM_MASTER_KEY',
     fetchImpl,
     requestTimeoutMs: integerValue(
-      env.MODEL_CP_V4_RESOURCE_DIRECTORY_TIMEOUT_MS,
+      env.FORGEFLOW_RESOURCE_DIRECTORY_TIMEOUT_MS,
       10_000,
       1_000,
       60_000,
@@ -451,21 +451,19 @@ async function buildExecutionAutomation(
   if (resourceSelectorEnabled) await liteLlmResources.refresh();
 
   const businessAuthFile =
-    env.MODEL_CP_V4_BUSINESS_AUTH_FILE ??
-    '/opt/data/hermes-ai-office-v3/openhands/codex-business/auth.json';
-  const businessEnabled = env.MODEL_CP_V4_BUSINESS_RESOURCE_ENABLED !== 'false';
+    env.FORGEFLOW_BUSINESS_AUTH_FILE ??
+    '/var/lib/forgeflow/openhands/codex-business/auth.json';
+  const businessEnabled = env.FORGEFLOW_BUSINESS_RESOURCE_ENABLED !== 'false';
   const businessReady = businessEnabled && fs.existsSync(businessAuthFile);
   const antigravityBinary =
-    env.MODEL_CP_V4_ANTIGRAVITY_BIN ??
-    env.MODEL_CP_V3_ANTIGRAVITY_BIN ??
-    '/home/dev/.local/bin/agy';
+    env.FORGEFLOW_ANTIGRAVITY_BIN ?? '/home/dev/.local/bin/agy';
   const antigravityHome =
-    env.MODEL_CP_V4_ANTIGRAVITY_HOME ?? env.MODEL_CP_V3_ANTIGRAVITY_HOME ?? '/home/dev';
+    env.FORGEFLOW_ANTIGRAVITY_HOME ?? '/home/dev';
   const antigravityAuthFile = path.join(
     antigravityHome,
     '.gemini/antigravity-cli/antigravity-oauth-token',
   );
-  const antigravityEnabled = env.MODEL_CP_V4_ANTIGRAVITY_RESOURCE_ENABLED === 'true';
+  const antigravityEnabled = env.FORGEFLOW_ANTIGRAVITY_RESOURCE_ENABLED === 'true';
   const antigravityReady =
     antigravityEnabled && fs.existsSync(antigravityBinary) && fs.existsSync(antigravityAuthFile);
   const nativeResources = new StaticResourceDirectory(
@@ -483,17 +481,17 @@ async function buildExecutionAutomation(
   );
   const runtimeAdmissionEnabled =
     resourceSelectorEnabled &&
-    (env.MODEL_CP_V4_RUNTIME_ADMISSION_ENABLED === 'true' ||
-      (env.MODEL_CP_V4_RUNTIME_ADMISSION_ENABLED !== 'false' && env.NODE_ENV !== 'test'));
+    (env.FORGEFLOW_RUNTIME_ADMISSION_ENABLED === 'true' ||
+      (env.FORGEFLOW_RUNTIME_ADMISSION_ENABLED !== 'false' && env.NODE_ENV !== 'test'));
   const runtimeAdmissionTtlMs = integerValue(
-    env.MODEL_CP_V4_RUNTIME_ADMISSION_TTL_MS,
+    env.FORGEFLOW_RUNTIME_ADMISSION_TTL_MS,
     15 * 60_000,
     60_000,
     24 * 60 * 60_000,
     'RUNTIME_ADMISSION_TTL_INVALID',
   );
   const runtimeAdmissionTransientFailureTtlMs = integerValue(
-    env.MODEL_CP_V4_RUNTIME_ADMISSION_TRANSIENT_FAILURE_TTL_MS,
+    env.FORGEFLOW_RUNTIME_ADMISSION_TRANSIENT_FAILURE_TTL_MS,
     15_000,
     1_000,
     runtimeAdmissionTtlMs,
@@ -502,11 +500,11 @@ async function buildExecutionAutomation(
   const runtimeAdmission = new RuntimeAdmissionRegistry();
   const resourceStateEffect = new LiteLlmResourceStateEffect({
     baseUrl: liteLlmAdminBaseUrl,
-    envFile: env.MODEL_CP_LITELLM_ADMIN_ENV_FILE ?? '/srv/hermes-personal/secrets/litellm.env',
-    keyName: env.MODEL_CP_LITELLM_ADMIN_KEY_NAME ?? 'LITELLM_MASTER_KEY',
+    envFile: env.FORGEFLOW_LITELLM_ADMIN_ENV_FILE ?? '/etc/forgeflow/litellm.env',
+    keyName: env.FORGEFLOW_LITELLM_ADMIN_KEY_NAME ?? 'LITELLM_MASTER_KEY',
     fetchImpl,
     requestTimeoutMs: integerValue(
-      env.MODEL_CP_V4_RESOURCE_DIRECTORY_TIMEOUT_MS,
+      env.FORGEFLOW_RESOURCE_DIRECTORY_TIMEOUT_MS,
       10_000,
       1_000,
       60_000,
@@ -538,7 +536,7 @@ async function buildExecutionAutomation(
             model: binding.routeModel,
             messages: [{ role: 'user', content: 'Reply with OK.' }],
             max_tokens: 1,
-            user: 'pixel-v4-resource-probe',
+            user: 'forgeflow-resource-probe',
           }),
           signal: AbortSignal.timeout(30_000),
         });
@@ -571,35 +569,35 @@ async function buildExecutionAutomation(
     })),
   ];
   const workspaceUid = integerValue(
-    env.MODEL_CP_V4_WORKSPACE_UID,
+    env.FORGEFLOW_WORKSPACE_UID,
     10_001,
     0,
     2 ** 31 - 1,
     'WORKSPACE_OWNER_INVALID',
   );
   const workspaceGid = integerValue(
-    env.MODEL_CP_V4_WORKSPACE_GID,
+    env.FORGEFLOW_WORKSPACE_GID,
     10_001,
     0,
     2 ** 31 - 1,
     'WORKSPACE_OWNER_INVALID',
   );
   const gitTimeoutMs = integerValue(
-    env.MODEL_CP_V4_GIT_TIMEOUT_MS,
+    env.FORGEFLOW_GIT_TIMEOUT_MS,
     120_000,
     1_000,
     15 * 60_000,
     'WORKSPACE_GIT_TIMEOUT_INVALID',
   );
   const gitMaxBufferBytes = integerValue(
-    env.MODEL_CP_V4_GIT_MAX_BUFFER_BYTES,
+    env.FORGEFLOW_GIT_MAX_BUFFER_BYTES,
     8 * 1024 * 1024,
     64 * 1024,
     64 * 1024 * 1024,
     'WORKSPACE_GIT_BUFFER_INVALID',
   );
   const workspaceMinimumFreeBytes = integerValue(
-    env.MODEL_CP_V4_WORKSPACE_MIN_FREE_BYTES,
+    env.FORGEFLOW_WORKSPACE_MIN_FREE_BYTES,
     8 * 1024 * 1024 * 1024,
     0,
     1024 ** 5,
@@ -626,7 +624,7 @@ async function buildExecutionAutomation(
           maxBufferBytes: gitMaxBufferBytes,
           projectAdmission: (repositoryPath) => {
             const harnessctl =
-              env.MODEL_CP_AGENT_HARNESS_CTL ??
+              env.FORGEFLOW_AGENT_HARNESS_CTL ??
               '/home/dev/projects/agent-harness/bin/harnessctl.py';
             try {
               execFileSync(
@@ -641,7 +639,7 @@ async function buildExecutionAutomation(
                 },
               );
             } catch (error) {
-              throw new V4Error(
+              throw new ForgeFlowError(
                 'WORKTREE_AGENT_HARNESS_PROJECT_UNREGISTERED',
                 'Literal worktree projects must resolve through Agent Harness before activation.',
                 error,
@@ -675,35 +673,35 @@ async function buildExecutionAutomation(
   const antigravityBase = {
     binary: antigravityBinary,
     stateRoot:
-      env.MODEL_CP_V4_ANTIGRAVITY_STATE_ROOT ??
-      '/srv/hermes-personal/data/model-control-plane/antigravity-v4',
+      env.FORGEFLOW_ANTIGRAVITY_STATE_ROOT ??
+      '/var/lib/forgeflow/antigravity',
     workspaceHostRoot: managedHostRoot,
     home: antigravityHome,
     uid: integerValue(
-      env.MODEL_CP_V4_ANTIGRAVITY_UID ?? env.MODEL_CP_V3_ANTIGRAVITY_UID,
+      env.FORGEFLOW_ANTIGRAVITY_UID ?? env.FORGEFLOW_ANTIGRAVITY_UID,
       1001,
       1,
       2 ** 31 - 1,
       'ANTIGRAVITY_UID_INVALID',
     ),
     gid: integerValue(
-      env.MODEL_CP_V4_ANTIGRAVITY_GID ?? env.MODEL_CP_V3_ANTIGRAVITY_GID,
+      env.FORGEFLOW_ANTIGRAVITY_GID ?? env.FORGEFLOW_ANTIGRAVITY_GID,
       1002,
       1,
       2 ** 31 - 1,
       'ANTIGRAVITY_GID_INVALID',
     ),
     workspaceGid,
-    user: env.MODEL_CP_V4_ANTIGRAVITY_USER ?? env.MODEL_CP_V3_ANTIGRAVITY_USER ?? 'dev',
+    user: env.FORGEFLOW_ANTIGRAVITY_USER ?? env.FORGEFLOW_ANTIGRAVITY_USER ?? 'dev',
     printTimeout:
-      env.MODEL_CP_V4_ANTIGRAVITY_PRINT_TIMEOUT ??
-      env.MODEL_CP_V3_ANTIGRAVITY_PRINT_TIMEOUT ??
+      env.FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT ??
+      env.FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT ??
       '20m',
     sandboxWrapper:
-      env.MODEL_CP_V4_ANTIGRAVITY_SANDBOX_WRAPPER ??
+      env.FORGEFLOW_ANTIGRAVITY_SANDBOX_WRAPPER ??
       path.join(process.cwd(), 'model-control-plane/scripts/run-antigravity-sandbox.sh'),
     systemdUnitTemplate:
-      env.MODEL_CP_V4_ANTIGRAVITY_SYSTEMD_UNIT ?? 'hermes-antigravity-v4@%i.service',
+      env.FORGEFLOW_ANTIGRAVITY_SYSTEMD_UNIT ?? 'forgeflow-antigravity@%i.service',
   };
   const providerFactory = (selection: ExecutionResourceSelection): ExecutionProviderPort => {
     if (
@@ -716,7 +714,7 @@ async function buildExecutionAutomation(
         : new AntigravityExecutionProvider(options);
     }
     if (!['IMPLEMENT', 'IMPLEMENT_FIX', 'REVIEW'].includes(selection.phase))
-      throw new V4Error('EXECUTION_RESOURCE_SELECTION_PHASE_UNSUPPORTED');
+      throw new ForgeFlowError('EXECUTION_RESOURCE_SELECTION_PHASE_UNSUPPORTED');
     return openHandsProviderFactory({
       backend: selection.agentBackend as OpenHandsAgentBackend,
       model: selection.routeModel ?? selection.modelFamily,
@@ -755,7 +753,7 @@ async function buildExecutionAutomation(
   };
 
   const createAdmissionWorkspace = (_candidate: ResourceSelectionCandidate, probeId: string) => {
-    const executionsRoot = path.join(managedHostRoot, 'v4', 'executions');
+    const executionsRoot = path.join(managedHostRoot, 'forgeflow', 'executions');
     const root = path.join(executionsRoot, probeId);
     const repository = path.join(root, 'repo');
     fs.mkdirSync(executionsRoot, { recursive: true, mode: 0o755 });
@@ -804,7 +802,7 @@ async function buildExecutionAutomation(
       'chore: runtime admission probe',
     ]);
     const sourceRevision = git(['rev-parse', '--verify', 'HEAD^{commit}']);
-    const executionPath = path.join(executionRoot, 'v4', 'executions', probeId, 'repo');
+    const executionPath = path.join(executionRoot, 'forgeflow', 'executions', probeId, 'repo');
     return {
       root,
       sourceRevision,
@@ -815,7 +813,7 @@ async function buildExecutionAutomation(
         evidenceHostPath: path.join(root, 'completion-evidence.json'),
         evidenceExecutionPath: path.join(
           executionRoot,
-          'v4',
+          'forgeflow',
           'executions',
           probeId,
           'completion-evidence.json',
@@ -839,7 +837,7 @@ async function buildExecutionAutomation(
       const provider = providerFactory(
         createExecutionResourceSelection(probeId, candidate.profile, new Date().toISOString()),
       );
-      if (!provider.probeRuntime) throw new V4Error('RUNTIME_ADMISSION_PROBE_UNSUPPORTED');
+      if (!provider.probeRuntime) throw new ForgeFlowError('RUNTIME_ADMISSION_PROBE_UNSUPPORTED');
       const result = await provider.probeRuntime({
         probeId,
         workspace: prepared.workspace,
@@ -865,7 +863,7 @@ async function buildExecutionAutomation(
     } catch (error) {
       runtimeAdmission.record(candidate, {
         ready: false,
-        errorCode: error instanceof V4Error ? error.code : 'RUNTIME_ADMISSION_PROBE_FAILED',
+        errorCode: error instanceof ForgeFlowError ? error.code : 'RUNTIME_ADMISSION_PROBE_FAILED',
       });
     } finally {
       if (probeRoot) fs.rmSync(probeRoot, { recursive: true, force: true });
@@ -905,28 +903,28 @@ async function buildExecutionAutomation(
   );
   const worker = new ExecutionWorker(repositories, workspace, routes, {
     leaseTtlMs: integerValue(
-      env.MODEL_CP_V4_EXECUTION_LEASE_TTL_MS,
+      env.FORGEFLOW_EXECUTION_LEASE_TTL_MS,
       30_000,
       1_000,
       5 * 60_000,
       'EXECUTION_LEASE_TTL_INVALID',
     ),
     maxExecutionsPerCycle: integerValue(
-      env.MODEL_CP_V4_MAX_EXECUTIONS_PER_CYCLE,
+      env.FORGEFLOW_MAX_EXECUTIONS_PER_CYCLE,
       20,
       1,
       1_000,
       'EXECUTION_CYCLE_LIMIT_INVALID',
     ),
     meaningfulProgressTimeoutMs: integerValue(
-      env.MODEL_CP_V4_MEANINGFUL_PROGRESS_TIMEOUT_MS,
+      env.FORGEFLOW_MEANINGFUL_PROGRESS_TIMEOUT_MS,
       15 * 60_000,
       30_000,
       24 * 60 * 60_000,
       'EXECUTION_MEANINGFUL_PROGRESS_TIMEOUT_INVALID',
     ),
     maxStallRecoveries: integerValue(
-      env.MODEL_CP_V4_MAX_STALL_RECOVERIES,
+      env.FORGEFLOW_MAX_STALL_RECOVERIES,
       2,
       0,
       10,
@@ -941,7 +939,7 @@ async function buildExecutionAutomation(
       : {}),
   });
   const maxParallelWorkItems = integerValue(
-    env.MODEL_CP_V4_MAX_PARALLEL_WORK_ITEMS,
+    env.FORGEFLOW_MAX_PARALLEL_WORK_ITEMS,
     1,
     1,
     32,
@@ -957,23 +955,23 @@ async function buildExecutionAutomation(
     resourceSelection: {
       includeProviderNativeProfiles: false,
     },
-    requireDelivery: env.MODEL_CP_V4_REQUIRE_DELIVERY !== 'false',
+    requireDelivery: env.FORGEFLOW_REQUIRE_DELIVERY !== 'false',
     maxImplementationAttempts: integerValue(
-      env.MODEL_CP_V4_MAX_IMPLEMENTATION_ATTEMPTS,
+      env.FORGEFLOW_MAX_IMPLEMENTATION_ATTEMPTS,
       3,
       1,
       20,
       'PLAN_AUTOMATION_LIMIT_INVALID',
     ),
     maxReviewAttempts: integerValue(
-      env.MODEL_CP_V4_MAX_REVIEW_ATTEMPTS,
+      env.FORGEFLOW_MAX_REVIEW_ATTEMPTS,
       4,
       1,
       20,
       'PLAN_AUTOMATION_LIMIT_INVALID',
     ),
     maxRepairCycles: integerValue(
-      env.MODEL_CP_V4_MAX_REPAIR_CYCLES,
+      env.FORGEFLOW_MAX_REPAIR_CYCLES,
       3,
       1,
       20,
@@ -982,7 +980,7 @@ async function buildExecutionAutomation(
     maxParallelWorkItems: 1,
   };
   const antigravityProjectKeys = new Set(
-    commaList(env.MODEL_CP_V4_ANTIGRAVITY_PROJECTS ?? 'digital-biome'),
+    commaList(env.FORGEFLOW_ANTIGRAVITY_PROJECTS ?? 'digital-biome'),
   );
   const literalProjectSet = new Set(literalWorktreeProjectKeys);
   const policyOverrides = Object.fromEntries(
@@ -1017,14 +1015,14 @@ async function buildExecutionAutomation(
     allowedRepositoryRoots,
     allowedWorkspaceRoots: [managedHostRoot],
     commandTimeoutMs: integerValue(
-      env.MODEL_CP_V4_DELIVERY_TIMEOUT_MS,
+      env.FORGEFLOW_DELIVERY_TIMEOUT_MS,
       120_000,
       1_000,
       15 * 60_000,
       'DELIVERY_TIMEOUT_INVALID',
     ),
     maxBufferBytes: integerValue(
-      env.MODEL_CP_V4_DELIVERY_MAX_BUFFER_BYTES,
+      env.FORGEFLOW_DELIVERY_MAX_BUFFER_BYTES,
       8 * 1024 * 1024,
       64 * 1024,
       64 * 1024 * 1024,
@@ -1073,7 +1071,7 @@ export async function buildControlPlane(
   options: BuildControlPlaneOptions = {},
 ): Promise<ControlPlaneRuntime> {
   const env = options.env ?? process.env;
-  const boot = bootstrapV4({
+  const boot = bootstrapForgeFlow({
     dbFile: options.dbFile,
     env,
     environment: options.environment,
@@ -1081,10 +1079,10 @@ export async function buildControlPlane(
   });
   const db = boot.db;
   const repositories = createRepositories(db);
-  const singleActivePlanEnabled = env.MODEL_CP_V4_SINGLE_ACTIVE_PLAN_ENABLED === 'true';
-  const literalWorktreesEnabled = env.MODEL_CP_V4_LITERAL_WORKTREES_ENABLED === 'true';
+  const singleActivePlanEnabled = env.FORGEFLOW_SINGLE_ACTIVE_PLAN_ENABLED === 'true';
+  const literalWorktreesEnabled = env.FORGEFLOW_LITERAL_WORKTREES_ENABLED === 'true';
   if (literalWorktreesEnabled && !singleActivePlanEnabled)
-    throw new V4Error('LITERAL_WORKTREES_REQUIRE_SINGLE_ACTIVE_PLAN');
+    throw new ForgeFlowError('LITERAL_WORKTREES_REQUIRE_SINGLE_ACTIVE_PLAN');
   const projectPlanQueue = singleActivePlanEnabled
     ? new ProjectPlanQueueRuntime(repositories)
     : undefined;
@@ -1092,14 +1090,14 @@ export async function buildControlPlane(
     options.environment === 'test' || env.NODE_ENV === 'test' ? 'http://127.0.0.1:4000' : undefined;
   const executionTelemetry = new LiteLlmExecutionTelemetry({
     baseUrl: requiredText(
-      env.MODEL_CP_V3_LITELLM_URL ?? env.LITELLM_V3_BASE_URL ?? testTelemetryBaseUrl,
+      env.FORGEFLOW_LITELLM_BASE_URL ?? testTelemetryBaseUrl,
       'LITELLM_TELEMETRY_URL_REQUIRED',
     ),
-    envFile: env.MODEL_CP_LITELLM_ADMIN_ENV_FILE ?? '/srv/hermes-personal/secrets/litellm.env',
-    keyName: env.MODEL_CP_LITELLM_ADMIN_KEY_NAME ?? 'LITELLM_MASTER_KEY',
+    envFile: env.FORGEFLOW_LITELLM_ADMIN_ENV_FILE ?? '/etc/forgeflow/litellm.env',
+    keyName: env.FORGEFLOW_LITELLM_ADMIN_KEY_NAME ?? 'LITELLM_MASTER_KEY',
     fetchImpl: options.fetchImpl ?? fetch,
     requestTimeoutMs: integerValue(
-      env.MODEL_CP_LITELLM_TELEMETRY_TIMEOUT_MS,
+      env.FORGEFLOW_LITELLM_TELEMETRY_TIMEOUT_MS,
       10_000,
       1_000,
       60_000,
@@ -1140,27 +1138,27 @@ export async function buildControlPlane(
     }
   }
   const requireAutomation = (): ExecutionAutomationRuntime => {
-    if (!automation) throw new V4Error('EXECUTION_RUNTIME_DISABLED');
+    if (!automation) throw new ForgeFlowError('EXECUTION_RUNTIME_DISABLED');
     return automation;
   };
   const requireProjectPlanQueue = (): ProjectPlanQueueRuntime => {
-    if (!projectPlanQueue) throw new V4Error('PROJECT_PLAN_QUEUE_DISABLED');
+    if (!projectPlanQueue) throw new ForgeFlowError('PROJECT_PLAN_QUEUE_DISABLED');
     return projectPlanQueue;
   };
   const supervisorKernel: SupervisorKernelPort = {
     createExecution: async (payload, planId) => {
       const runtime = requireAutomation();
       const item = repositories.plans.getWorkItem(payload.workItemId);
-      if (item.planId !== planId) throw new V4Error('EXECUTION_WORK_ITEM_MISMATCH');
+      if (item.planId !== planId) throw new ForgeFlowError('EXECUTION_WORK_ITEM_MISMATCH');
       const result = await runtime.plans.runPlan(planId);
       if (result.workItemId && result.workItemId !== payload.workItemId)
-        throw new V4Error('WORK_ITEM_NOT_RUNNABLE');
-      if (!result.executionId) throw new V4Error(result.code);
+        throw new ForgeFlowError('WORK_ITEM_NOT_RUNNABLE');
+      if (!result.executionId) throw new ForgeFlowError(result.code);
       return { code: result.code, linkedExecutionId: result.executionId };
     },
     continueExecution: async (payload) => {
       const result = await requireAutomation().worker.continueExecution(payload.executionId);
-      if (result.status === 'FAILED' || result.status === 'SKIPPED') throw new V4Error(result.code);
+      if (result.status === 'FAILED' || result.status === 'SKIPPED') throw new ForgeFlowError(result.code);
       return { code: 'CONTINUE_' + result.code, linkedExecutionId: payload.executionId };
     },
     retryExecution: async (payload) => {
@@ -1171,29 +1169,29 @@ export async function buildControlPlane(
         plan.status === 'FAILED'
           ? await runtime.plans.reconcilePlan(plan.planId, 'auto')
           : await runtime.plans.runPlan(plan.planId);
-      if (!result.executionId) throw new V4Error(result.code);
+      if (!result.executionId) throw new ForgeFlowError(result.code);
       return { code: result.code, linkedExecutionId: result.executionId };
     },
     requestReview: async (payload) => {
       const execution = repositories.executions.get(payload.executionId);
       if (!execution.resultRevision || execution.status !== 'SUCCEEDED')
-        throw new V4Error('REVIEW_EXACT_RESULT_REQUIRED');
+        throw new ForgeFlowError('REVIEW_EXACT_RESULT_REQUIRED');
       const result = await requireAutomation().plans.runPlan(execution.identity.planId);
-      if (!result.executionId) throw new V4Error(result.code);
+      if (!result.executionId) throw new ForgeFlowError(result.code);
       return { code: result.code, linkedExecutionId: result.executionId };
     },
     switchRoute: async (payload) => {
       const execution = repositories.executions.get(payload.executionId);
       const result = await requireAutomation().plans.runPlan(execution.identity.planId);
-      if (!result.executionId) throw new V4Error(result.code);
+      if (!result.executionId) throw new ForgeFlowError(result.code);
       return { code: result.code, linkedExecutionId: result.executionId };
     },
     createRepair: async (payload) => {
       const base = repositories.executions.get(payload.baseExecutionId);
       if (!base.resultRevision || base.status !== 'SUCCEEDED')
-        throw new V4Error('REPAIR_EXACT_RESULT_REQUIRED');
+        throw new ForgeFlowError('REPAIR_EXACT_RESULT_REQUIRED');
       const result = await requireAutomation().plans.runPlan(base.identity.planId);
-      if (!result.executionId) throw new V4Error(result.code);
+      if (!result.executionId) throw new ForgeFlowError(result.code);
       return { code: result.code, linkedExecutionId: result.executionId };
     },
     replanRemainder: (payload, planId) => {
@@ -1239,26 +1237,26 @@ export async function buildControlPlane(
     repositories.supervisors,
   );
   const openHands = new OpenHandsSupervisorAdapter(
-    env.MODEL_CP_OPENHANDS_URL
+    env.FORGEFLOW_OPENHANDS_URL
       ? new HttpOpenHandsSupervisorClient(
-          env.MODEL_CP_OPENHANDS_URL,
-          env.MODEL_CP_OPENHANDS_TOKEN ?? env.SESSION_API_KEY,
+          env.FORGEFLOW_OPENHANDS_URL,
+          env.FORGEFLOW_OPENHANDS_TOKEN,
         )
       : undefined,
   );
   const scheduler = new SupervisorWakeScheduler(repositories.supervisors, db);
-  const modelClient = env.MODEL_CP_SUPERVISOR_ENDPOINT
+  const modelClient = env.FORGEFLOW_SUPERVISOR_ENDPOINT
     ? new HttpSupervisorDecisionClient(
-        env.MODEL_CP_SUPERVISOR_ENDPOINT,
-        env.MODEL_CP_SUPERVISOR_TOKEN,
+        env.FORGEFLOW_SUPERVISOR_ENDPOINT,
+        env.FORGEFLOW_SUPERVISOR_TOKEN,
       )
-    : (env.MODEL_CP_V3_LITELLM_URL ?? env.LITELLM_V3_BASE_URL) &&
-        env.LITELLM_V3_KEY &&
-        env.MODEL_CP_SUPERVISOR_MODEL
+    : env.FORGEFLOW_LITELLM_BASE_URL &&
+        env.FORGEFLOW_LITELLM_API_KEY &&
+        env.FORGEFLOW_SUPERVISOR_MODEL
       ? new OpenAICompatibleSupervisorDecisionClient(
-          env.MODEL_CP_V3_LITELLM_URL ?? env.LITELLM_V3_BASE_URL!,
-          env.MODEL_CP_SUPERVISOR_MODEL,
-          env.LITELLM_V3_KEY,
+          env.FORGEFLOW_LITELLM_BASE_URL,
+          env.FORGEFLOW_SUPERVISOR_MODEL,
+          env.FORGEFLOW_LITELLM_API_KEY!,
         )
       : undefined;
   const supervisorRuntime = new SupervisorRuntime(
@@ -1315,13 +1313,13 @@ export async function buildControlPlane(
       version: override?.version ?? 0,
     };
   };
-  const executionProjection = (execution: ReturnType<V4Repositories['executions']['get']>) => ({
+  const executionProjection = (execution: ReturnType<ForgeFlowRepositories['executions']['get']>) => ({
     ...execution,
     resourceSelection: repositories.resourceSelections.get(execution.identity.executionId) ?? null,
   });
   const workspaceStorage = () => automation?.workspace.storageStatus?.() ?? null;
   const hostCacheMaintenance = () =>
-    readHostCacheMaintenance(env.MODEL_CP_V4_HOST_CACHE_STATE_FILE);
+    readHostCacheMaintenance(env.FORGEFLOW_HOST_CACHE_STATE_FILE);
   const runWorkspaceStorageMaintenance = async () => {
     if (!automation?.workspace.storageStatus || !automation.workspace.pruneTerminalCaches)
       return null;
@@ -1350,9 +1348,9 @@ export async function buildControlPlane(
 
   app.get('/api/health', async () => ({
     status: 'ok',
-    service: 'pixel-agent-v4-control-plane',
-    apiVersion: 4,
-    mode: 'greenfield',
+    service: 'forgeflow-control-plane',
+    apiVersion: 1,
+    mode: 'autonomous-engineering',
     database: boot.dbFile,
     workspaceStorage: workspaceStorage(),
     hostCacheMaintenance: hostCacheMaintenance(),
@@ -1368,7 +1366,7 @@ export async function buildControlPlane(
     },
     executionRuntime: {
       enabled: Boolean(automation),
-      autonomousPolling: Boolean(automation && env.MODEL_CP_AUTOMATION_RUNTIME_ENABLED === 'true'),
+      autonomousPolling: Boolean(automation && env.FORGEFLOW_AUTOMATION_RUNTIME_ENABLED === 'true'),
       resourceSelectorEnabled: automation?.resourceSelectorEnabled ?? false,
       resourceCount: automation?.resources.listResources().length ?? 0,
       runtimeAdmission: automation
@@ -1397,18 +1395,18 @@ export async function buildControlPlane(
     },
   }));
 
-  app.get('/api/v4/storage', async () => ({
+  app.get('/api/v1/storage', async () => ({
     storage: workspaceStorage(),
     hostCacheMaintenance: hostCacheMaintenance(),
   }));
 
-  app.post('/api/v4/storage/reconcile', async () => ({
+  app.post('/api/v1/storage/reconcile', async () => ({
     storage: workspaceStorage(),
     hostCacheMaintenance: hostCacheMaintenance(),
     cleanup: await runWorkspaceStorageMaintenance(),
   }));
 
-  app.get('/api/v4/runtime-admission', async () => {
+  app.get('/api/v1/runtime-admission', async () => {
     const runtime = requireAutomation();
     return {
       enabled: runtime.runtimeAdmissionEnabled,
@@ -1427,7 +1425,7 @@ export async function buildControlPlane(
     };
   });
 
-  app.get('/api/v4/resources', async () => {
+  app.get('/api/v1/resources', async () => {
     const runtime = requireAutomation();
     if (runtime.resourceSelectorEnabled) await runtime.liteLlmResources.refresh();
     return {
@@ -1436,7 +1434,7 @@ export async function buildControlPlane(
     };
   });
 
-  app.post('/api/v4/resources/:resourceId/state', async (request) => {
+  app.post('/api/v1/resources/:resourceId/state', async (request) => {
     const runtime = requireAutomation();
     const resourceId = requiredText(
       (request.params as { resourceId?: string }).resourceId,
@@ -1445,11 +1443,11 @@ export async function buildControlPlane(
     const body = bodyRecord(request.body);
     const state = requiredText(body.state, 'RESOURCE_STATE_REQUIRED').toUpperCase();
     if (!['ACTIVE', 'SUSPENDED', 'DISABLED'].includes(state))
-      throw new V4Error('RESOURCE_STATE_INVALID');
+      throw new ForgeFlowError('RESOURCE_STATE_INVALID');
     const resource = runtime.resources
       .listResources()
       .find((item) => item.resourceId === resourceId);
-    if (!resource) throw new V4Error('RESOURCE_NOT_FOUND');
+    if (!resource) throw new ForgeFlowError('RESOURCE_NOT_FOUND');
     const expectedVersion =
       body.expectedVersion === undefined || body.expectedVersion === null
         ? undefined
@@ -1469,15 +1467,15 @@ export async function buildControlPlane(
         : {}),
       ...(expectedVersion === undefined ? {} : { expectedVersion }),
     });
-    if (result.status === 'rejected') throw new V4Error(result.reason ?? 'STALE_RESOURCE_STATE');
+    if (result.status === 'rejected') throw new ForgeFlowError(result.reason ?? 'STALE_RESOURCE_STATE');
     const projected = runtime.resources
       .listResources()
       .find((item) => item.resourceId === resourceId);
-    if (!projected) throw new V4Error('RESOURCE_NOT_FOUND');
+    if (!projected) throw new ForgeFlowError('RESOURCE_NOT_FOUND');
     return { resource: resourceProjection(projected), mutation: result.status };
   });
 
-  app.post('/api/v4/resources/:resourceId/bindings/:bindingId/state', async (request) => {
+  app.post('/api/v1/resources/:resourceId/bindings/:bindingId/state', async (request) => {
     const runtime = requireAutomation();
     const params = request.params as { resourceId?: string; bindingId?: string };
     const resourceId = requiredText(params.resourceId, 'RESOURCE_ID_REQUIRED');
@@ -1485,21 +1483,21 @@ export async function buildControlPlane(
     const body = bodyRecord(request.body);
     const state = requiredText(body.state, 'RESOURCE_BINDING_STATE_REQUIRED').toUpperCase();
     if (state !== 'ACTIVE' && state !== 'DISABLED')
-      throw new V4Error('RESOURCE_BINDING_STATE_INVALID');
+      throw new ForgeFlowError('RESOURCE_BINDING_STATE_INVALID');
     const resource = runtime.resources
       .listResources()
       .find((item) => item.resourceId === resourceId);
-    if (!resource) throw new V4Error('RESOURCE_NOT_FOUND');
+    if (!resource) throw new ForgeFlowError('RESOURCE_NOT_FOUND');
     const binding = resource.bindings.find((item) => item.bindingId === bindingId);
-    if (!binding) throw new V4Error('RESOURCE_BINDING_NOT_FOUND');
+    if (!binding) throw new ForgeFlowError('RESOURCE_BINDING_NOT_FOUND');
     if (!runtime.resourceStateEffect.applyBinding || !binding.deploymentId)
-      throw new V4Error('RESOURCE_BINDING_STATE_UNSUPPORTED');
+      throw new ForgeFlowError('RESOURCE_BINDING_STATE_UNSUPPORTED');
     await runtime.resourceStateEffect.applyBinding(resource, binding, state);
     await runtime.liteLlmResources.refresh();
     const projected = runtime.resources
       .listResources()
       .find((item) => item.resourceId === resourceId);
-    if (!projected) throw new V4Error('RESOURCE_NOT_FOUND');
+    if (!projected) throw new ForgeFlowError('RESOURCE_NOT_FOUND');
     return { resource: resourceProjection(projected), bindingId, state };
   });
 
@@ -1518,14 +1516,14 @@ export async function buildControlPlane(
     };
   };
 
-  app.get('/api/v4/plans', async (request) => {
+  app.get('/api/v1/plans', async (request) => {
     const query = request.query as { limit?: string; status?: string; view?: string };
     const limit = integerValue(query.limit, 100, 1, 1000, 'PLAN_LIST_LIMIT_INVALID');
     const status = query.status;
     if (status && !(PLAN_STATUSES as readonly string[]).includes(status))
-      throw new V4Error('PLAN_STATUS_INVALID');
+      throw new ForgeFlowError('PLAN_STATUS_INVALID');
     if (query.view && query.view !== 'full' && query.view !== 'summary')
-      throw new V4Error('PLAN_LIST_VIEW_INVALID');
+      throw new ForgeFlowError('PLAN_LIST_VIEW_INVALID');
     const plans = repositories.plans.listPlans({
       limit,
       ...(status ? { status: status as PlanStatus } : {}),
@@ -1551,7 +1549,7 @@ export async function buildControlPlane(
     return { items, count: items.length };
   });
 
-  app.get('/api/v4/projects/:projectKey/plan-queue', async (request) => {
+  app.get('/api/v1/projects/:projectKey/plan-queue', async (request) => {
     requireProjectPlanQueue();
     const projectKey = requiredText(
       (request.params as { projectKey?: string }).projectKey,
@@ -1564,20 +1562,20 @@ export async function buildControlPlane(
     };
   });
 
-  app.post('/api/v4/plans/:planId/reprioritize', async (request) => {
+  app.post('/api/v1/plans/:planId/reprioritize', async (request) => {
     requireProjectPlanQueue();
     const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
     const body = bodyRecord(request.body);
     const priority = body.priority;
     if (typeof priority !== 'number' || !Number.isInteger(priority))
-      throw new V4Error('PROJECT_PLAN_PRIORITY_INVALID');
+      throw new ForgeFlowError('PROJECT_PLAN_PRIORITY_INVALID');
     const result = repositories.projectPlans.reprioritize(planId, priority);
     if (result.status === 'rejected')
-      throw new V4Error(result.reason ?? 'PROJECT_PLAN_REPRIORITIZE_FAILED');
+      throw new ForgeFlowError(result.reason ?? 'PROJECT_PLAN_REPRIORITIZE_FAILED');
     return { queueEntry: result.value, mutation: result.status };
   });
 
-  app.post('/api/v4/plans/:planId/cancel-queued', async (request) => {
+  app.post('/api/v1/plans/:planId/cancel-queued', async (request) => {
     const runtime = requireProjectPlanQueue();
     const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
     runtime.cancelQueued(planId);
@@ -1587,7 +1585,7 @@ export async function buildControlPlane(
     };
   });
 
-  app.post('/api/v4/plans', async (request, reply) => {
+  app.post('/api/v1/plans', async (request, reply) => {
     const body = bodyRecord(request.body);
     const idempotencyKey = requiredText(
       request.headers['idempotency-key'] ?? body.idempotencyKey,
@@ -1603,7 +1601,7 @@ export async function buildControlPlane(
       ...(delivery ? { delivery } : {}),
     });
     const plan = planResult.value;
-    if (!plan) throw new V4Error('PLAN_CREATE_FAILED');
+    if (!plan) throw new ForgeFlowError('PLAN_CREATE_FAILED');
     const rawItems = Array.isArray(body.workItems)
       ? body.workItems
       : [
@@ -1654,7 +1652,7 @@ export async function buildControlPlane(
             : typeof body.priority === 'number' && Number.isInteger(body.priority)
               ? body.priority
               : (() => {
-                  throw new V4Error('PROJECT_PLAN_PRIORITY_INVALID');
+                  throw new ForgeFlowError('PROJECT_PLAN_PRIORITY_INVALID');
                 })(),
         )
       : undefined;
@@ -1667,7 +1665,7 @@ export async function buildControlPlane(
     let supervisor = repositories.supervisors.getByPlanId(plan.planId);
     if (!projectPlanQueue) {
       supervisor = supervisor ?? repositories.supervisors.create({ planId: plan.planId }).value;
-      if (!supervisor) throw new V4Error('SUPERVISOR_CREATE_FAILED');
+      if (!supervisor) throw new ForgeFlowError('SUPERVISOR_CREATE_FAILED');
       if (supervisor.status === 'CREATED')
         repositories.supervisors.updateStatus(supervisor.supervisorId, 'ACTIVE');
       supervisor = repositories.supervisors.getById(supervisor.supervisorId);
@@ -1683,7 +1681,7 @@ export async function buildControlPlane(
     };
   });
 
-  app.post('/api/v4/plans/:planId/children', async (request, reply) => {
+  app.post('/api/v1/plans/:planId/children', async (request, reply) => {
     const parentPlanId = requiredText(
       (request.params as { planId?: string }).planId,
       'PLAN_ID_REQUIRED',
@@ -1695,7 +1693,7 @@ export async function buildControlPlane(
       relation !== 'INFRASTRUCTURE_REPAIR' &&
       relation !== 'FOLLOW_UP'
     )
-      throw new V4Error('CHILD_RELATION_INVALID');
+      throw new ForgeFlowError('CHILD_RELATION_INVALID');
     const parent = repositories.plans.getPlan(parentPlanId);
     const child = kernels.plan.createChildPlan({
       parentPlanId,
@@ -1753,7 +1751,7 @@ export async function buildControlPlane(
     let supervisor = repositories.supervisors.getByPlanId(child.plan.planId);
     if (!supervisor) {
       supervisor = repositories.supervisors.create({ planId: child.plan.planId }).value;
-      if (!supervisor) throw new V4Error('SUPERVISOR_CREATE_FAILED');
+      if (!supervisor) throw new ForgeFlowError('SUPERVISOR_CREATE_FAILED');
       if (supervisor.status === 'CREATED')
         repositories.supervisors.updateStatus(supervisor.supervisorId, 'ACTIVE');
     }
@@ -1763,44 +1761,44 @@ export async function buildControlPlane(
       graph,
       relationshipId: child.relationshipId,
       supervisor: repositories.supervisors.getByPlanId(child.plan.planId),
-      statusUrl: '/api/v4/plans/' + encodeURIComponent(child.plan.planId),
+      statusUrl: '/api/v1/plans/' + encodeURIComponent(child.plan.planId),
     };
   });
 
-  app.post('/api/v4/plans/:planId/delivery', async (request, reply) => {
+  app.post('/api/v1/plans/:planId/delivery', async (request, reply) => {
     const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
     const config = planDeliveryConfig(request.body);
-    if (!config) throw new V4Error('PLAN_DELIVERY_REQUIRED');
+    if (!config) throw new ForgeFlowError('PLAN_DELIVERY_REQUIRED');
     const result = repositories.plans.attachDelivery(planId, config);
     reply.code(result.status === 'created' ? 201 : 200);
     return {
       planId,
       delivery: result.value,
-      statusUrl: '/api/v4/plans/' + encodeURIComponent(planId),
+      statusUrl: '/api/v1/plans/' + encodeURIComponent(planId),
     };
   });
 
-  app.get('/api/v4/plans/:planId', async (request) => {
+  app.get('/api/v1/plans/:planId', async (request) => {
     const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
     return planView(planId);
   });
 
-  app.post('/api/v4/plans/:planId/run', async (request) => {
+  app.post('/api/v1/plans/:planId/run', async (request) => {
     const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
     return await requireAutomation().plans.runPlan(planId);
   });
 
-  app.post('/api/v4/plans/:planId/reconcile', async (request, reply) => {
+  app.post('/api/v1/plans/:planId/reconcile', async (request, reply) => {
     const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
     const body = request.body === undefined ? {} : bodyRecord(request.body);
     const mode =
       body.mode === undefined ? 'auto' : requiredText(body.mode, 'PLAN_RECONCILE_MODE_INVALID');
     const result = await requireAutomation().plans.reconcilePlan(planId, mode);
     reply.code(202);
-    return { ...result, statusUrl: '/api/v4/plans/' + encodeURIComponent(planId) };
+    return { ...result, statusUrl: '/api/v1/plans/' + encodeURIComponent(planId) };
   });
 
-  app.get('/api/v4/executions', async (request) => {
+  app.get('/api/v1/executions', async (request) => {
     const query = request.query as {
       limit?: string;
       planId?: string;
@@ -1810,8 +1808,8 @@ export async function buildControlPlane(
     const limit = integerValue(query.limit, 100, 1, 1000, 'EXECUTION_LIST_LIMIT_INVALID');
     const status = query.status;
     if (status && !(EXECUTION_STATUSES as readonly string[]).includes(status))
-      throw new V4Error('EXECUTION_STATUS_INVALID');
-    if (query.view && query.view !== 'dashboard') throw new V4Error('EXECUTION_LIST_VIEW_INVALID');
+      throw new ForgeFlowError('EXECUTION_STATUS_INVALID');
+    if (query.view && query.view !== 'dashboard') throw new ForgeFlowError('EXECUTION_LIST_VIEW_INVALID');
     const items = repositories.executions.list({
       limit,
       ...(query.planId ? { planId: requiredText(query.planId, 'EXECUTION_PLAN_REQUIRED') } : {}),
@@ -1869,7 +1867,7 @@ export async function buildControlPlane(
     return { items: enriched, count: enriched.length };
   });
 
-  app.get('/api/v4/executions/:executionId', async (request) => {
+  app.get('/api/v1/executions/:executionId', async (request) => {
     const executionId = requiredText(
       (request.params as { executionId?: string }).executionId,
       'EXECUTION_ID_REQUIRED',
@@ -1884,7 +1882,7 @@ export async function buildControlPlane(
     };
   });
 
-  app.post('/api/v4/executions/:executionId/run', async (request) => {
+  app.post('/api/v1/executions/:executionId/run', async (request) => {
     const executionId = requiredText(
       (request.params as { executionId?: string }).executionId,
       'EXECUTION_ID_REQUIRED',
@@ -1892,7 +1890,7 @@ export async function buildControlPlane(
     return await requireAutomation().worker.runExecution(executionId);
   });
 
-  app.post('/api/v4/executions/:executionId/continue', async (request) => {
+  app.post('/api/v1/executions/:executionId/continue', async (request) => {
     const executionId = requiredText(
       (request.params as { executionId?: string }).executionId,
       'EXECUTION_ID_REQUIRED',
@@ -1903,13 +1901,13 @@ export async function buildControlPlane(
         ? body.instruction.trim()
         : undefined;
     if (body.interruptCurrent !== undefined && typeof body.interruptCurrent !== 'boolean')
-      throw new V4Error('EXECUTION_CONTINUE_INTERRUPT_INVALID');
+      throw new ForgeFlowError('EXECUTION_CONTINUE_INTERRUPT_INVALID');
     return await requireAutomation().worker.continueExecution(executionId, instruction, {
       interruptCurrent: body.interruptCurrent === true,
     });
   });
 
-  app.post('/api/v4/executions/:executionId/adopt-workspace', async (request) => {
+  app.post('/api/v1/executions/:executionId/adopt-workspace', async (request) => {
     const executionId = requiredText(
       (request.params as { executionId?: string }).executionId,
       'EXECUTION_ID_REQUIRED',
@@ -1927,7 +1925,7 @@ export async function buildControlPlane(
     );
   });
 
-  app.post('/api/v4/executions/:executionId/abort-paused-provider', async (request) => {
+  app.post('/api/v1/executions/:executionId/abort-paused-provider', async (request) => {
     const executionId = requiredText(
       (request.params as { executionId?: string }).executionId,
       'EXECUTION_ID_REQUIRED',
@@ -1945,7 +1943,7 @@ export async function buildControlPlane(
     );
   });
 
-  app.post('/api/v4/executions/:executionId/replace-provider-session', async (request) => {
+  app.post('/api/v1/executions/:executionId/replace-provider-session', async (request) => {
     const executionId = requiredText(
       (request.params as { executionId?: string }).executionId,
       'EXECUTION_ID_REQUIRED',
@@ -1969,7 +1967,7 @@ export async function buildControlPlane(
     );
   });
 
-  app.get('/api/v4/supervisors/:supervisorId/projection', async (request) => {
+  app.get('/api/v1/supervisors/:supervisorId/projection', async (request) => {
     const supervisorId = requiredText(
       (request.params as { supervisorId?: string }).supervisorId,
       'SUPERVISOR_ID_REQUIRED',
@@ -1977,22 +1975,22 @@ export async function buildControlPlane(
     return buildBoundedProjection(db, supervisorId);
   });
 
-  app.post('/api/v4/supervisors/:supervisorId/decisions', async (request) => {
+  app.post('/api/v1/supervisors/:supervisorId/decisions', async (request) => {
     const supervisorId = requiredText(
       (request.params as { supervisorId?: string }).supervisorId,
       'SUPERVISOR_ID_REQUIRED',
     );
     const projection = buildBoundedProjection(db, supervisorId);
     const decisionBody = bodyRecord(request.body);
-    const decision = (await import('./v4/supervisor/protocol.js')).parseSupervisorDecision(
+    const decision = (await import('./core/supervisor/protocol.js')).parseSupervisorDecision(
       JSON.stringify(decisionBody),
     );
-    if (decision.supervisorId !== supervisorId) throw new V4Error('ACTION_SUPERVISOR_MISMATCH');
+    if (decision.supervisorId !== supervisorId) throw new ForgeFlowError('ACTION_SUPERVISOR_MISMATCH');
     return await supervisorActions.execute(decision, projection);
   });
 
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof V4Error) {
+    if (error instanceof ForgeFlowError) {
       void reply.code(statusFor(error)).send({ error: error.code, message: error.message });
       return;
     }
@@ -2003,7 +2001,7 @@ export async function buildControlPlane(
   });
 
   const supervisorInterval =
-    env.MODEL_CP_SUPERVISOR_RUNTIME_ENABLED === 'true'
+    env.FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED === 'true'
       ? setInterval(
           () => {
             void supervisorRuntime
@@ -2028,7 +2026,7 @@ export async function buildControlPlane(
               );
           },
           integerValue(
-            env.MODEL_CP_SUPERVISOR_POLL_MS,
+            env.FORGEFLOW_SUPERVISOR_POLL_MS,
             5_000,
             1_000,
             300_000,
@@ -2071,7 +2069,7 @@ export async function buildControlPlane(
             });
         },
         integerValue(
-          env.MODEL_CP_V4_RESOURCE_REFRESH_MS,
+          env.FORGEFLOW_RESOURCE_REFRESH_MS,
           60_000,
           10_000,
           3_600_000,
@@ -2082,7 +2080,7 @@ export async function buildControlPlane(
 
   let automationCycleRunning = false;
   const automationInterval =
-    automation && env.MODEL_CP_AUTOMATION_RUNTIME_ENABLED === 'true'
+    automation && env.FORGEFLOW_AUTOMATION_RUNTIME_ENABLED === 'true'
       ? setInterval(
           () => {
             if (automationCycleRunning) return;
@@ -2117,7 +2115,7 @@ export async function buildControlPlane(
               });
           },
           integerValue(
-            env.MODEL_CP_AUTOMATION_POLL_MS,
+            env.FORGEFLOW_AUTOMATION_POLL_MS,
             5_000,
             1_000,
             300_000,
@@ -2133,8 +2131,8 @@ export async function buildControlPlane(
     db.close();
   });
 
-  const host = env.MODEL_CP_HOST ?? '127.0.0.1';
-  const port = Number(env.MODEL_CP_PORT ?? 8320);
+  const host = env.FORGEFLOW_HOST ?? '127.0.0.1';
+  const port = Number(env.FORGEFLOW_PORT ?? 8420);
   return {
     app,
     db,

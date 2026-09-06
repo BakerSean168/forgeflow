@@ -1,0 +1,14 @@
+# ForgeFlow execution overlay for the DSH ACP profile.
+# The worker's logical model is injected per execution by OpenHands as DSH_ACP_MODEL.
+# LiteLLM owns provider/model output policy. The version-pinned DSH vendor patch keeps
+# an omitted maxTokens value omitted on the wire instead of materializing 256k.
+- id: acp-server
+  config:
+    provider: deepseek-official
+    model: !!js process.env.DSH_ACP_MODEL ?? 'implementation-efficient'
+
+- id: llm-deepseek
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+    baseURL: !!js process.env.DEEPSEEK_BASE_URL
+    defaultContextWindow: 262144

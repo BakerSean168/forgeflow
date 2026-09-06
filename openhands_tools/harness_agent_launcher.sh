@@ -8,23 +8,22 @@ if [[ -z "$mode" ]]; then
 fi
 shift
 
-execution_id="${HERMES_V3_EXECUTION_ID:-}"
+execution_id="${FORGEFLOW_EXECUTION_ID:-}"
 case "$execution_id" in
   ""|*[!a-zA-Z0-9._-]*)
-    echo "agent-harness launch requires a valid HERMES_V3_EXECUTION_ID" >&2
+    echo "agent-harness launch requires a valid FORGEFLOW_EXECUTION_ID" >&2
     exit 2
     ;;
 esac
 
-workspace_repo="${HERMES_V3_WORKSPACE_REF:-}"
-expected_v3_workspace_repo="/workspace/executions/$execution_id/repo"
-expected_v4_workspace_repo="/workspace/v4/executions/$execution_id/repo"
+workspace_repo="${FORGEFLOW_WORKSPACE_REF:-}"
+expected_workspace_repo="/workspace/forgeflow/executions/$execution_id/repo"
 literal_worktree=false
-if [[ "$workspace_repo" =~ ^/workspace/v4/plans/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(items|reviews|repairs)/[A-Za-z0-9._-]+/repo$ ]]; then
+if [[ "$workspace_repo" =~ ^/workspace/forgeflow/plans/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(items|reviews|repairs)/[A-Za-z0-9._-]+/repo$ ]]; then
   literal_worktree=true
 fi
-if [[ "$workspace_repo" != "$expected_v3_workspace_repo" && "$workspace_repo" != "$expected_v4_workspace_repo" && "$literal_worktree" != true ]]; then
-  echo "agent-harness launch requires an execution-scoped workspace or an admitted V4 Plan worktree" >&2
+if [[ "$workspace_repo" != "$expected_workspace_repo" && "$literal_worktree" != true ]]; then
+  echo "agent-harness launch requires an execution-scoped workspace or an admitted ForgeFlow Plan worktree" >&2
   exit 2
 fi
 if [[ ! -d "$workspace_repo" ]]; then
@@ -34,7 +33,7 @@ fi
 cd -- "$workspace_repo"
 # Execution-scoped harness state must stay isolated even when IMPLEMENT_FIX reuses
 # an earlier implementation/adoption workspace. Derive it only after the exact
-# V3/V4 path admission above so arbitrary workspace roots remain rejected.
+# ForgeFlow path admission above so arbitrary workspace roots remain rejected.
 if [[ "$literal_worktree" == true ]]; then
   execution_root="${workspace_repo%/repo}/.executions/$execution_id"
 else
@@ -69,11 +68,11 @@ prepare_root() {
 
 case "$mode" in
   opencode)
-    # AI Office owns provider/model routing; Agent Harness owns Skills, MCP and
+    # ForgeFlow owns provider/model routing; Agent Harness owns Skills, MCP and
     # project instructions. Use the fixed provider config as the base layer and
     # materialize the effective project capabilities over it for this execution.
     mkdir -p "$HOME/.config/opencode"
-    cp /etc/hermes-ai-office-v3/opencode.json "$HOME/.config/opencode/opencode.json"
+    cp /etc/forgeflow/opencode.json "$HOME/.config/opencode/opencode.json"
     chmod 0600 "$HOME/.config/opencode/opencode.json"
     unset OPENCODE_CONFIG
     root="$(prepare_root opencode)"
@@ -102,16 +101,16 @@ case "$mode" in
       "$DSH_BIN" plugin --profile acp add /openhands-state/tooling/node_modules/dsh-acp-server \
         >/dev/null
     fi
-    ai_office_dsh_patch=/etc/hermes-ai-office-v3/dsh-acp-v3.patch.yml
-    [[ -r "$ai_office_dsh_patch" ]] || {
-      echo "dsh-acp launch requires the AI Office routing patch: $ai_office_dsh_patch" >&2
+    forgeflow_dsh_patch=/etc/forgeflow/dsh-acp.patch.yml
+    [[ -r "$forgeflow_dsh_patch" ]] || {
+      echo "dsh-acp launch requires the ForgeFlow routing patch: $forgeflow_dsh_patch" >&2
       exit 2
     }
     # The first overlay owns the immutable model/provider transport selected by
-    # Pixel. Agent Harness is deliberately a second, capability-only overlay
+    # ForgeFlow. Agent Harness is deliberately a second, capability-only overlay
     # for Skills/MCP/instructions; it must not become another routing authority.
     exec /openhands-state/tooling/node_modules/.bin/dsh-acp-server \
-      --patch "$ai_office_dsh_patch" \
+      --patch "$forgeflow_dsh_patch" \
       --patch "$root/dsh/capabilities.patch.yml" "$@"
     ;;
   zcode-acp)
@@ -126,9 +125,9 @@ case "$mode" in
     zcode_provider_config="$zcode_provider_dir/config.json"
     mkdir -p "$zcode_home" "$zcode_provider_dir"
     chmod 0700 "$zcode_root" "$zcode_home" "$zcode_provider_dir"
-    zcode_key="${AI_OFFICE_LITELLM_API_KEY:-${ZCODE_API_KEY:-}}"
-    zcode_base="${AI_OFFICE_LITELLM_BASE_URL:-${ZCODE_BASE_URL:-}}"
-    zcode_model="${AI_OFFICE_AGENT_MODEL:-${ZCODE_MODEL:-}}"
+    zcode_key="${FORGEFLOW_LITELLM_API_KEY:-${ZCODE_API_KEY:-}}"
+    zcode_base="${FORGEFLOW_LITELLM_BASE_URL:-${ZCODE_BASE_URL:-}}"
+    zcode_model="${FORGEFLOW_AGENT_MODEL:-${ZCODE_MODEL:-}}"
     zcode_model_family="${ZCODE_MODEL_FAMILY:-}"
     zcode_reasoning_effort="${ZCODE_REASONING_EFFORT:-high}"
     if [[ -z "$zcode_key" || -z "$zcode_base" || -z "$zcode_model" ]]; then
@@ -195,10 +194,10 @@ if model_family == "glm-current":
     }
 target.write_text(json.dumps({
     "provider": {
-        "pixel-litellm": {
+        "forgeflow-litellm": {
             "enabled": True,
             "kind": "openai-compatible",
-            "name": "Pixel LiteLLM",
+            "name": "ForgeFlow LiteLLM",
             "source": "custom",
             "options": {
                 "baseURL": os.environ["ZCODE_BASE_URL"],

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+canonical_root="${FORGEFLOW_ROOT:-/home/dev/projects/forgeflow}"
+release_ref="${FORGEFLOW_RELEASE_REF:-refs/forgeflow/release-approved}"
+release_root="${FORGEFLOW_RELEASE_WORKTREE_ROOT:-/home/dev/projects/.forgeflow-release-worktrees}"
+release_lock="${FORGEFLOW_RELEASE_LOCK:-/tmp/forgeflow-release.lock}"
+service="${FORGEFLOW_SYSTEMD_SERVICE:-forgeflow.service}"
+health_url="${FORGEFLOW_HEALTH_URL:-http://127.0.0.1:8420/api/health}"
+db_file="${FORGEFLOW_DB:-/var/lib/forgeflow/forgeflow.sqlite}"
+backup_dir="${FORGEFLOW_BACKUP_DIR:-/var/lib/forgeflow/backups}"
+
+exec 9>"$release_lock"
+flock -n 9 || { echo "another ForgeFlow release is active" >&2; exit 1; }
+[[ "$release_ref" == refs/forgeflow/* ]] || { echo "release ref must stay below refs/forgeflow" >&2; exit 1; }
+source_sha="$(git -C "$canonical_root" rev-parse "${release_ref}^{commit}")"
+git -C "$canonical_root" cat-file -e "${source_sha}^{commit}"
+mkdir -p "$release_root"
+git -C "$canonical_root" worktree prune --expire now
+worktree="$release_root/${source_sha}-$$"
+cleanup() {
+  git -C "$canonical_root" worktree unlock -- "$worktree" >/dev/null 2>&1 || true
+  git -C "$canonical_root" worktree remove --force -- "$worktree" >/dev/null 2>&1 || true
+  git -C "$canonical_root" worktree prune --expire now >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+
+git -C "$canonical_root" worktree add --detach "$worktree" "$source_sha"
+[[ "$(git -C "$worktree" rev-parse HEAD)" == "$source_sha" ]]
+[[ -z "$(git -C "$worktree" status --porcelain)" ]]
+[[ -d "$canonical_root/node_modules" ]] || { echo "canonical node_modules missing" >&2; exit 1; }
+ln -s "$canonical_root/node_modules" "$worktree/node_modules"
+
+(cd "$worktree" && npm run check-types && npm test)
+candidate="$canonical_root/.release-candidates/${source_sha}-$$"
+rm -rf "$candidate"
+mkdir -p "$(dirname "$candidate")"
+(cd "$worktree" && npm exec -- tsc -p tsconfig.json --outDir "$candidate")
+test -s "$candidate/main.js"
+
+if [[ -f "$db_file" ]]; then
+  install -d -m 0750 "$backup_dir"
+  backup="$backup_dir/forgeflow-$(date -u +%Y%m%dT%H%M%SZ)-${source_sha:0:12}.sqlite"
+  /usr/bin/node --input-type=module - "$db_file" "$backup" <<'NODE'
+import { DatabaseSync, backup } from 'node:sqlite';
+const [source, target] = process.argv.slice(2);
+const db = new DatabaseSync(source);
+try { await backup(db, target); } finally { db.close(); }
+NODE
+fi
+
+live="$canonical_root/dist"
+if [[ -d "$live" ]]; then
+  python3 "$worktree/scripts/atomic-exchange-directories.py" "$live" "$candidate"
+  rm -rf "$candidate"
+else
+  mv "$candidate" "$live"
+fi
+
+if systemctl cat "$service" >/dev/null 2>&1; then
+  sudo systemctl restart "$service"
+  for _ in $(seq 1 45); do
+    if payload="$(curl -fsS --max-time 2 "$health_url" 2>/dev/null)"; then
+      HEALTH_JSON="$payload" node - <<'NODE'
+const h=JSON.parse(process.env.HEALTH_JSON ?? '{}');
+if (h.status !== 'ok' || h.service !== 'forgeflow-control-plane' || h.apiVersion !== 1) process.exit(1);
+NODE
+      echo "ForgeFlow release healthy; source_sha=$source_sha"
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "ForgeFlow release health check failed" >&2
+  exit 1
+fi
+
+echo "ForgeFlow artifact built and installed; service not installed, source_sha=$source_sha"

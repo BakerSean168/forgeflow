@@ -8,7 +8,9 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "check-types": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/main.ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "check:boundary": "node scripts/check-product-boundary.mjs",
+    "check": "npm run check:boundary && npm run check-types && npm test && npm run build"
   },
   "dependencies": {
     "fastify": "^5.8.5",
@@ -19,7 +21,7 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
-  "version": "1.0.0-alpha.0",
+  "version": "1.0.0",
   "description": "Autonomous software engineering system with durable planning, execution, review, recovery, delivery, and self-improvement.",
   "engines": {
     "node": ">=24"
