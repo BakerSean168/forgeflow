@@ -43,6 +43,47 @@ test('ForgeFlow runtime fails closed when execution automation is disabled', asy
   await runtime.app.close();
 });
 
+test('Supervisor runtime refuses the retired static model route', async () => {
+  await assert.rejects(
+    () =>
+      buildControlPlane({
+        dbFile: ':memory:',
+        environment: 'test',
+        logger: false,
+        env: {
+          NODE_ENV: 'test',
+          FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'false',
+          FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED: 'true',
+          FORGEFLOW_SUPERVISOR_MODEL: 'gpt-5.6-sol',
+        },
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'SUPERVISOR_STATIC_ROUTE_UNSUPPORTED',
+  );
+});
+
+test('Supervisor runtime requires the governed Resource Selector', async () => {
+  await assert.rejects(
+    () =>
+      buildControlPlane({
+        dbFile: ':memory:',
+        environment: 'test',
+        logger: false,
+        env: {
+          NODE_ENV: 'test',
+          FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'false',
+          FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED: 'true',
+        },
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'SUPERVISOR_RESOURCE_SELECTOR_REQUIRED',
+  );
+});
+
 test('ForgeFlow health exposes only validated host cache maintenance state', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-host-cache-state-'));
   const stateFile = path.join(root, 'host-cache-maintenance.json');
@@ -397,6 +438,8 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
       FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'true',
       FORGEFLOW_AUTOMATION_RUNTIME_ENABLED: 'false',
       FORGEFLOW_RESOURCE_SELECTOR_ENABLED: 'true',
+      FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED: 'true',
+      FORGEFLOW_SUPERVISOR_POLL_MS: '300000',
       // Deliberately conflicting legacy route lists prove selector mode never
       // reads or validates the rollback-only route authority.
       FORGEFLOW_IMPLEMENTATION_ROUTES: 'must-not-be-read',
@@ -432,6 +475,11 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
     'claude-opus-4-8',
   ]);
   const selectorHealth = await runtime.app.inject({ method: 'GET', url: '/api/health' });
+  assert.deepEqual(selectorHealth.json().supervisorRuntime, {
+    enabled: true,
+    resourceSelectorEnabled: true,
+    maxResourceAttempts: 3,
+  });
   assert.equal(selectorHealth.json().executionRuntime.routingAuthority, 'RESOURCE_SELECTOR');
   assert.deepEqual(selectorHealth.json().executionRuntime.compatibilityImplementationRoutes, []);
   assert.deepEqual(selectorHealth.json().executionRuntime.compatibilityReviewRoutes, []);

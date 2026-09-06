@@ -16,6 +16,7 @@ const cache = read('scripts/prune-host-cache.sh');
 const antigravityUnit = read('deploy/gcp/forgeflow-antigravity@.service');
 const headless = read('openhands_tools/headless_review_acp.mjs');
 const launcher = read('openhands_tools/harness_agent_launcher.sh');
+const forgeFlowEnv = read('deploy/forgeflow.env.example');
 
 test('ForgeFlow service is standalone, headless, and fail-closed around host writes', () => {
   assert.match(service, /Description=ForgeFlow Autonomous Software Engineering Control Plane/);
@@ -30,6 +31,13 @@ test('ForgeFlow service is standalone, headless, and fail-closed around host wri
   assert.match(service, /RestrictSUIDSGID=true/);
   assert.match(service, /ReadWritePaths=\/var\/lib\/forgeflow/);
   assert.doesNotMatch(service, /ReadWritePaths=\/home\/dev\/projects\s*$/m);
+});
+
+test('Supervisor deployment uses governed bounded resource selection rather than a static model alias', () => {
+  assert.match(service, /FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED=true/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_SUPERVISOR_MAX_RESOURCE_ATTEMPTS=3/);
+  assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_SUPERVISOR_MODEL=/);
+  assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_SUPERVISOR_ENDPOINT=/);
 });
 
 test('OpenHands execution plane uses ForgeFlow-only paths and no visualization surface', () => {

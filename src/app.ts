@@ -78,11 +78,8 @@ import { bootstrapForgeFlow } from './core/persistence/bootstrap.js';
 import { createRepositories, type ForgeFlowRepositories } from './core/persistence/repositories.js';
 import { SupervisorActionExecutor, type SupervisorKernelPort } from './core/supervisor/executor.js';
 import { buildBoundedProjection } from './core/supervisor/projection.js';
-import {
-  HttpSupervisorDecisionClient,
-  OpenAICompatibleSupervisorDecisionClient,
-  SupervisorRuntime,
-} from './core/supervisor/runtime.js';
+import { ResourceSelectedSupervisorDecisionClient } from './core/supervisor/resourceClient.js';
+import { SupervisorRuntime } from './core/supervisor/runtime.js';
 import { SupervisorWakeScheduler } from './core/supervisor/scheduler.js';
 
 export interface BuildControlPlaneOptions {
@@ -1245,20 +1242,41 @@ export async function buildControlPlane(
       : undefined,
   );
   const scheduler = new SupervisorWakeScheduler(repositories.supervisors, db);
-  const modelClient = env.FORGEFLOW_SUPERVISOR_ENDPOINT
-    ? new HttpSupervisorDecisionClient(
-        env.FORGEFLOW_SUPERVISOR_ENDPOINT,
-        env.FORGEFLOW_SUPERVISOR_TOKEN,
+  const supervisorRuntimeEnabled = env.FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED === 'true';
+  const supervisorMaxResourceAttempts = integerValue(
+    env.FORGEFLOW_SUPERVISOR_MAX_RESOURCE_ATTEMPTS,
+    3,
+    1,
+    20,
+    'SUPERVISOR_RESOURCE_ATTEMPT_LIMIT_INVALID',
+  );
+  if (
+    supervisorRuntimeEnabled &&
+    (env.FORGEFLOW_SUPERVISOR_ENDPOINT ||
+      env.FORGEFLOW_SUPERVISOR_TOKEN ||
+      env.FORGEFLOW_SUPERVISOR_MODEL)
+  )
+    throw new ForgeFlowError('SUPERVISOR_STATIC_ROUTE_UNSUPPORTED');
+  if (supervisorRuntimeEnabled && !automation?.resourceSelectorEnabled)
+    throw new ForgeFlowError('SUPERVISOR_RESOURCE_SELECTOR_REQUIRED');
+  const modelClient = supervisorRuntimeEnabled
+    ? new ResourceSelectedSupervisorDecisionClient(
+        automation!.resourceSelector,
+        requiredText(env.FORGEFLOW_LITELLM_BASE_URL, 'SUPERVISOR_RESOURCE_BASE_URL_REQUIRED'),
+        requiredText(env.FORGEFLOW_LITELLM_API_KEY, 'SUPERVISOR_RESOURCE_KEY_REQUIRED'),
+        repositories.events,
+        automation!.resourceState,
+        options.fetchImpl ?? fetch,
+        integerValue(
+          env.FORGEFLOW_SUPERVISOR_REQUEST_TIMEOUT_MS,
+          60_000,
+          1_000,
+          300_000,
+          'SUPERVISOR_RESOURCE_TIMEOUT_INVALID',
+        ),
+        supervisorMaxResourceAttempts,
       )
-    : env.FORGEFLOW_LITELLM_BASE_URL &&
-        env.FORGEFLOW_LITELLM_API_KEY &&
-        env.FORGEFLOW_SUPERVISOR_MODEL
-      ? new OpenAICompatibleSupervisorDecisionClient(
-          env.FORGEFLOW_LITELLM_BASE_URL,
-          env.FORGEFLOW_SUPERVISOR_MODEL,
-          env.FORGEFLOW_LITELLM_API_KEY!,
-        )
-      : undefined;
+    : undefined;
   const supervisorRuntime = new SupervisorRuntime(
     db,
     repositories.supervisors,
@@ -1363,6 +1381,11 @@ export async function buildControlPlane(
             queuedPlans: repositories.projectPlans.listQueue(lease.projectKey).length,
           }))
         : [],
+    },
+    supervisorRuntime: {
+      enabled: supervisorRuntimeEnabled,
+      resourceSelectorEnabled: Boolean(modelClient),
+      maxResourceAttempts: supervisorMaxResourceAttempts,
     },
     executionRuntime: {
       enabled: Boolean(automation),
@@ -2000,9 +2023,8 @@ export async function buildControlPlane(
     });
   });
 
-  const supervisorInterval =
-    env.FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED === 'true'
-      ? setInterval(
+  const supervisorInterval = supervisorRuntimeEnabled
+    ? setInterval(
           () => {
             void supervisorRuntime
               .runOnce()

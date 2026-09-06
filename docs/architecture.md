@@ -30,6 +30,8 @@ Execution resources combine model family, agent backend, transport, resource tie
 
 The Supervisor consumes a bounded projection of durable state and returns exactly one typed decision. It can diagnose unusual failures or alter the remaining plan, but it cannot execute arbitrary shell commands, mutate the database, fabricate evidence, approve its own implementation, or bypass safety gates.
 
+Supervisor reasoning is itself governed by the Resource Selector. There is no production static model alias or alternate Supervisor endpoint: each decision selects a runtime-admitted `REASONING` resource through the `SUPERVISE` phase, records sanitized selection provenance, and uses a bounded failover budget. Provider/network/quota failures feed the normal resource-health policy before trying the next eligible reasoning resource. A malformed decision is rejected for that decision attempt without globally poisoning an otherwise healthy provider. Both Chat Completions and Responses protocol bindings are honored according to the selected resource contract.
+
 ## Delivery invariant
 
 An implementation commit is not equivalent to accepted work. The normal acceptance chain is:

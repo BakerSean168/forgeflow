@@ -249,6 +249,20 @@ test('state service disables quota exhaustion and suspends free transient failur
   db.close();
 });
 
+test('resource state feedback records Supervisor as the durable failure source', () => {
+  const db = openDatabase(':memory:', { environment: 'test', env: { NODE_ENV: 'test' } });
+  const repositories = createRepositories(db);
+  const service = new ResourceStateService(
+    new StaticResourceDirectory([freeResource()]),
+    repositories.resourceStateOverrides,
+  );
+  service.failure(selection(), new Error('monthly usage limit reached'), 'SUPERVISOR');
+  const override = repositories.resourceStateOverrides.get('free-provider');
+  assert.equal(override?.state, 'DISABLED');
+  assert.equal(override?.source, 'SUPERVISOR');
+  db.close();
+});
+
 test('LiteLLM transient suspension stays local and does not block the probe route', async () => {
   const db = openDatabase(':memory:', { environment: 'test', env: { NODE_ENV: 'test' } });
   const repositories = createRepositories(db);

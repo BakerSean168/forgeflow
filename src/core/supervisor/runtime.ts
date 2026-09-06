@@ -9,45 +9,65 @@ import type { SupervisorRepository } from '../persistence/repositories.js';
 import type { OpenHandsSupervisorAdapter } from '../adapters/openhands.js';
 import { ForgeFlowError } from '../domain/errors.js';
 
+export interface SupervisorDecisionInput {
+  conversationId: string;
+  supervisorId: string;
+  planId: string;
+  projection: SupervisorProjection;
+}
+
+export const SUPERVISOR_SYSTEM_PROMPT = 'Return exactly one JSON object with version numeric 1 (not a string), planId, supervisorId, observationCursor integer, projectionDigest, idempotencyKey, preconditionSnapshot object, and action object. action must contain actionId, version numeric 1, type, planId, supervisorId, observationCursor, projectionDigest, idempotencyKey, preconditionSnapshot, payload, status PROPOSED. For NO_ACTION payload use {type:NO_ACTION,reason:string}. Use CREATE_EXECUTION for a dependency-ready PENDING/READY work item with no active execution. Otherwise only choose an action whose required IDs are present in the projection; when no usable workItemId, executionId, resourceId, or baseExecutionId is present, choose NO_ACTION. Do not return conversationId, reason, classification, prose, markdown, shell, workspace, credential, merge, deployment, or autonomous authority.';
+
+export function openAICompatibleSupervisorRequest(model: string, input: SupervisorDecisionInput): Record<string, unknown> {
+  return {
+    model,
+    temperature: 0,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: SUPERVISOR_SYSTEM_PROMPT },
+      { role: 'user', content: JSON.stringify({ conversationId: input.conversationId, supervisorId: input.supervisorId, planId: input.planId, projection: input.projection }) },
+    ],
+  };
+}
+
+export function normalizeSupervisorDecisionContent(content: unknown): string {
+  if (typeof content !== 'string' || content.length === 0 || content.length > 64_000) throw new ForgeFlowError('SUPERVISOR_DECISION_INVALID');
+  const trimmed = content.trim();
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new ForgeFlowError('SUPERVISOR_DECISION_INVALID');
+  const json = trimmed.slice(start, end + 1);
+  try { const parsed = JSON.parse(json) as { decision?: unknown }; if (parsed && typeof parsed.decision === 'object' && parsed.decision !== null) return JSON.stringify(parsed.decision); } catch { /* protocol parser reports the bounded failure */ }
+  return json;
+}
+
+export function extractOpenAICompatibleSupervisorDecision(payload: unknown): string {
+  const value = payload as { choices?: Array<{ message?: { content?: unknown } }> };
+  return normalizeSupervisorDecisionContent(value.choices?.[0]?.message?.content);
+}
+
 export class OpenAICompatibleSupervisorDecisionClient implements SupervisorDecisionClient {
   constructor(readonly baseUrl: string, readonly model: string, readonly bearerToken: string, readonly fetchImpl: typeof fetch = fetch, readonly timeoutMs = 60_000) {}
-  async decide(input: { conversationId: string; supervisorId: string; planId: string; projection: SupervisorProjection }): Promise<string> {
+  async decide(input: SupervisorDecisionInput): Promise<string> {
     const endpoint = this.baseUrl.replace(/\/$/, '') + (this.baseUrl.endsWith('/v1') ? '/chat/completions' : '/v1/chat/completions');
     const response = await this.fetchImpl(endpoint, {
       method: 'POST',
       headers: Object.fromEntries([['content-type', 'application/json'], ['authorization', 'Bearer ' + this.bearerToken]]),
       signal: AbortSignal.timeout(this.timeoutMs),
-      body: JSON.stringify({
-        model: this.model,
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: 'Return exactly one JSON object with version numeric 1 (not a string), planId, supervisorId, observationCursor integer, projectionDigest, idempotencyKey, preconditionSnapshot object, and action object. action must contain actionId, version numeric 1, type, planId, supervisorId, observationCursor, projectionDigest, idempotencyKey, preconditionSnapshot, payload, status PROPOSED. For NO_ACTION payload use {type:NO_ACTION,reason:string}. Use CREATE_EXECUTION for a dependency-ready PENDING/READY work item with no active execution. Otherwise only choose an action whose required IDs are present in the projection; when no usable workItemId, executionId, resourceId, or baseExecutionId is present, choose NO_ACTION. Do not return conversationId, reason, classification, prose, markdown, shell, workspace, credential, merge, deployment, or autonomous authority.' },
-          { role: 'user', content: JSON.stringify({ conversationId: input.conversationId, supervisorId: input.supervisorId, planId: input.planId, projection: input.projection }) },
-        ],
-      }),
+      body: JSON.stringify(openAICompatibleSupervisorRequest(this.model, input)),
     });
     if (!response.ok) throw new ForgeFlowError('SUPERVISOR_MODEL_UNAVAILABLE', 'Supervisor provider HTTP ' + response.status);
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> };
-    const content = payload.choices?.[0]?.message?.content;
-    if (typeof content !== 'string' || content.length === 0 || content.length > 64_000) throw new ForgeFlowError('SUPERVISOR_DECISION_INVALID');
-    const trimmed = content.trim();
-    const start = trimmed.indexOf('{');
-    const end = trimmed.lastIndexOf('}');
-    if (start < 0 || end <= start) throw new ForgeFlowError('SUPERVISOR_DECISION_INVALID');
-    const json = trimmed.slice(start, end + 1);
-    try { const parsed = JSON.parse(json) as { decision?: unknown }; if (parsed && typeof parsed.decision === 'object' && parsed.decision !== null) return JSON.stringify(parsed.decision); } catch { /* protocol parser reports the bounded failure */ }
-    return json;
+    return extractOpenAICompatibleSupervisorDecision(await response.json());
   }
 }
 
 export interface SupervisorDecisionClient {
-  decide(input: { conversationId: string; supervisorId: string; planId: string; projection: SupervisorProjection }): Promise<string>;
+  decide(input: SupervisorDecisionInput): Promise<string>;
 }
 
 export class HttpSupervisorDecisionClient implements SupervisorDecisionClient {
   constructor(readonly endpoint: string, readonly bearerToken?: string, readonly fetchImpl: typeof fetch = fetch, readonly timeoutMs = 30_000) {}
-  async decide(input: { conversationId: string; supervisorId: string; planId: string; projection: SupervisorProjection }): Promise<string> {
+  async decide(input: SupervisorDecisionInput): Promise<string> {
     const response = await this.fetchImpl(this.endpoint, {
       method: 'POST',
       headers: Object.fromEntries([['content-type', 'application/json'], ...(this.bearerToken ? [['authorization', 'Bearer ' + this.bearerToken]] : [])]),

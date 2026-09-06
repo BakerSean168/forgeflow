@@ -602,6 +602,7 @@ test('fault classification and pure resource state policy follow the ForgeFlow l
     'DISABLED',
   );
   assert.equal(capabilityForPhase('PLAN'), 'REASONING');
+  assert.equal(capabilityForPhase('SUPERVISE'), 'REASONING');
   assert.equal(capabilityForPhase('FINALIZE'), undefined);
 });
 

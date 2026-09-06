@@ -453,7 +453,11 @@ export class ResourceStateService implements ResourceFeedbackPort {
     }
     throw new ForgeFlowError('RESOURCE_OVERRIDE_CAS_EXHAUSTED');
   }
-  failure(selection: ExecutionResourceSelection, error: unknown): void {
+  failure(
+    selection: ExecutionResourceSelection,
+    error: unknown,
+    source: ResourceStateOverrideSource = 'EXECUTION',
+  ): void {
     const resource = this.#resource(selection.resourceId);
     const failure = normalizeResourceFailure(error);
     if (failure.failureClass === 'POLICY_DISALLOWED') return;
@@ -483,14 +487,17 @@ export class ResourceStateService implements ResourceFeedbackPort {
     const result = this.#write({
       resourceId: resource.resourceId,
       state: transition.state,
-      source: 'EXECUTION',
+      source,
       ...(transition.reasonClass ? { reasonClass: transition.reasonClass } : {}),
       ...(transition.sanitizedReason ? { sanitizedReason: transition.sanitizedReason } : {}),
       ...(transition.suspendedUntil ? { suspendedUntil: transition.suspendedUntil } : {}),
     });
     if (result.value) this.#effect(resource, result.value.state);
   }
-  success(selection: ExecutionResourceSelection): void {
+  success(
+    selection: ExecutionResourceSelection,
+    source: ResourceStateOverrideSource = 'EXECUTION',
+  ): void {
     const resource = this.#resource(selection.resourceId);
     const current = this.overrides.get(resource.resourceId);
     if (!current || current.state === 'ACTIVE' || current.state === 'DISABLED') return;
@@ -501,7 +508,7 @@ export class ResourceStateService implements ResourceFeedbackPort {
     const result = this.#write({
       resourceId: resource.resourceId,
       state: transition.state,
-      source: 'EXECUTION',
+      source,
     });
     if (result.value) this.#effect(resource, result.value.state);
   }
