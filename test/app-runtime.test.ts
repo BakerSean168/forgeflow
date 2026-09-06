@@ -11,6 +11,62 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 }
 
+function supervisorAdmissionResponse(
+  input: string | URL | Request,
+  init: RequestInit = {},
+): Response | undefined {
+  const url = String(input);
+  if (!url.endsWith('/responses') && !url.endsWith('/chat/completions')) return undefined;
+  let body: any;
+  try {
+    body = JSON.parse(String(init.body));
+  } catch {
+    return undefined;
+  }
+  const admissionPrompt =
+    typeof body.instructions === 'string'
+      ? body.instructions
+      : Array.isArray(body.messages)
+        ? body.messages.find((message: any) => message?.role === 'system')?.content
+        : undefined;
+  if (typeof admissionPrompt !== 'string' || !admissionPrompt.includes('Return exactly one JSON object'))
+    return undefined;
+  const decision = {
+    version: 1,
+    planId: 'plan-supervisor-direct-admission',
+    supervisorId: 'supervisor-direct-admission',
+    observationCursor: 1,
+    projectionDigest: 'supervisor-direct-admission-projection-v1',
+    idempotencyKey: 'app-runtime-direct-admission',
+    preconditionSnapshot: {},
+    action: {
+      actionId: 'app-runtime-direct-admission-action',
+      version: 1,
+      type: 'NO_ACTION',
+      planId: 'plan-supervisor-direct-admission',
+      supervisorId: 'supervisor-direct-admission',
+      observationCursor: 1,
+      projectionDigest: 'supervisor-direct-admission-projection-v1',
+      idempotencyKey: 'app-runtime-direct-admission',
+      preconditionSnapshot: {},
+      payload: { type: 'NO_ACTION', reason: 'direct admission healthy' },
+      status: 'PROPOSED',
+    },
+  };
+  const content = JSON.stringify(decision);
+  return url.endsWith('/responses')
+    ? new Response(
+        JSON.stringify({
+          output: [{ type: 'message', content: [{ type: 'output_text', text: content }] }],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    : new Response(
+        JSON.stringify({ choices: [{ message: { content } }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+}
+
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-app-'));
   const allowed = path.join(root, 'repositories');
@@ -485,10 +541,23 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
   assert.deepEqual(selectorHealth.json().supervisorRuntime, {
     enabled: true,
     resourceSelectorEnabled: true,
-    readinessAuthority: 'DIRECT_PROTOCOL_FEEDBACK',
+    readinessAuthority: 'DIRECT_PROTOCOL_ADMISSION_AND_FEEDBACK',
     resourceWakeMode: 'EVENT_DRIVEN_WITH_15M_FALLBACK',
+    directAdmission: { enabled: true, checked: 0, ready: 0, unready: 0 },
     maxResourceAttempts: 3,
   });
+  const supervisorAdmission = await runtime.app.inject({
+    method: 'GET',
+    url: '/api/v1/supervisor-admission',
+  });
+  assert.equal(supervisorAdmission.statusCode, 200);
+  assert.deepEqual(supervisorAdmission.json(), {
+    enabled: true,
+    summary: { checked: 0, ready: 0, unready: 0 },
+    items: [],
+  });
+  assert.equal(JSON.stringify(supervisorAdmission.json()).includes('test-litellm-key'), false);
+
   assert.equal(selectorHealth.json().executionRuntime.routingAuthority, 'RESOURCE_SELECTOR');
   assert.deepEqual(selectorHealth.json().executionRuntime.compatibilityImplementationRoutes, []);
   assert.deepEqual(selectorHealth.json().executionRuntime.compatibilityReviewRoutes, []);
@@ -643,6 +712,8 @@ test('reasoning resource recovery wakes waiting Supervisors without implementati
       implementationBlocked = Boolean((JSON.parse(String(init.body)) as { blocked: boolean }).blocked);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
+    const admission = supervisorAdmissionResponse(input, init);
+    if (admission) return admission;
     throw new Error('unexpected resource-wake fetch: ' + url);
   }) as typeof fetch;
 
@@ -778,6 +849,8 @@ test('startup reconciles a recovered reasoning resource for a durable waiting Su
       blocked = Boolean((JSON.parse(String(init.body)) as { blocked: boolean }).blocked);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
+    const admission = supervisorAdmissionResponse(input, init);
+    if (admission) return admission;
     throw new Error('unexpected resource-wake restart fetch: ' + url);
   }) as typeof fetch;
   const env = {
@@ -838,6 +911,7 @@ test('startup reconciles a recovered reasoning resource for a durable waiting Su
     env,
   });
   try {
+    await second.supervisor.reconcileReadiness();
     const wakes = second.supervisor.scheduler.drain();
     assert.equal(wakes.length, 1);
     assert.equal(wakes[0]?.supervisorId, supervisorId);

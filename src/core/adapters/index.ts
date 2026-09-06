@@ -7,3 +7,4 @@ export * from './openHandsCoding.js';
 export * from './gitWorkspace.js';
 export * from './githubDelivery.js';
 export * from './resourceDirectory.js';
+export * from './supervisorDirectAdmission.js';

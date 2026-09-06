@@ -82,6 +82,11 @@ import { createRepositories, type ForgeFlowRepositories } from './core/persisten
 import { SupervisorActionExecutor, type SupervisorKernelPort } from './core/supervisor/executor.js';
 import { buildBoundedProjection } from './core/supervisor/projection.js';
 import { ResourceSelectedSupervisorDecisionClient } from './core/supervisor/resourceClient.js';
+import { SupervisorDirectAdmissionProbe } from './core/adapters/supervisorDirectAdmission.js';
+import {
+  SupervisorDirectAdmissionRegistry,
+  supervisorDirectAdmissionKey,
+} from './core/supervisor/admission.js';
 import { SupervisorRuntime } from './core/supervisor/runtime.js';
 import { SupervisorWakeScheduler } from './core/supervisor/scheduler.js';
 
@@ -141,6 +146,9 @@ export interface ControlPlaneRuntime {
     openHands: OpenHandsSupervisorAdapter;
     scheduler: SupervisorWakeScheduler;
     runtime: SupervisorRuntime;
+    directAdmission: SupervisorDirectAdmissionRegistry;
+    reconcileDirectAdmission: () => Promise<void>;
+    reconcileReadiness: () => Promise<{ becameAvailable: string[]; scheduledWakes: number }>;
   };
   automation?: ExecutionAutomationRuntime;
   improvements: MaintenanceImprovementRuntime;
@@ -1313,8 +1321,102 @@ export async function buildControlPlane(
     throw new ForgeFlowError('SUPERVISOR_STATIC_ROUTE_UNSUPPORTED');
   if (supervisorRuntimeEnabled && !automation?.resourceSelectorEnabled)
     throw new ForgeFlowError('SUPERVISOR_RESOURCE_SELECTOR_REQUIRED');
+  const supervisorDirectAdmission = new SupervisorDirectAdmissionRegistry();
+  const supervisorDirectAdmissionEnabled =
+    supervisorRuntimeEnabled && Boolean(automation?.resourceSelectorEnabled);
+  const supervisorDirectAdmissionReadyTtlMs = integerValue(
+    env.FORGEFLOW_SUPERVISOR_ADMISSION_TTL_MS,
+    15 * 60_000,
+    30_000,
+    24 * 60 * 60_000,
+    'SUPERVISOR_ADMISSION_TTL_INVALID',
+  );
+  const supervisorDirectAdmissionFailureTtlMs = integerValue(
+    env.FORGEFLOW_SUPERVISOR_ADMISSION_FAILURE_TTL_MS,
+    5 * 60_000,
+    10_000,
+    supervisorDirectAdmissionReadyTtlMs,
+    'SUPERVISOR_ADMISSION_FAILURE_TTL_INVALID',
+  );
+  const supervisorDirectAdmissionProbe = supervisorDirectAdmissionEnabled
+    ? new SupervisorDirectAdmissionProbe({
+        baseUrl: requiredText(
+          env.FORGEFLOW_LITELLM_BASE_URL,
+          'SUPERVISOR_DIRECT_ADMISSION_BASE_URL_REQUIRED',
+        ),
+        bearerToken: requiredText(
+          env.FORGEFLOW_LITELLM_API_KEY,
+          'SUPERVISOR_DIRECT_ADMISSION_KEY_REQUIRED',
+        ),
+        fetchImpl: options.fetchImpl ?? fetch,
+        timeoutMs: integerValue(
+          env.FORGEFLOW_SUPERVISOR_ADMISSION_TIMEOUT_MS,
+          30_000,
+          1_000,
+          120_000,
+          'SUPERVISOR_ADMISSION_TIMEOUT_INVALID',
+        ),
+      })
+    : undefined;
+  const supervisorAdmissionCandidates = (): ResourceSelectionCandidate[] => {
+    if (!automation?.resourceSelectorEnabled) return [];
+    const values = new Map<string, ResourceSelectionCandidate>();
+    const priorAttempts: Array<{ resourceId: string; bindingId?: string; modelFamily?: string }> = [];
+    for (let index = 0; index < 100; index += 1) {
+      const selected = selectExecutableProfile(automation.resources, {
+        phase: 'SUPERVISE',
+        includeProviderNativeProfiles: false,
+        policy: {
+          allowProviderNative: false,
+          allowedTransports: ['LITELLM_MANAGED'],
+          isAllowed: (candidate) => Boolean(candidate.profile.routeModel),
+        },
+        priorAttempts,
+      });
+      if (selected.status !== 'SELECTED') break;
+      values.set(supervisorDirectAdmissionKey(selected.candidate), selected.candidate);
+      priorAttempts.push({
+        resourceId: selected.profile.resourceId,
+        ...(selected.profile.bindingId ? { bindingId: selected.profile.bindingId } : {}),
+        modelFamily: selected.profile.modelFamily,
+      });
+    }
+    return [...values.values()];
+  };
+  let supervisorDirectAdmissionCycle: Promise<void> | undefined;
+  const reconcileSupervisorDirectAdmission = async (): Promise<void> => {
+    if (!supervisorDirectAdmissionEnabled || !supervisorDirectAdmissionProbe) return;
+    if (supervisorDirectAdmissionCycle) return await supervisorDirectAdmissionCycle;
+    supervisorDirectAdmissionCycle = (async () => {
+      const candidates = supervisorAdmissionCandidates();
+      supervisorDirectAdmission.retain(candidates);
+      const now = Date.now();
+      for (const candidate of candidates) {
+        if (
+          !supervisorDirectAdmission.isStale(
+            candidate,
+            now,
+            supervisorDirectAdmissionReadyTtlMs,
+            supervisorDirectAdmissionFailureTtlMs,
+          )
+        )
+          continue;
+        const result = await supervisorDirectAdmissionProbe.probe(candidate);
+        supervisorDirectAdmission.record(candidate, result);
+      }
+    })();
+    try {
+      await supervisorDirectAdmissionCycle;
+    } finally {
+      supervisorDirectAdmissionCycle = undefined;
+    }
+  };
   const supervisorResourceSelector = supervisorRuntimeEnabled
-    ? new ResourceSelector(automation!.resources, DEFAULT_AFFINITY_POLICY)
+    ? new ResourceSelector(
+        automation!.resources,
+        DEFAULT_AFFINITY_POLICY,
+        supervisorDirectAdmission,
+      )
     : undefined;
   const modelClient = supervisorRuntimeEnabled
     ? new ResourceSelectedSupervisorDecisionClient(
@@ -1349,15 +1451,20 @@ export async function buildControlPlane(
           .listResources()
           .filter(
             (resource) =>
-              selectExecutableProfile([resource], {
-                phase: 'SUPERVISE',
-                includeProviderNativeProfiles: false,
-                policy: {
-                  allowProviderNative: false,
-                  allowedTransports: ['LITELLM_MANAGED'],
-                  isAllowed: (candidate) => Boolean(candidate.profile.routeModel),
+              selectExecutableProfile(
+                [resource],
+                {
+                  phase: 'SUPERVISE',
+                  includeProviderNativeProfiles: false,
+                  policy: {
+                    allowProviderNative: false,
+                    allowedTransports: ['LITELLM_MANAGED'],
+                    isAllowed: (candidate) => Boolean(candidate.profile.routeModel),
+                  },
                 },
-              }).status === 'SELECTED',
+                DEFAULT_AFFINITY_POLICY,
+                supervisorDirectAdmission,
+              ).status === 'SELECTED',
           )
           .map((resource) => resource.resourceId)
           .sort()
@@ -1383,7 +1490,10 @@ export async function buildControlPlane(
     const wakes = scheduler.scheduleWaitingForResource();
     return { becameAvailable, scheduledWakes: wakes.length };
   };
-  reconcileSupervisorResourceAvailability();
+  const reconcileSupervisorReadiness = async () => {
+    await reconcileSupervisorDirectAdmission();
+    return reconcileSupervisorResourceAvailability();
+  };
   const affinityEntries = [
     ...DEFAULT_AFFINITY_POLICY.capabilities.IMPLEMENTATION,
     ...DEFAULT_AFFINITY_POLICY.capabilities.REASONING,
@@ -1483,8 +1593,14 @@ export async function buildControlPlane(
     supervisorRuntime: {
       enabled: supervisorRuntimeEnabled,
       resourceSelectorEnabled: Boolean(modelClient),
-      readinessAuthority: supervisorRuntimeEnabled ? 'DIRECT_PROTOCOL_FEEDBACK' : 'DISABLED',
+      readinessAuthority: supervisorRuntimeEnabled
+        ? 'DIRECT_PROTOCOL_ADMISSION_AND_FEEDBACK'
+        : 'DISABLED',
       resourceWakeMode: 'EVENT_DRIVEN_WITH_15M_FALLBACK',
+      directAdmission: {
+        enabled: supervisorDirectAdmissionEnabled,
+        ...supervisorDirectAdmission.summary(),
+      },
       maxResourceAttempts: supervisorMaxResourceAttempts,
     },
     improvementRuntime: improvements.status(),
@@ -1622,6 +1738,21 @@ export async function buildControlPlane(
     cleanup: await runWorkspaceStorageMaintenance(),
   }));
 
+  app.get('/api/v1/supervisor-admission', async () => ({
+    enabled: supervisorDirectAdmissionEnabled,
+    summary: supervisorDirectAdmission.summary(),
+    items: supervisorDirectAdmission.list().map((item) => ({
+      resourceId: item.resourceId,
+      bindingId: item.bindingId,
+      modelFamily: item.modelFamily,
+      routeModel: item.routeModel,
+      protocol: item.protocol,
+      ready: item.ready,
+      checkedAt: item.checkedAt,
+      errorCode: item.errorCode ?? null,
+    })),
+  }));
+
   app.get('/api/v1/runtime-admission', async () => {
     const runtime = requireAutomation();
     return {
@@ -1684,6 +1815,8 @@ export async function buildControlPlane(
       ...(expectedVersion === undefined ? {} : { expectedVersion }),
     });
     if (result.status === 'rejected') throw new ForgeFlowError(result.reason ?? 'STALE_RESOURCE_STATE');
+    supervisorDirectAdmission.invalidateResource(resourceId);
+    const resourceWake = await reconcileSupervisorReadiness();
     const projected = runtime.resources
       .listResources()
       .find((item) => item.resourceId === resourceId);
@@ -1691,6 +1824,7 @@ export async function buildControlPlane(
     return {
       resource: resourceProjection(projected),
       mutation: result.status,
+      resourceWake,
     };
   });
 
@@ -1713,7 +1847,8 @@ export async function buildControlPlane(
       throw new ForgeFlowError('RESOURCE_BINDING_STATE_UNSUPPORTED');
     await runtime.resourceStateEffect.applyBinding(resource, binding, state);
     await runtime.liteLlmResources.refresh();
-    const resourceWake = reconcileSupervisorResourceAvailability();
+    supervisorDirectAdmission.invalidateResource(resourceId);
+    const resourceWake = await reconcileSupervisorReadiness();
     const projected = runtime.resources
       .listResources()
       .find((item) => item.resourceId === resourceId);
@@ -2223,8 +2358,12 @@ export async function buildControlPlane(
   const supervisorInterval = supervisorRuntimeEnabled
     ? setInterval(
           () => {
-            void supervisorRuntime
-              .runOnce()
+            void reconcileSupervisorReadiness()
+              .then((resourceWake) => {
+                if (resourceWake.scheduledWakes > 0)
+                  app.log.info(resourceWake, 'Supervisor admission woke waiting supervisors');
+                return supervisorRuntime.runOnce();
+              })
               .then((results) => {
                 for (const result of results)
                   if (result.status !== 'SKIPPED')
@@ -2254,6 +2393,22 @@ export async function buildControlPlane(
         )
       : undefined;
 
+  if (supervisorDirectAdmissionEnabled) {
+    setImmediate(() => {
+      void reconcileSupervisorReadiness()
+        .then((resourceWake) => {
+          if (resourceWake.scheduledWakes > 0)
+            app.log.info(resourceWake, 'Supervisor admission warmup woke waiting supervisors');
+        })
+        .catch((error) =>
+          app.log.error(
+            { error: error instanceof Error ? error.message : String(error) },
+            'Supervisor direct admission warmup failed',
+          ),
+        );
+    });
+  }
+
   if (automation?.runtimeAdmissionEnabled) {
     setImmediate(() => {
       void automation
@@ -2276,8 +2431,8 @@ export async function buildControlPlane(
           void automation.liteLlmResources
             .refresh()
             .then(() => automation.resourceLifecycle.reconcileOnce())
-            .then(() => {
-              const resourceWake = reconcileSupervisorResourceAvailability();
+            .then(() => reconcileSupervisorReadiness())
+            .then((resourceWake) => {
               if (resourceWake.scheduledWakes > 0)
                 app.log.info(resourceWake, 'resource availability woke waiting supervisors');
             })
@@ -2405,7 +2560,15 @@ export async function buildControlPlane(
     port,
     repositories,
     kernels,
-    supervisor: { actions: supervisorActions, openHands, scheduler, runtime: supervisorRuntime },
+    supervisor: {
+      actions: supervisorActions,
+      openHands,
+      scheduler,
+      runtime: supervisorRuntime,
+      directAdmission: supervisorDirectAdmission,
+      reconcileDirectAdmission: reconcileSupervisorDirectAdmission,
+      reconcileReadiness: reconcileSupervisorReadiness,
+    },
     improvements,
     ...(automation ? { automation } : {}),
     ...(projectPlanQueue ? { projectPlanQueue } : {}),

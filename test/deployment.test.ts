@@ -36,6 +36,9 @@ test('ForgeFlow service is standalone, headless, and fail-closed around host wri
 test('Supervisor deployment uses governed bounded resource selection rather than a static model alias', () => {
   assert.match(service, /FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED=true/);
   assert.match(forgeFlowEnv, /FORGEFLOW_SUPERVISOR_MAX_RESOURCE_ATTEMPTS=3/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_SUPERVISOR_ADMISSION_TTL_MS=900000/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_SUPERVISOR_ADMISSION_FAILURE_TTL_MS=300000/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_SUPERVISOR_ADMISSION_TIMEOUT_MS=30000/);
   assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_SUPERVISOR_MODEL=/);
   assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_SUPERVISOR_ENDPOINT=/);
 });

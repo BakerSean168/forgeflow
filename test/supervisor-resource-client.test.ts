@@ -4,13 +4,15 @@ import test from 'node:test';
 import { StaticResourceDirectory } from '../src/core/adapters/resourceDirectory.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 import { DEFAULT_AFFINITY_POLICY, type ExecutionResource, type ExecutionResourceSelection, type ResourceStateOverrideSource } from '../src/core/domain/resourceRouting.js';
-import { ResourceSelector } from '../src/core/orchestration/resourceSelector.js';
+import { ResourceSelector, selectExecutableProfile } from '../src/core/orchestration/resourceSelector.js';
 import { openDatabase } from '../src/core/persistence/database.js';
 import { createRepositories } from '../src/core/persistence/repositories.js';
 import {
   ResourceSelectedSupervisorDecisionClient,
   supervisorDecisionContextDigest,
 } from '../src/core/supervisor/resourceClient.js';
+import { SupervisorDirectAdmissionProbe } from '../src/core/adapters/supervisorDirectAdmission.js';
+import { SupervisorDirectAdmissionRegistry } from '../src/core/supervisor/admission.js';
 import type { SupervisorDecisionInput } from '../src/core/supervisor/runtime.js';
 
 function reasoningResource(
@@ -140,19 +142,111 @@ function fixture(resources: ExecutionResource[], fetchImpl: typeof fetch, maxAtt
   return { db, repositories, feedback, client };
 }
 
-test('Supervisor direct-protocol selection is not coupled to ACP runtime readiness', () => {
+test('Supervisor direct admission is independent from ACP readiness and fails closed until typed probe passes', async () => {
   const directory = new StaticResourceDirectory([
-    reasoningResource('reasoning-direct', 10, 'route-reasoning-direct'),
+    reasoningResource('reasoning-direct', 10, 'route-reasoning-direct', 'openai-responses'),
   ]);
   const acpGated = new ResourceSelector(directory, DEFAULT_AFFINITY_POLICY, {
     isReady: () => false,
   });
   assert.equal(acpGated.select({ phase: 'SUPERVISE' }).status, 'WAITING_FOR_RESOURCE');
-  const direct = new ResourceSelector(directory);
+
+  const candidateResult = selectExecutableProfile(directory, {
+    phase: 'SUPERVISE',
+    includeProviderNativeProfiles: false,
+    policy: { allowedTransports: ['LITELLM_MANAGED'] },
+  });
+  assert.equal(candidateResult.status, 'SELECTED');
+  if (candidateResult.status !== 'SELECTED') throw new Error('expected direct candidate');
+
+  const admission = new SupervisorDirectAdmissionRegistry();
+  const direct = new ResourceSelector(directory, DEFAULT_AFFINITY_POLICY, admission);
+  assert.equal(direct.select({ phase: 'SUPERVISE' }).status, 'WAITING_FOR_RESOURCE');
+
+  const observed: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const probe = new SupervisorDirectAdmissionProbe({
+    baseUrl: 'http://litellm.test/v1/',
+    bearerToken: 'private-test-key',
+    fetchImpl: (async (url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      observed.push({ url: String(url), body });
+      const decision = {
+        version: 1,
+        planId: 'plan-supervisor-direct-admission',
+        supervisorId: 'supervisor-direct-admission',
+        observationCursor: 1,
+        projectionDigest: 'supervisor-direct-admission-projection-v1',
+        idempotencyKey: 'direct-admission-noop',
+        preconditionSnapshot: {},
+        action: {
+          actionId: 'direct-admission-action',
+          version: 1,
+          type: 'NO_ACTION',
+          planId: 'plan-supervisor-direct-admission',
+          supervisorId: 'supervisor-direct-admission',
+          observationCursor: 1,
+          projectionDigest: 'supervisor-direct-admission-projection-v1',
+          idempotencyKey: 'direct-admission-noop',
+          preconditionSnapshot: {},
+          payload: { type: 'NO_ACTION', reason: 'direct path healthy' },
+          status: 'PROPOSED',
+        },
+      };
+      return new Response(
+        JSON.stringify({
+          output: [
+            { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(decision) }] },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch,
+  });
+  const result = await probe.probe(candidateResult.candidate);
+  assert.deepEqual(result, { ready: true });
+  admission.record(candidateResult.candidate, result);
   const selected = direct.select({ phase: 'SUPERVISE' });
   assert.equal(selected.status, 'SELECTED');
-  if (selected.status !== 'SELECTED') throw new Error('expected direct Supervisor resource');
+  if (selected.status !== 'SELECTED') throw new Error('expected admitted Supervisor resource');
   assert.equal(selected.profile.resourceId, 'reasoning-direct');
+  assert.equal(observed[0]?.url, 'http://litellm.test/v1/responses');
+  assert.equal(observed[0]?.body.model, 'route-reasoning-direct');
+  assert.deepEqual(observed[0]?.body.text, { format: { type: 'json_object' } });
+});
+
+test('Supervisor direct admission sanitizes provider and protocol failures without admitting the route', async () => {
+  const directory = new StaticResourceDirectory([
+    reasoningResource('reasoning-admission-fail', 10, 'route-admission-fail', 'openai-responses'),
+  ]);
+  const selected = selectExecutableProfile(directory, { phase: 'SUPERVISE' });
+  assert.equal(selected.status, 'SELECTED');
+  if (selected.status !== 'SELECTED') throw new Error('expected admission candidate');
+  const probe = new SupervisorDirectAdmissionProbe({
+    baseUrl: 'http://litellm.test/v1',
+    bearerToken: 'private-test-key',
+    fetchImpl: (async () =>
+      new Response('private upstream diagnostic with balance and request id', { status: 502 })) as typeof fetch,
+  });
+  const failed = await probe.probe(selected.candidate);
+  assert.deepEqual(failed, {
+    ready: false,
+    errorCode: 'SUPERVISOR_DIRECT_ADMISSION_HTTP_502',
+  });
+  assert.equal(JSON.stringify(failed).includes('private upstream'), false);
+  assert.equal(JSON.stringify(failed).includes('private-test-key'), false);
+
+  const invalid = new SupervisorDirectAdmissionProbe({
+    baseUrl: 'http://litellm.test/v1',
+    bearerToken: 'private-test-key',
+    fetchImpl: (async () =>
+      new Response(
+        JSON.stringify({ output: [{ content: [{ type: 'output_text', text: '{"not":"typed"}' }] }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )) as typeof fetch,
+  });
+  const invalidResult = await invalid.probe(selected.candidate);
+  assert.equal(invalidResult.ready, false);
+  assert.match(invalidResult.errorCode ?? '', /^SUPERVISOR_DIRECT_ADMISSION_/);
 });
 
 test('Supervisor selects a governed reasoning route instead of a static model alias', async () => {

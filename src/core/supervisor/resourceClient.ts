@@ -80,7 +80,7 @@ function providerFailureMessage(text: string, status: number): string {
   return bounded || 'Supervisor provider HTTP ' + status;
 }
 
-function openAIResponsesSupervisorRequest(
+export function openAIResponsesSupervisorRequest(
   model: string,
   input: SupervisorDecisionInput,
 ): Record<string, unknown> {
@@ -97,7 +97,7 @@ function openAIResponsesSupervisorRequest(
   };
 }
 
-function extractOpenAIResponsesSupervisorDecision(payload: unknown): string {
+export function extractOpenAIResponsesSupervisorDecision(payload: unknown): string {
   const value = payload as {
     output_text?: unknown;
     output?: Array<{ content?: Array<{ type?: unknown; text?: unknown }> }>;
@@ -146,6 +146,21 @@ function selectionEventPayload(
     ...(selection.routeModel ? { routeModel: selection.routeModel } : {}),
     ...(selection.protocol ? { protocol: selection.protocol } : {}),
   };
+}
+
+export function supervisorProviderEndpoint(baseUrl: string, protocol?: string): string {
+  const base = baseUrl.replace(/\/$/, '');
+  const responses = protocol === 'openai-responses';
+  return (
+    base +
+    (base.endsWith('/v1')
+      ? responses
+        ? '/responses'
+        : '/chat/completions'
+      : responses
+        ? '/v1/responses'
+        : '/v1/chat/completions')
+  );
 }
 
 export class ResourceSelectedSupervisorDecisionClient implements SupervisorDecisionClient {
@@ -238,17 +253,8 @@ export class ResourceSelectedSupervisorDecisionClient implements SupervisorDecis
     selection: ExecutionResourceSelection,
     input: SupervisorDecisionInput,
   ): Promise<Response> {
-    const base = this.baseUrl.replace(/\/$/, '');
     const responses = selection.protocol === 'openai-responses';
-    const endpoint =
-      base +
-      (this.baseUrl.endsWith('/v1')
-        ? responses
-          ? '/responses'
-          : '/chat/completions'
-        : responses
-          ? '/v1/responses'
-          : '/v1/chat/completions');
+    const endpoint = supervisorProviderEndpoint(this.baseUrl, selection.protocol);
     return await this.fetchImpl(endpoint, {
       method: 'POST',
       headers: Object.fromEntries([
