@@ -78,7 +78,9 @@ OPENHANDS_SOURCE_IMAGE="$image" \
 FORGEFLOW_OPENHANDS_ENV_FILE="$openhands_env" \
 FORGEFLOW_OPENHANDS_TOOLS_DIR="$repo_root/openhands_tools" \
   docker compose -f "$repo_root/deploy/openhands/docker-compose.yml" up -d --remove-orphans --wait --wait-timeout 120
-FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands "$repo_root/scripts/install-openhands-tooling.sh"
+dsh_seed="$(awk -F= '$1=="FORGEFLOW_DSH_SEED_DIR"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
+FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands FORGEFLOW_DSH_SEED_DIR="$dsh_seed" \
+  "$repo_root/scripts/install-openhands-tooling.sh"
 
 systemctl enable --now forgeflow.service forgeflow-host-cache.timer
 for _ in $(seq 1 45); do

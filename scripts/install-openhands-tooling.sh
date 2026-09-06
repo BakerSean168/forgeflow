@@ -4,6 +4,7 @@ set -euo pipefail
 CONTAINER="${FORGEFLOW_OPENHANDS_CONTAINER:-forgeflow-openhands}"
 TOOL_ROOT="${OPENHANDS_TOOL_ROOT:-/openhands-state/tooling}"
 DSH_ROOT="${OPENHANDS_DSH_ROOT:-/openhands-state/dsh-cli}"
+DSH_SEED_DIR="${FORGEFLOW_DSH_SEED_DIR:-}"
 HARNESS_RUNTIME_LOCK="${HARNESS_RUNTIME_LOCK:-/opt/agent-harness/runtime.lock.json}"
 runtime_lock_version() {
   local name="$1"
@@ -143,9 +144,23 @@ docker exec "$CONTAINER" sh -lc \
 current_dsh="$(docker exec "$CONTAINER" sh -lc \
   "'$DSH_ROOT/node_modules/.bin/dsh' --version 2>/dev/null | head -1" 2>/dev/null || true)"
 if [[ "$current_dsh" != "$DSH_VERSION" ]]; then
-  docker exec "$CONTAINER" sh -lc \
-    "mkdir -p '$DSH_ROOT' && npm install --prefix '$DSH_ROOT' --no-audit --no-fund \
-      '@deepseek-ai/dsh@$DSH_VERSION' >/tmp/dsh-cli-install.log 2>&1"
+  if [[ -n "$DSH_SEED_DIR" ]]; then
+    seed="$(realpath -e -- "$DSH_SEED_DIR")"
+    [[ -d "$seed/node_modules/@deepseek-ai/dsh" ]] || { echo "DSH seed is incomplete: $seed" >&2; exit 1; }
+    seed_version="$(node -e 'const p=require(process.argv[1]); process.stdout.write(String(p.version||""))' "$seed/node_modules/@deepseek-ai/dsh/package.json")"
+    [[ "$seed_version" == "$DSH_VERSION" ]] || { echo "DSH seed expected $DSH_VERSION, got $seed_version" >&2; exit 1; }
+    target="$OPENHANDS_STATE_HOST_ROOT/dsh-cli"
+    [[ "$seed" != "$(realpath -m -- "$target")" ]] || { echo "DSH seed must not be the ForgeFlow target" >&2; exit 1; }
+    rm -rf "$target.tmp" "$target"
+    mkdir -p "$target.tmp"
+    cp -a --reflink=auto "$seed/." "$target.tmp/"
+    chown -R 10001:10001 "$target.tmp"
+    mv "$target.tmp" "$target"
+  else
+    docker exec "$CONTAINER" sh -lc \
+      "mkdir -p '$DSH_ROOT' && npm install --prefix '$DSH_ROOT' --no-audit --no-fund \
+        '@deepseek-ai/dsh@$DSH_VERSION' >/tmp/dsh-cli-install.log 2>&1"
+  fi
 fi
 
 docker exec "$CONTAINER" test -x "$DSH_ROOT/node_modules/.bin/dsh"
