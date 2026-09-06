@@ -43,6 +43,8 @@ test('OpenHands execution plane uses ForgeFlow-only paths and no visualization s
 
 test('installer provisions only ForgeFlow state and refuses unconfigured autonomous execution', () => {
   assert.match(installer, /\/etc\/forgeflow/);
+  assert.match(installer, /install -d -o 10001 -g 10001 -m 0750 \/var\/lib\/forgeflow\/openhands/);
+  assert.match(installer, /install -d -o 10001 -g 10001 -m 0751 \/var\/lib\/forgeflow\/workspaces/);
   assert.match(installer, /\/var\/lib\/forgeflow\/workspaces\/forgeflow\/executions/);
   assert.match(installer, /configure FORGEFLOW_AUTOMATION_PROJECTS first/);
   assert.match(installer, /configure FORGEFLOW_REPOSITORY_WRITE_PATHS first/);

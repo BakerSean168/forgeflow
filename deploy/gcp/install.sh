@@ -11,8 +11,11 @@ for tool in node npm docker systemctl curl setfacl realpath apparmor_parser; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 
-install -d -o root -g root -m 0750 /etc/forgeflow /var/lib/forgeflow /var/lib/forgeflow/backups /var/lib/forgeflow/openhands
-install -d -o root -g root -m 0711 /var/lib/forgeflow/workspaces /var/lib/forgeflow/workspaces/forgeflow /var/lib/forgeflow/workspaces/forgeflow/executions
+install -d -o root -g root -m 0750 /etc/forgeflow /var/lib/forgeflow /var/lib/forgeflow/backups
+# OpenHands itself runs as uid/gid 10001 and owns only its mutable state/workspace roots.
+install -d -o 10001 -g 10001 -m 0750 /var/lib/forgeflow/openhands
+install -d -o 10001 -g 10001 -m 0751 /var/lib/forgeflow/workspaces
+install -d -o 10001 -g 10001 -m 0751 /var/lib/forgeflow/workspaces/forgeflow /var/lib/forgeflow/workspaces/forgeflow/executions
 if [[ ! -f "$config_file" ]]; then install -o root -g root -m 0600 "$repo_root/deploy/forgeflow.env.example" "$config_file"; fi
 if [[ ! -f "$openhands_env" ]]; then install -o root -g root -m 0600 "$repo_root/deploy/openhands.env.example" "$openhands_env"; fi
 chmod 0600 "$config_file" "$openhands_env"
