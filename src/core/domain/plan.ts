@@ -45,8 +45,8 @@ export interface CreatePlanInput {
 }
 
 const PLAN_TRANSITIONS: Record<PlanStatus, readonly PlanStatus[]> = {
-  DRAFT: ['QUEUED', 'READY', 'CANCELLED'],
-  QUEUED: ['READY', 'CANCELLED'],
+  DRAFT: ['QUEUED', 'READY', 'SAFETY_HOLD', 'CANCELLED'],
+  QUEUED: ['READY', 'SAFETY_HOLD', 'CANCELLED'],
   READY: [
     'RUNNING',
     'WAITING_FOR_RESOURCE',

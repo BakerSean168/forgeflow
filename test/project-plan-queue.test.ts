@@ -709,3 +709,108 @@ test('child Plan cancellation closes non-passed Review state without releasing t
   );
   db.close();
 });
+
+test('operator cancellation can retire a crash-recovered DRAFT child without releasing the root lease', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const runtime = new ProjectPlanQueueRuntime(repositories);
+  createRoot(repositories, 'plan-draft-child-parent');
+  runtime.scheduleRootPlan('plan-draft-child-parent');
+  const child = repositories.plans.createChildPlan({
+    parentPlanId: 'plan-draft-child-parent',
+    childPlanId: 'plan-crash-recovered-draft-child',
+    repositoryPath: '/home/dev/projects/project-gamma',
+    objective: 'simulate a crash between child creation and graph activation',
+    relation: 'FOLLOW_UP',
+  }).plan;
+  assert.equal(child.status, 'DRAFT');
+  assert.equal(repositories.supervisors.getByPlanId(child.planId), undefined);
+  assert.equal(repositories.plans.listWorkItems(child.planId).length, 0);
+
+  const result = await runtime.cancelPlan(
+    child.planId,
+    'cancel-crash-recovered-draft-child',
+    'operator retires a partially-created child after restart',
+  );
+  assert.equal(result.code, 'CHILD_PLAN_CANCELLED');
+  assert.equal(result.rootPlanId, 'plan-draft-child-parent');
+  assert.deepEqual(result.cancelledExecutionIds, []);
+  assert.deepEqual(result.cancelledReviewIds, []);
+  assert.deepEqual(result.cancelledWorkItemIds, []);
+  assert.equal(repositories.plans.getPlan(child.planId).status, 'CANCELLED');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-draft-child-parent',
+  );
+  const events = repositories.events.listByAggregate(child.planId);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === 'PROJECT_PLAN_CANCEL_REQUESTED' &&
+        (event.payload as Record<string, unknown>).scope === 'CHILD',
+    ),
+  );
+  db.close();
+});
+
+test('pre-active Plan can remain durably fenced in SAFETY_HOLD when cancellation cleanup fails', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const runtime = new ProjectPlanQueueRuntime(repositories);
+  runtime.setExecutionCancellation({
+    cancelExecution: async () => ({
+      status: 'WAITING',
+      code: 'PROVIDER_CANCEL_NOT_QUIESCED',
+    }),
+  });
+  createRoot(repositories, 'plan-preactive-parent');
+  runtime.scheduleRootPlan('plan-preactive-parent');
+  const child = repositories.plans.createChildPlan({
+    parentPlanId: 'plan-preactive-parent',
+    childPlanId: 'plan-preactive-child',
+    repositoryPath: '/home/dev/projects/project-gamma',
+    objective: 'exercise durable pre-active cancellation fencing',
+    relation: 'FOLLOW_UP',
+  }).plan;
+  const graph = repositories.plans.createGraphVersion({
+    planId: child.planId,
+    reason: 'partial child graph before crash',
+  }).value!;
+  const item = repositories.plans.appendGraphWorkItem({
+    graphVersionId: graph.graphVersionId,
+    itemKey: 'partial-child-item',
+    title: 'Partial child item',
+    objective: 'remain fenced while cancellation cannot quiesce execution',
+    acceptanceCriteria: ['status remains SAFETY_HOLD'],
+    dependencies: [],
+  }).value!;
+  repositories.executions.create({
+    idempotencyKey: 'partial-child-execution',
+    identity: {
+      executionId: 'partial-child-execution',
+      planId: child.planId,
+      workItemId: item.workItemId,
+      phase: 'IMPLEMENT',
+      attempt: 1,
+      route: 'implementation',
+      sourceRevision: child.currentRevision,
+    },
+    objective: 'partial execution fixture',
+  });
+
+  await assert.rejects(
+    runtime.cancelPlan(
+      child.planId,
+      'cancel-preactive-child',
+      'cancellation must fence before cleanup',
+    ),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'PROVIDER_CANCEL_NOT_QUIESCED',
+  );
+  assert.equal(repositories.plans.getPlan(child.planId).status, 'SAFETY_HOLD');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-preactive-parent',
+  );
+  db.close();
+});
