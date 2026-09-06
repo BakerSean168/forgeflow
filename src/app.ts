@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -127,6 +127,7 @@ export interface ExecutionAutomationRuntime {
   runtimeAdmission: RuntimeAdmissionRegistry;
   runtimeAdmissionHasDemand: () => boolean;
   reconcileRuntimeAdmission: () => Promise<void>;
+  shutdownRuntimeAdmission: () => Promise<void>;
 }
 
 export interface ControlPlaneRuntime {
@@ -940,6 +941,23 @@ async function buildExecutionAutomation(
     };
   };
 
+  const pruneAdmissionWorkspaces = (probeGroupId: string, currentRoot: string): number => {
+    const executionsRoot = path.join(managedHostRoot, 'forgeflow', 'executions');
+    if (!fs.existsSync(executionsRoot)) return 0;
+    let removed = 0;
+    for (const entry of fs.readdirSync(executionsRoot, { withFileTypes: true })) {
+      if (entry.name !== probeGroupId && !entry.name.startsWith(probeGroupId + '-')) continue;
+      const candidate = path.join(executionsRoot, entry.name);
+      if (candidate === currentRoot) continue;
+      const stat = fs.lstatSync(candidate);
+      if (stat.isSymbolicLink() || !stat.isDirectory())
+        throw new ForgeFlowError('RUNTIME_ADMISSION_STALE_WORKSPACE_UNSAFE');
+      fs.rmSync(candidate, { recursive: true, force: true });
+      removed += 1;
+    }
+    return removed;
+  };
+
   const recordRuntimeAdmission = (
     candidate: ResourceSelectionCandidate,
     input: { ready: boolean; checkedAt?: string; errorCode?: string },
@@ -952,10 +970,14 @@ async function buildExecutionAutomation(
     return persisted.value;
   };
 
-  const probeAdmissionCandidate = async (candidate: ResourceSelectionCandidate): Promise<void> => {
+  const probeAdmissionCandidate = async (
+    candidate: ResourceSelectionCandidate,
+    signal?: AbortSignal,
+  ): Promise<void> => {
     const key = runtimeAdmissionKey(candidate);
-    const probeId =
+    const probeGroupId =
       'runtime-admission-' + createHash('sha256').update(key).digest('hex').slice(0, 20);
+    const probeId = probeGroupId + '-' + randomUUID().slice(0, 8);
     let probeRoot: string | undefined;
     try {
       const prepared = createAdmissionWorkspace(candidate, probeId);
@@ -966,9 +988,15 @@ async function buildExecutionAutomation(
       if (!provider.probeRuntime) throw new ForgeFlowError('RUNTIME_ADMISSION_PROBE_UNSUPPORTED');
       const result = await provider.probeRuntime({
         probeId,
+        probeGroupId,
         workspace: prepared.workspace,
         sourceRevision: prepared.sourceRevision,
+        signal,
       });
+      // probeRuntime returning means its stable-group OpenHands cleanup completed.
+      // Only then is it safe to remove crash residue from older attempts, including
+      // the pre-attempt-id deterministic directory used by older ForgeFlow builds.
+      pruneAdmissionWorkspaces(probeGroupId, prepared.root);
       const clean = prepared.git(['status', '--porcelain=v1']) === '';
       const head = prepared.git(['rev-parse', '--verify', 'HEAD^{commit}']);
       const ready = result.ready && clean && head === prepared.sourceRevision;
@@ -987,6 +1015,7 @@ async function buildExecutionAutomation(
           : {}),
       });
     } catch (error) {
+      if (signal?.aborted) return;
       recordRuntimeAdmission(candidate, {
         ready: false,
         errorCode: error instanceof ForgeFlowError ? error.code : 'RUNTIME_ADMISSION_PROBE_FAILED',
@@ -997,13 +1026,17 @@ async function buildExecutionAutomation(
   };
 
   let runtimeAdmissionCycle: Promise<void> | undefined;
+  let runtimeAdmissionAbortController: AbortController | undefined;
+  let runtimeAdmissionShuttingDown = false;
   const reconcileRuntimeAdmission = async (): Promise<void> => {
-    if (!runtimeAdmissionEnabled) return;
+    if (!runtimeAdmissionEnabled || runtimeAdmissionShuttingDown) return;
     const candidates = admissionCandidates();
     runtimeAdmission.retain(candidates);
     repositories.runtimeAdmissions.retain(candidates.map(runtimeAdmissionKey));
     if (!runtimeAdmissionHasDemand()) return;
     if (runtimeAdmissionCycle) return await runtimeAdmissionCycle;
+    const abortController = new AbortController();
+    runtimeAdmissionAbortController = abortController;
     runtimeAdmissionCycle = (async () => {
       const now = Date.now();
       const queue = candidates.filter((candidate) =>
@@ -1018,14 +1051,25 @@ async function buildExecutionAutomation(
       // Probe serially so provider-native OAuth homes and ACP runtime caches are never
       // mutated concurrently by sibling probes. The selector fails closed until a
       // candidate has a positive admission record.
-      for (const candidate of queue) await probeAdmissionCandidate(candidate);
+      for (const candidate of queue) {
+        if (abortController.signal.aborted) break;
+        await probeAdmissionCandidate(candidate, abortController.signal);
+      }
     })();
     try {
       await runtimeAdmissionCycle;
     } finally {
+      if (runtimeAdmissionAbortController === abortController)
+        runtimeAdmissionAbortController = undefined;
       runtimeAdmissionCycle = undefined;
     }
   };
+  const shutdownRuntimeAdmission = async (): Promise<void> => {
+    runtimeAdmissionShuttingDown = true;
+    runtimeAdmissionAbortController?.abort();
+    if (runtimeAdmissionCycle) await runtimeAdmissionCycle;
+  };
+
   const resourceSelector = new ResourceSelector(
     resources,
     DEFAULT_AFFINITY_POLICY,
@@ -1195,6 +1239,7 @@ async function buildExecutionAutomation(
     runtimeAdmission,
     runtimeAdmissionHasDemand,
     reconcileRuntimeAdmission,
+    shutdownRuntimeAdmission,
   };
 }
 
@@ -2745,6 +2790,16 @@ export async function buildControlPlane(
     if (resourceInterval) clearInterval(resourceInterval);
     if (improvementInterval) clearInterval(improvementInterval);
     if (automationInterval) clearInterval(automationInterval);
+    if (automation) {
+      try {
+        await automation.shutdownRuntimeAdmission();
+      } catch (error) {
+        app.log.warn(
+          { error: error instanceof Error ? error.message : String(error) },
+          'runtime admission shutdown drain failed',
+        );
+      }
+    }
     db.close();
   });
 

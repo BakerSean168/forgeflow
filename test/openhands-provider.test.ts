@@ -515,7 +515,7 @@ test('model-native ACP runtime probe performs a real bounded turn with probe-onl
         status: 200,
       });
     if (value.endsWith('/api/conversations/runtime-probe-session') && init.method === 'DELETE')
-      return new Response('', { status: 204 });
+      return new Response(null, { status: 204 });
     throw new Error('unexpected request ' + value + ' ' + String(init.method));
   }) as typeof fetch;
   const provider = createOpenHandsProviderForSelection(options(fake), {
@@ -546,6 +546,142 @@ test('model-native ACP runtime probe performs a real bounded turn with probe-onl
   assert.equal(body.secrets.FORGEFLOW_IMPLEMENTATION_EVIDENCE_PATH, undefined);
   assert.equal(body.secrets.FORGEFLOW_SOURCE_SHA, undefined);
   assert.ok(requests.some((request) => request.init.method === 'DELETE'));
+});
+
+test('model-native ACP runtime probe cleans stale conversations by stable probe group across retries', async () => {
+  const requests: Array<{ url: string; method: string }> = [];
+  const probeGroupId = 'runtime-admission-stable-group';
+  const conversations = new Map<string, Record<string, unknown>>([
+    [
+      'stale-runtime-probe',
+      {
+        runtimeprobe: probeGroupId,
+        role: 'runtimeprobe',
+        project: 'forgeflow-runtime-admission',
+        phase: 'implement',
+        plan: 'runtime-admission',
+      },
+    ],
+  ]);
+  const fake = (async (url: string | URL | Request, init: RequestInit = {}) => {
+    const value = String(url);
+    const method = String(init.method ?? 'GET');
+    requests.push({ url: value, method });
+    if (value.includes('/api/conversations/search?')) {
+      return new Response(
+        JSON.stringify({
+          items: [...conversations.entries()].map(([id, tags]) => ({ id, tags })),
+        }),
+        { status: 200 },
+      );
+    }
+    if (value.endsWith('/api/conversations') && method === 'POST') {
+      const body = JSON.parse(String(init.body)) as Record<string, any>;
+      conversations.set('runtime-probe-session', body.tags);
+      return new Response(
+        JSON.stringify({
+          id: 'runtime-probe-session',
+          execution_status: 'finished',
+          workspace: body.workspace,
+          tags: body.tags,
+        }),
+        { status: 201 },
+      );
+    }
+    if (value.endsWith('/api/conversations/runtime-probe-session/agent_final_response'))
+      return new Response(JSON.stringify({ response: 'READY' }), { status: 200 });
+    if (value.includes('/api/conversations/runtime-probe-session/events/search'))
+      return new Response(JSON.stringify({ items: [{ id: 'probe-event', kind: 'ActionEvent' }] }), {
+        status: 200,
+      });
+    const deleteMatch = value.match(/\/api\/conversations\/([^/?]+)$/);
+    if (deleteMatch && method === 'DELETE') {
+      conversations.delete(decodeURIComponent(deleteMatch[1]!));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error('unexpected request ' + value + ' ' + method);
+  }) as typeof fetch;
+  const provider = createOpenHandsProviderForSelection(options(fake), {
+    backend: 'codex-acp',
+    model: 'route-orcai-gpt-5.6-luna',
+    role: 'IMPLEMENTATION',
+    transport: 'LITELLM_MANAGED',
+  });
+  const input = launchInput('IMPLEMENT');
+  const result = await provider.probeRuntime!({
+    probeId: probeGroupId + '-attempt-1',
+    probeGroupId,
+    sourceRevision: input.sourceRevision,
+    workspace: { ...input.workspace, executionId: probeGroupId + '-attempt-1' },
+  });
+
+  assert.equal(result.ready, true);
+  assert.equal(conversations.size, 0);
+  const staleDelete = requests.findIndex(
+    (request) =>
+      request.method === 'DELETE' && request.url.endsWith('/api/conversations/stale-runtime-probe'),
+  );
+  const create = requests.findIndex(
+    (request) => request.method === 'POST' && request.url.endsWith('/api/conversations'),
+  );
+  assert.ok(staleDelete >= 0 && create > staleDelete);
+  assert.ok(
+    requests.some(
+      (request) =>
+        request.method === 'DELETE' && request.url.endsWith('/api/conversations/runtime-probe-session'),
+    ),
+  );
+});
+
+test('runtime probe cleans a server-created conversation when the create response is lost', async () => {
+  const probeGroupId = 'runtime-admission-create-response-loss';
+  const conversations = new Map<string, Record<string, unknown>>();
+  let createCalls = 0;
+  let deleteCalls = 0;
+  const fake = (async (url: string | URL | Request, init: RequestInit = {}) => {
+    const value = String(url);
+    const method = String(init.method ?? 'GET');
+    if (value.includes('/api/conversations/search?')) {
+      return new Response(
+        JSON.stringify({
+          items: [...conversations.entries()].map(([id, tags]) => ({ id, tags })),
+        }),
+        { status: 200 },
+      );
+    }
+    if (value.endsWith('/api/conversations') && method === 'POST') {
+      createCalls += 1;
+      const body = JSON.parse(String(init.body)) as Record<string, any>;
+      conversations.set('server-created-before-response-loss', body.tags);
+      throw new Error('connection lost after server-side create');
+    }
+    const deleteMatch = value.match(/\/api\/conversations\/([^/?]+)$/);
+    if (deleteMatch && method === 'DELETE') {
+      deleteCalls += 1;
+      conversations.delete(decodeURIComponent(deleteMatch[1]!));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error('unexpected request ' + value + ' ' + method);
+  }) as typeof fetch;
+  const provider = createOpenHandsProviderForSelection(options(fake), {
+    backend: 'codex-acp',
+    model: 'route-orcai-gpt-5.6-luna',
+    role: 'IMPLEMENTATION',
+    transport: 'LITELLM_MANAGED',
+  });
+  const input = launchInput('IMPLEMENT');
+  await assert.rejects(
+    provider.probeRuntime!({
+      probeId: probeGroupId + '-attempt-1',
+      probeGroupId,
+      sourceRevision: input.sourceRevision,
+      workspace: { ...input.workspace, executionId: probeGroupId + '-attempt-1' },
+    }),
+    (error: unknown) => error instanceof ForgeFlowError && error.code === 'OPENHANDS_UNAVAILABLE',
+  );
+  assert.equal(createCalls, 1);
+  assert.equal(deleteCalls, 1);
+  assert.equal(conversations.size, 0);
 });
 
 test('provider-native Codex does not require LiteLLM credentials and builtin fallback is explicit', async () => {
@@ -1041,7 +1177,7 @@ test('model-native runtime probe classifies finished ACP transport errors withou
       value.endsWith('/api/conversations/runtime-probe-transport-error') &&
       init.method === 'DELETE'
     )
-      return new Response('', { status: 204 });
+      return new Response(null, { status: 204 });
     throw new Error('unexpected request ' + value + ' ' + String(init.method));
   }) as typeof fetch;
   const provider = createOpenHandsProviderForSelection(options(fake), {
@@ -1088,7 +1224,7 @@ test('runtime probe distinguishes a model runtime with no repository tool activi
     if (value.includes('/api/conversations/runtime-probe-no-tools/events/search'))
       return new Response(JSON.stringify({ items: [] }), { status: 200 });
     if (value.endsWith('/api/conversations/runtime-probe-no-tools') && init.method === 'DELETE')
-      return new Response('', { status: 204 });
+      return new Response(null, { status: 204 });
     throw new Error('unexpected request ' + value + ' ' + String(init.method));
   }) as typeof fetch;
   const provider = createOpenHandsProviderForSelection(options(fake), {

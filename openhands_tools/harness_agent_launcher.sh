@@ -94,9 +94,10 @@ case "$mode" in
     root="$(prepare_root dsh)"
     export DSH_HOME="$root/dsh/home"
     export DSH_BIN="/openhands-state/dsh-cli/node_modules/.bin/dsh"
-    # dsh-acp-server can bootstrap its profile lazily, but doing that inside the
-    # ACP stdio process races the client initialize handshake in fresh execution
-    # environments. Materialize the profile first, then exec a pure ACP server.
+    # Materialize the ACP profile before the stdio process starts. Do not exec the
+    # dsh-acp-server wrapper here: it spawns DSH as a child without forwarding
+    # SIGTERM, which can orphan the real runtime under the container's tini PID 1.
+    # Exec DSH itself so OpenHands owns and can terminate the actual ACP process.
     if [[ ! -d "$DSH_HOME/profiles/acp" ]]; then
       "$DSH_BIN" plugin --profile acp add /openhands-state/tooling/node_modules/dsh-acp-server \
         >/dev/null
@@ -109,7 +110,7 @@ case "$mode" in
     # The first overlay owns the immutable model/provider transport selected by
     # ForgeFlow. Agent Harness is deliberately a second, capability-only overlay
     # for Skills/MCP/instructions; it must not become another routing authority.
-    exec /openhands-state/tooling/node_modules/.bin/dsh-acp-server \
+    exec "$DSH_BIN" --profile acp \
       --patch "$forgeflow_dsh_patch" \
       --patch "$root/dsh/capabilities.patch.yml" "$@"
     ;;

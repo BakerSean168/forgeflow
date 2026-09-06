@@ -27,6 +27,7 @@ test('ForgeFlow service is standalone, headless, and fail-closed around host wri
   assert.match(service, /FORGEFLOW_RESOURCE_SELECTOR_ENABLED=true/);
   assert.match(service, /FORGEFLOW_SINGLE_ACTIVE_PLAN_ENABLED=true/);
   assert.match(service, /EnvironmentFile=\/etc\/forgeflow\/forgeflow\.env/);
+  assert.match(service, /TimeoutStopSec=120/);
   assert.match(service, /ProtectSystem=strict/);
   assert.match(service, /RestrictSUIDSGID=true/);
   assert.match(service, /ReadWritePaths=\/var\/lib\/forgeflow/);
@@ -133,6 +134,8 @@ test('provider tools use the ForgeFlow execution/evidence contract', () => {
   assert.match(launcher, /FORGEFLOW_EXECUTION_ID/);
   assert.match(launcher, /FORGEFLOW_WORKSPACE_REF/);
   assert.match(launcher, /\/workspace\/forgeflow\/plans/);
+  assert.match(launcher, /exec \"\$DSH_BIN\" --profile acp/);
+  assert.doesNotMatch(launcher, /exec .*dsh-acp-server/);
   assert.match(antigravityUnit, /forgeflow-antigravity-unit\.mjs/);
 });
 

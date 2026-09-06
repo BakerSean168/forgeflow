@@ -24,6 +24,7 @@ interface ConversationCreateOptions {
   maxIterations?: number;
   secrets?: JsonRecord;
   roleTag?: string;
+  signal?: AbortSignal;
 }
 
 export interface OpenHandsProviderOptions {
@@ -447,7 +448,16 @@ abstract class OpenHandsProviderBase implements ExecutionProviderPort {
 
   async inspect(providerSessionId: string): Promise<ProviderSessionSnapshot> {
     failClosed(providerSessionId.trim().length > 0, 'PROVIDER_SESSION_ID_REQUIRED');
-    const payload = await this.json('/api/conversations/' + encodeURIComponent(providerSessionId));
+    return await this.inspectWithSignal(providerSessionId);
+  }
+
+  protected async inspectWithSignal(
+    providerSessionId: string,
+    signal?: AbortSignal,
+  ): Promise<ProviderSessionSnapshot> {
+    const payload = await this.json('/api/conversations/' + encodeURIComponent(providerSessionId), {
+      ...(signal ? { signal } : {}),
+    });
     return await this.snapshot(payload, providerSessionId);
   }
 
@@ -609,6 +619,7 @@ abstract class OpenHandsProviderBase implements ExecutionProviderPort {
     const response = await this.json('/api/conversations', {
       method: 'POST',
       body: JSON.stringify(payload),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     const conversationId = boundedText(response.id ?? response.conversation_id, 200);
     if (!conversationId) throw new ForgeFlowError('OPENHANDS_CONVERSATION_ID_MISSING');
@@ -626,6 +637,41 @@ abstract class OpenHandsProviderBase implements ExecutionProviderPort {
     await this.request('/api/conversations/' + encodeURIComponent(providerSessionId), {
       method: 'DELETE',
     });
+  }
+
+  protected async cleanupRuntimeProbeGroup(
+    probeGroupId: string,
+    phase: ExecutionPhase,
+  ): Promise<number> {
+    const expectedProbeTag = tagValue(probeGroupId);
+    const expectedProjectTag = tagValue('forgeflow-runtime-admission');
+    const expectedPhaseTag = phase.toLowerCase().replace(/_/g, '');
+    const matches = new Set<string>();
+    let pageId: string | undefined;
+    for (let page = 0; page < MAX_RECOVERY_PAGES; page += 1) {
+      const query = new URLSearchParams({ limit: '100', sort_order: 'CREATED_AT_DESC' });
+      if (pageId) query.set('page_id', pageId);
+      const payload = await this.json('/api/conversations/search?' + query.toString());
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      for (const item of items) {
+        const conversation = record(item);
+        const id = boundedText(conversation.id, 200);
+        const tags = record(conversation.tags);
+        if (!id || tags.runtimeprobe !== expectedProbeTag || tags.role !== 'runtimeprobe') continue;
+        if (
+          tags.project !== expectedProjectTag ||
+          tags.phase !== expectedPhaseTag ||
+          tags.plan !== tagValue('runtime-admission')
+        )
+          throw new ForgeFlowError('OPENHANDS_RUNTIME_PROBE_PROVENANCE_MISMATCH');
+        matches.add(id);
+      }
+      const next = boundedText(payload.next_page_id, 2_000);
+      if (!next) break;
+      pageId = next;
+    }
+    for (const id of matches) await this.deleteConversation(id);
+    return matches.size;
   }
 
   private async findReplacement(
@@ -1051,6 +1097,19 @@ class OpenHandsModelNativeAcpProvider extends OpenHandsProviderBase {
     failClosed(input.probeId.trim().length > 0, 'RUNTIME_PROBE_ID_REQUIRED');
     failClosed(input.sourceRevision.trim().length > 0, 'RUNTIME_PROBE_REVISION_REQUIRED');
     const phase: ExecutionPhase = this.mode === 'REVIEW' ? 'REVIEW' : 'IMPLEMENT';
+    const probeGroupId = input.probeGroupId?.trim();
+    if (probeGroupId) {
+      failClosed(probeGroupId.length <= 200, 'RUNTIME_PROBE_GROUP_ID_INVALID');
+      try {
+        await this.cleanupRuntimeProbeGroup(probeGroupId, phase);
+      } catch (error) {
+        throw new ForgeFlowError(
+          'OPENHANDS_RUNTIME_PROBE_CLEANUP_FAILED',
+          'Unable to clean stale runtime probe conversations before a new attempt.',
+          error,
+        );
+      }
+    }
     const launchInput: ProviderLaunchInput = {
       executionId: input.probeId,
       planId: 'runtime-admission',
@@ -1071,17 +1130,20 @@ class OpenHandsModelNativeAcpProvider extends OpenHandsProviderBase {
     ].join('\n');
     let providerSessionId = '';
     try {
+      if (input.signal?.aborted) throw new ForgeFlowError('RUNTIME_PROBE_ABORTED');
       let snapshot = await this.createConversation(
         launchInput,
         prompt,
-        { runtimeprobe: tagValue(input.probeId) },
-        { maxIterations: 3, secrets, roleTag: 'runtimeprobe' },
+        { runtimeprobe: tagValue(probeGroupId ?? input.probeId) },
+        { maxIterations: 3, secrets, roleTag: 'runtimeprobe', signal: input.signal },
       );
       providerSessionId = snapshot.providerSessionId;
       const deadline = Date.now() + Math.min(90_000, (this.acp.startupTimeoutSeconds + 60) * 1000);
       while (!TERMINAL_STATUSES.has(snapshot.status) && Date.now() < deadline) {
+        if (input.signal?.aborted) throw new ForgeFlowError('RUNTIME_PROBE_ABORTED');
         await new Promise((resolve) => setTimeout(resolve, 500));
-        snapshot = await this.inspect(providerSessionId);
+        if (input.signal?.aborted) throw new ForgeFlowError('RUNTIME_PROBE_ABORTED');
+        snapshot = await this.inspectWithSignal(providerSessionId, input.signal);
       }
       const response = snapshot.finalResponse?.trim() ?? '';
       const transportError = /TRANSPORT_ERROR|ACP error|runtime error/i.test(response);
@@ -1114,12 +1176,23 @@ class OpenHandsModelNativeAcpProvider extends OpenHandsProviderBase {
           const current = await this.inspect(providerSessionId);
           if (!TERMINAL_STATUSES.has(current.status)) await this.interrupt(providerSessionId);
         } catch {
-          // The disposable probe is already unusable; deletion below remains best effort.
+          // The disposable probe is already unusable; stable-group cleanup remains the fallback.
         }
         try {
           await this.deleteConversation(providerSessionId);
         } catch {
-          // OpenHands idle eviction is the fallback cleanup path.
+          // Stable group cleanup below is the restart-safe fallback.
+        }
+      }
+      if (probeGroupId) {
+        try {
+          await this.cleanupRuntimeProbeGroup(probeGroupId, phase);
+        } catch (error) {
+          throw new ForgeFlowError(
+            'OPENHANDS_RUNTIME_PROBE_CLEANUP_FAILED',
+            'Runtime probe conversation cleanup did not complete.',
+            error,
+          );
         }
       }
     }

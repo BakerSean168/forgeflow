@@ -1427,13 +1427,15 @@ test('runtime admission is demand-driven, single-flights probes, and uses execut
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     }
-    providerRequests += 1;
+    if (url.includes('/api/conversations/search?'))
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
     if (url.endsWith('/api/conversations') && init.method === 'POST') {
+      providerRequests += 1;
       const payload = JSON.parse(String(init.body));
       const workingDir = String(payload.workspace?.working_dir ?? '');
       assert.match(
         workingDir,
-        /^\/workspace\/forgeflow\/executions\/runtime-admission-[a-f0-9]{20}\/repo$/,
+        /^\/workspace\/forgeflow\/executions\/runtime-admission-[a-f0-9]{20}-[a-f0-9]{8}\/repo$/,
       );
       const probeId = workingDir.split('/').at(-2)!;
       const manifestPath = path.join(
@@ -1530,6 +1532,146 @@ test('runtime admission is demand-driven, single-flights probes, and uses execut
   await runtime.app.close();
 });
 
+test('successful runtime admission prunes crash-residue workspaces only after stable-group cleanup', async () => {
+  const value = fixture();
+  const adminEnv = path.join(value.root, 'litellm-runtime-admission-prune.env');
+  fs.writeFileSync(adminEnv, 'LITELLM_MASTER_KEY=test-master-key\n');
+  const conversations = new Map<string, Record<string, any>>();
+  let probeGroupId = '';
+  const executionHostRoot = path.join(value.managed, 'forgeflow', 'executions');
+  const fakeFetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const url = String(input);
+    const method = String(init.method ?? 'GET');
+    if (url.endsWith('/model/info')) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              model_name: 'route-prune-runtime-deepseek',
+              litellm_params: { litellm_credential_name: 'prune-runtime-provider' },
+              model_info: {
+                id: 'deployment-prune-runtime-deepseek',
+                blocked: false,
+                metadata: {
+                  automatic_core: true,
+                  resource_id: 'prune-runtime-provider',
+                  resource_sequence: 450,
+                  model_family: 'deepseek-v4-flash',
+                  route_model: 'route-prune-runtime-deepseek',
+                  protocol: 'openai-chat-completions',
+                  commercial_type: 'FREE',
+                  supply_origin: 'COMMUNITY_RELAY',
+                  resource_lifecycle: 'RECURRING',
+                },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    if (url.includes('/api/conversations/search?'))
+      return new Response(JSON.stringify({ items: [...conversations.values()] }), { status: 200 });
+    if (url.endsWith('/api/conversations') && method === 'POST') {
+      const body = JSON.parse(String(init.body)) as Record<string, any>;
+      probeGroupId = String(body.tags?.runtimeprobe ?? '');
+      assert.match(probeGroupId, /^runtime-admission-[0-9a-f]{20}$/);
+      for (const name of [probeGroupId, probeGroupId + '-deadbeef']) {
+        const stale = path.join(executionHostRoot, name);
+        fs.mkdirSync(stale, { recursive: true });
+        fs.writeFileSync(path.join(stale, 'stale.txt'), 'crash residue\n');
+      }
+      const conversation = {
+        id: 'prune-runtime-probe-session',
+        execution_status: 'finished',
+        workspace: body.workspace,
+        tags: body.tags,
+      };
+      conversations.set('prune-runtime-probe-session', conversation);
+      return new Response(JSON.stringify(conversation), { status: 201 });
+    }
+    if (url.endsWith('/api/conversations/prune-runtime-probe-session/agent_final_response'))
+      return new Response(JSON.stringify({ response: 'READY' }), { status: 200 });
+    if (url.includes('/api/conversations/prune-runtime-probe-session/events/search'))
+      return new Response(JSON.stringify({ items: [{ id: 'probe-tool', kind: 'ActionEvent' }] }), {
+        status: 200,
+      });
+    if (url.endsWith('/api/conversations/prune-runtime-probe-session') && method === 'GET') {
+      const conversation = conversations.get('prune-runtime-probe-session');
+      return conversation
+        ? new Response(JSON.stringify(conversation), { status: 200 })
+        : new Response(null, { status: 404 });
+    }
+    if (url.endsWith('/api/conversations/prune-runtime-probe-session') && method === 'DELETE') {
+      conversations.delete('prune-runtime-probe-session');
+      return new Response(null, { status: 204 });
+    }
+    throw new Error('unexpected runtime-admission prune fetch: ' + url + ' ' + method);
+  }) as typeof fetch;
+
+  const runtime = await buildControlPlane({
+    dbFile: ':memory:',
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env: {
+      NODE_ENV: 'test',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'true',
+      FORGEFLOW_AUTOMATION_RUNTIME_ENABLED: 'false',
+      FORGEFLOW_RESOURCE_SELECTOR_ENABLED: 'true',
+      FORGEFLOW_RUNTIME_ADMISSION_ENABLED: 'true',
+      FORGEFLOW_BUSINESS_RESOURCE_ENABLED: 'false',
+      FORGEFLOW_OPENHANDS_URL: 'http://openhands.test',
+      FORGEFLOW_OPENHANDS_TOKEN: 'test-session-key',
+      FORGEFLOW_LITELLM_API_KEY: 'test-litellm-key',
+      FORGEFLOW_LITELLM_BASE_URL: 'http://litellm.test/v1',
+      FORGEFLOW_LITELLM_ADMIN_BASE_URL: 'http://litellm.test',
+      FORGEFLOW_LITELLM_ADMIN_ENV_FILE: adminEnv,
+      FORGEFLOW_ALLOWED_REPOSITORY_ROOTS: value.allowed,
+      FORGEFLOW_WORKSPACE_HOST_ROOT: value.managed,
+      FORGEFLOW_WORKSPACE_EXECUTION_ROOT: '/workspace',
+      FORGEFLOW_AUTOMATION_PROJECTS: 'prune-runtime-project',
+      FORGEFLOW_WORKSPACE_UID: String(process.getuid?.() ?? 0),
+      FORGEFLOW_WORKSPACE_GID: String(process.getgid?.() ?? 0),
+      FORGEFLOW_RESOURCE_REFRESH_MS: '3600000',
+    },
+  });
+  try {
+    const created = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans',
+      headers: { 'idempotency-key': 'prune-runtime-demand-plan' },
+      payload: {
+        projectKey: 'prune-runtime-project',
+        objective: 'prune stale runtime admission workspaces',
+        repositoryPath: value.repository,
+        baseRevision: value.revision,
+        workItems: [
+          {
+            itemKey: 'probe',
+            title: 'Probe and prune',
+            objective: 'prove stale workspaces are removed only after provider cleanup',
+            dependencies: [],
+            acceptanceCriteria: ['runtime admission succeeds and crash residue is gone'],
+          },
+        ],
+      },
+    });
+    assert.equal(created.statusCode, 201);
+    await runtime.automation!.reconcileRuntimeAdmission();
+    assert.equal(runtime.automation!.runtimeAdmission.summary().ready, 1);
+    assert.ok(probeGroupId);
+    const residue = fs
+      .readdirSync(executionHostRoot)
+      .filter((name) => name === probeGroupId || name.startsWith(probeGroupId + '-'));
+    assert.deepEqual(residue, []);
+    assert.equal(conversations.size, 0);
+  } finally {
+    await runtime.app.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test('ACP runtime admission TTL survives restart without duplicate provider probes and stays read-only when disabled', async () => {
   const value = fixture();
   const dbFile = path.join(value.root, 'runtime-admission-restart.sqlite');
@@ -1566,6 +1708,8 @@ test('ACP runtime admission TTL survives restart without duplicate provider prob
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     }
+    if (url.includes('/api/conversations/search?'))
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
     if (url.endsWith('/api/conversations') && init.method === 'POST') {
       providerRequests += 1;
       throw new Error('private runtime admission diagnostic');
@@ -1694,6 +1838,153 @@ test('ACP runtime admission TTL survives restart without duplicate provider prob
     assert.equal(providerRequests, callsBeforeDisabledRead);
   } finally {
     await disabled.app.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test('planned shutdown aborts an active runtime probe without persisting a false admission failure', async () => {
+  const value = fixture();
+  const adminEnv = path.join(value.root, 'litellm-runtime-admission-shutdown.env');
+  fs.writeFileSync(adminEnv, 'LITELLM_MASTER_KEY=test-master-key\n');
+  const conversations = new Map<string, Record<string, any>>();
+  let probeStartedResolve!: () => void;
+  const probeStarted = new Promise<void>((resolve) => {
+    probeStartedResolve = resolve;
+  });
+  let deleted = 0;
+  let createdWorkspace = '';
+  let createdProbeTag = '';
+  const fakeFetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const url = String(input);
+    const method = String(init.method ?? 'GET');
+    if (url.endsWith('/model/info')) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              model_name: 'route-shutdown-runtime-deepseek',
+              litellm_params: { litellm_credential_name: 'shutdown-runtime-provider' },
+              model_info: {
+                id: 'deployment-shutdown-runtime-deepseek',
+                blocked: false,
+                metadata: {
+                  automatic_core: true,
+                  resource_id: 'shutdown-runtime-provider',
+                  resource_sequence: 452,
+                  model_family: 'deepseek-v4-flash',
+                  route_model: 'route-shutdown-runtime-deepseek',
+                  protocol: 'openai-chat-completions',
+                  commercial_type: 'FREE',
+                  supply_origin: 'COMMUNITY_RELAY',
+                  resource_lifecycle: 'RECURRING',
+                },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    if (url.includes('/api/conversations/search?')) {
+      return new Response(JSON.stringify({ items: [...conversations.values()] }), { status: 200 });
+    }
+    if (url.endsWith('/api/conversations') && method === 'POST') {
+      const body = JSON.parse(String(init.body)) as Record<string, any>;
+      createdWorkspace = String(body.workspace?.working_dir ?? '');
+      createdProbeTag = String(body.tags?.runtimeprobe ?? '');
+      const conversation = {
+        id: 'shutdown-runtime-probe-session',
+        execution_status: 'running',
+        workspace: body.workspace,
+        tags: body.tags,
+      };
+      conversations.set('shutdown-runtime-probe-session', conversation);
+      probeStartedResolve();
+      return new Response(JSON.stringify(conversation), { status: 201 });
+    }
+    if (url.includes('/api/conversations/shutdown-runtime-probe-session/events/search'))
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    if (url.endsWith('/api/conversations/shutdown-runtime-probe-session/interrupt') && method === 'POST') {
+      const conversation = conversations.get('shutdown-runtime-probe-session');
+      if (conversation) conversation.execution_status = 'paused';
+      return new Response(null, { status: 200 });
+    }
+    if (url.endsWith('/api/conversations/shutdown-runtime-probe-session') && method === 'GET') {
+      const conversation = conversations.get('shutdown-runtime-probe-session');
+      if (!conversation) return new Response(null, { status: 404 });
+      return new Response(JSON.stringify(conversation), { status: 200 });
+    }
+    if (url.endsWith('/api/conversations/shutdown-runtime-probe-session') && method === 'DELETE') {
+      deleted += 1;
+      conversations.delete('shutdown-runtime-probe-session');
+      return new Response(null, { status: 204 });
+    }
+    throw new Error('unexpected shutdown runtime fetch: ' + url + ' ' + method);
+  }) as typeof fetch;
+  const runtime = await buildControlPlane({
+    dbFile: path.join(value.root, 'runtime-admission-shutdown.sqlite'),
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env: {
+      NODE_ENV: 'test',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'true',
+      FORGEFLOW_AUTOMATION_RUNTIME_ENABLED: 'false',
+      FORGEFLOW_RESOURCE_SELECTOR_ENABLED: 'true',
+      FORGEFLOW_RUNTIME_ADMISSION_ENABLED: 'true',
+      FORGEFLOW_BUSINESS_RESOURCE_ENABLED: 'false',
+      FORGEFLOW_OPENHANDS_URL: 'http://openhands.test',
+      FORGEFLOW_OPENHANDS_TOKEN: 'test-session-key',
+      FORGEFLOW_LITELLM_API_KEY: 'test-litellm-key',
+      FORGEFLOW_LITELLM_BASE_URL: 'http://litellm.test/v1',
+      FORGEFLOW_LITELLM_ADMIN_BASE_URL: 'http://litellm.test',
+      FORGEFLOW_LITELLM_ADMIN_ENV_FILE: adminEnv,
+      FORGEFLOW_ALLOWED_REPOSITORY_ROOTS: value.allowed,
+      FORGEFLOW_WORKSPACE_HOST_ROOT: value.managed,
+      FORGEFLOW_WORKSPACE_EXECUTION_ROOT: '/workspace',
+      FORGEFLOW_AUTOMATION_PROJECTS: 'shutdown-runtime-project',
+      FORGEFLOW_WORKSPACE_UID: String(process.getuid?.() ?? 0),
+      FORGEFLOW_WORKSPACE_GID: String(process.getgid?.() ?? 0),
+      FORGEFLOW_RESOURCE_REFRESH_MS: '3600000',
+    },
+  });
+  try {
+    const created = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans',
+      headers: { 'idempotency-key': 'shutdown-runtime-demand-plan' },
+      payload: {
+        projectKey: 'shutdown-runtime-project',
+        objective: 'exercise planned runtime admission shutdown',
+        repositoryPath: value.repository,
+        baseRevision: value.revision,
+        workItems: [
+          {
+            itemKey: 'probe',
+            title: 'Probe until shutdown',
+            objective: 'stay active until shutdown',
+            dependencies: [],
+            acceptanceCriteria: ['planned shutdown remains clean'],
+          },
+        ],
+      },
+    });
+    assert.equal(created.statusCode, 201);
+    const cycle = runtime.automation!.reconcileRuntimeAdmission();
+    await probeStarted;
+    await runtime.automation!.shutdownRuntimeAdmission();
+    await cycle;
+    assert.equal(deleted, 1);
+    assert.equal(conversations.size, 0);
+    assert.equal(runtime.automation!.runtimeAdmission.summary().checked, 0);
+    assert.equal(runtime.repositories.runtimeAdmissions.list().length, 0);
+    assert.match(
+      createdWorkspace,
+      /^\/workspace\/forgeflow\/executions\/runtime-admission-[0-9a-f]{20}-[0-9a-f]{8}\/repo$/,
+    );
+    assert.match(createdProbeTag, /^runtime-admission-[0-9a-f]{20}$/);
+  } finally {
+    await runtime.app.close();
     fs.rmSync(value.root, { recursive: true, force: true });
   }
 });

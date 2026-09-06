@@ -157,9 +157,14 @@ export interface ProviderLaunchInput {
 }
 
 export interface ProviderRuntimeProbeInput {
+  /** Unique identity for this concrete probe attempt. */
   probeId: string;
+  /** Stable identity shared by retries/restarts for the same admission candidate. */
+  probeGroupId?: string;
   workspace: WorkspaceDescriptor;
   sourceRevision: string;
+  /** Cooperative cancellation for planned control-plane shutdown. */
+  signal?: AbortSignal;
 }
 
 export interface ProviderRuntimeProbeResult {
