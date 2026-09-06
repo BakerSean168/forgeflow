@@ -15,6 +15,7 @@ import { PlanWorktreeManager } from './core/adapters/planWorktrees.js';
 import { ProjectScopedWorkspaceAdapter } from './core/adapters/projectScopedWorkspace.js';
 import { LiteLlmExecutionTelemetry } from './core/adapters/liteLlmTelemetry.js';
 import { GitHubCliDeliveryAdapter } from './core/adapters/githubDelivery.js';
+import { MaintenanceCandidateRegistry, type MaintenanceProgram } from './core/adapters/maintenance.js';
 import {
   createOpenHandsProviderFactory,
   OpenHandsCodexBusinessReviewProvider,
@@ -57,6 +58,7 @@ import {
   WorkGraphKernel,
 } from './core/kernel/index.js';
 import { ExecutionWorker, type ExecutionWorkerRoute } from './core/orchestration/executionWorker.js';
+import { MaintenanceImprovementRuntime } from './core/orchestration/maintenanceRuntime.js';
 import { ProjectPlanQueueRuntime } from './core/orchestration/projectPlanQueueRuntime.js';
 import type { ExecutionProviderPort, WorkspaceProviderPort } from './core/orchestration/contracts.js';
 import {
@@ -140,6 +142,7 @@ export interface ControlPlaneRuntime {
     runtime: SupervisorRuntime;
   };
   automation?: ExecutionAutomationRuntime;
+  improvements: MaintenanceImprovementRuntime;
   projectPlanQueue?: ProjectPlanQueueRuntime;
   singleActivePlanEnabled: boolean;
   literalWorktreesEnabled: boolean;
@@ -154,6 +157,49 @@ function bodyRecord(value: unknown): Record<string, unknown> {
 function requiredText(value: unknown, code: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) throw new ForgeFlowError(code);
   return value.trim();
+}
+
+function optionalTextArray(value: unknown, code: string): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new ForgeFlowError(code);
+  return value.map((item) => requiredText(item, code));
+}
+
+function maintenanceProgramBody(value: unknown): MaintenanceProgram {
+  const body = bodyRecord(value);
+  const scope = body.autonomousScope ?? 'CONSERVATIVE';
+  if (scope !== 'CONSERVATIVE' && scope !== 'STANDARD')
+    throw new ForgeFlowError('MAINTENANCE_PROGRAM_SCOPE_INVALID');
+  const risk = body.candidateRisk ?? 'LOW';
+  if (risk !== 'LOW' && risk !== 'MEDIUM' && risk !== 'HIGH')
+    throw new ForgeFlowError('CANDIDATE_RISK_INVALID');
+  const integer = (input: unknown, fallback: number, code: string) => {
+    if (input === undefined || input === null) return fallback;
+    if (typeof input !== 'number' || !Number.isInteger(input)) throw new ForgeFlowError(code);
+    return input;
+  };
+  return {
+    programId: requiredText(body.programId, 'MAINTENANCE_PROGRAM_REQUIRED'),
+    projectKey: requiredText(body.projectKey, 'PLAN_PROJECT_REQUIRED'),
+    ...(typeof body.repositoryPath === 'string' && body.repositoryPath.trim()
+      ? { repositoryPath: body.repositoryPath.trim() }
+      : {}),
+    ...(optionalTextArray(body.implementationRoutes, 'MAINTENANCE_IMPLEMENTATION_ROUTE_INVALID')
+      ? { implementationRoutes: optionalTextArray(body.implementationRoutes, 'MAINTENANCE_IMPLEMENTATION_ROUTE_INVALID')! }
+      : {}),
+    ...(optionalTextArray(body.reviewRoutes, 'MAINTENANCE_REVIEW_ROUTE_INVALID')
+      ? { reviewRoutes: optionalTextArray(body.reviewRoutes, 'MAINTENANCE_REVIEW_ROUTE_INVALID')! }
+      : {}),
+    autonomousScope: scope,
+    autoMerge: body.autoMerge === true,
+    enabled: body.enabled !== false,
+    ...(optionalTextArray(body.failureCodePrefixes, 'MAINTENANCE_FAILURE_PREFIX_INVALID')
+      ? { failureCodePrefixes: optionalTextArray(body.failureCodePrefixes, 'MAINTENANCE_FAILURE_PREFIX_INVALID')! }
+      : {}),
+    failureThreshold: integer(body.failureThreshold, 3, 'MAINTENANCE_FAILURE_THRESHOLD_INVALID'),
+    recentExecutionLimit: integer(body.recentExecutionLimit, 200, 'MAINTENANCE_EXECUTION_LIMIT_INVALID'),
+    candidateRisk: risk,
+  };
 }
 
 function planDeliveryConfig(value: unknown): PlanDeliveryConfig | undefined {
@@ -1109,6 +1155,22 @@ export async function buildControlPlane(
     recovery: new RecoveryKernel(repositories),
     delivery: new DeliveryKernel(),
   };
+  const improvementRegistry = new MaintenanceCandidateRegistry(db);
+  const improvements = new MaintenanceImprovementRuntime(
+    db,
+    improvementRegistry,
+    repositories,
+    kernels.plan,
+    projectPlanQueue,
+    {
+      discoveryEnabled: env.FORGEFLOW_IMPROVEMENT_DISCOVERY_ENABLED === 'true',
+      adoptionEnabled: env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true',
+      allowedProjectKeys: commaList(env.FORGEFLOW_IMPROVEMENT_PROJECTS),
+      selfChangeEnabled: env.FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED === 'true',
+      selfProjectKey: env.FORGEFLOW_IMPROVEMENT_SELF_PROJECT_KEY ?? 'forgeflow',
+      selfRepositoryPath: env.FORGEFLOW_IMPROVEMENT_SELF_REPOSITORY ?? process.cwd(),
+    },
+  );
   const automation = await buildExecutionAutomation(env, repositories, options.fetchImpl ?? fetch);
   if (projectPlanQueue) {
     projectPlanQueue.bootstrapExistingRootPlans();
@@ -1391,6 +1453,7 @@ export async function buildControlPlane(
       readinessAuthority: supervisorRuntimeEnabled ? 'DIRECT_PROTOCOL_FEEDBACK' : 'DISABLED',
       maxResourceAttempts: supervisorMaxResourceAttempts,
     },
+    improvementRuntime: improvements.status(),
     executionRuntime: {
       enabled: Boolean(automation),
       autonomousPolling: Boolean(automation && env.FORGEFLOW_AUTOMATION_RUNTIME_ENABLED === 'true'),
@@ -1421,6 +1484,85 @@ export async function buildControlPlane(
       requireDelivery: automation?.requireDelivery ?? false,
     },
   }));
+
+  app.get('/api/v1/maintenance/programs', async () => ({
+    items: improvementRegistry.listPrograms(),
+  }));
+
+  app.get('/api/v1/improvements', async (request) => {
+    const query = request.query as { programId?: string; status?: string; limit?: string };
+    const limit = integerValue(query.limit, 100, 1, 1_000, 'CANDIDATE_LIST_LIMIT_INVALID');
+    const status = query.status;
+    const allowed = ['DISCOVERED', 'QUEUED', 'ADOPTED', 'REJECTED', 'STALE', 'COMPLETED'];
+    if (status && !allowed.includes(status)) throw new ForgeFlowError('CANDIDATE_STATUS_INVALID');
+    const items = improvementRegistry.list({
+      limit,
+      ...(query.programId ? { programId: query.programId } : {}),
+      ...(status ? { status: status as import('./core/adapters/maintenance.js').ImprovementCandidate['status'] } : {}),
+    });
+    return { items, count: items.length, runtime: improvements.status() };
+  });
+
+  app.get('/api/v1/improvements/:candidateId', async (request) => {
+    const candidateId = requiredText(
+      (request.params as { candidateId?: string }).candidateId,
+      'CANDIDATE_ID_REQUIRED',
+    );
+    const candidate = improvementRegistry.get(candidateId);
+    return {
+      candidate,
+      program: improvementRegistry.getProgram(candidate.programId),
+      plan: candidate.planId ? planView(candidate.planId) : null,
+    };
+  });
+
+  app.post('/api/v1/improvements/discover', async (request) => {
+    const program = maintenanceProgramBody(request.body);
+    const items = improvements.discover(program);
+    return { program: improvementRegistry.getProgram(program.programId), items, count: items.length };
+  });
+
+  app.post('/api/v1/improvements/:candidateId/adopt', async (request) => {
+    const candidateId = requiredText(
+      (request.params as { candidateId?: string }).candidateId,
+      'CANDIDATE_ID_REQUIRED',
+    );
+    const body = request.body === undefined || request.body === null ? {} : bodyRecord(request.body);
+    const priority =
+      body.priority === undefined
+        ? undefined
+        : typeof body.priority === 'number' && Number.isInteger(body.priority)
+          ? body.priority
+          : (() => { throw new ForgeFlowError('PROJECT_PLAN_PRIORITY_INVALID'); })();
+    const result = improvements.adopt(candidateId, {
+      ...(typeof body.repositoryPath === 'string' && body.repositoryPath.trim()
+        ? { repositoryPath: body.repositoryPath.trim() }
+        : {}),
+      ...(typeof body.baseRevision === 'string' && body.baseRevision.trim()
+        ? { baseRevision: body.baseRevision.trim() }
+        : {}),
+      ...(priority === undefined ? {} : { priority }),
+      acknowledgeHighRisk: body.acknowledgeHighRisk === true,
+      ...(body.delivery === undefined ? {} : { delivery: planDeliveryConfig(body.delivery)! }),
+    });
+    return result;
+  });
+
+  app.post('/api/v1/improvements/:candidateId/reconcile', async (request) => {
+    const candidateId = requiredText(
+      (request.params as { candidateId?: string }).candidateId,
+      'CANDIDATE_ID_REQUIRED',
+    );
+    return { candidate: improvements.reconcile(candidateId) };
+  });
+
+  app.post('/api/v1/improvements/:candidateId/reject', async (request) => {
+    const candidateId = requiredText(
+      (request.params as { candidateId?: string }).candidateId,
+      'CANDIDATE_ID_REQUIRED',
+    );
+    return { candidate: improvementRegistry.transition(candidateId, 'REJECTED') };
+  });
 
   app.get('/api/v1/storage', async () => ({
     storage: workspaceStorage(),
@@ -2104,6 +2246,29 @@ export async function buildControlPlane(
       )
     : undefined;
 
+  const improvementInterval =
+    env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true'
+      ? setInterval(
+          () => {
+            try {
+              improvements.reconcileAll();
+            } catch (error) {
+              app.log.error(
+                { error: error instanceof Error ? error.message : String(error) },
+                'improvement reconciliation cycle failed',
+              );
+            }
+          },
+          integerValue(
+            env.FORGEFLOW_IMPROVEMENT_RECONCILE_MS,
+            30_000,
+            5_000,
+            3_600_000,
+            'IMPROVEMENT_RECONCILE_INTERVAL_INVALID',
+          ),
+        )
+      : undefined;
+
   let automationCycleRunning = false;
   const automationInterval =
     automation && env.FORGEFLOW_AUTOMATION_RUNTIME_ENABLED === 'true'
@@ -2153,6 +2318,7 @@ export async function buildControlPlane(
   app.addHook('onClose', async () => {
     if (supervisorInterval) clearInterval(supervisorInterval);
     if (resourceInterval) clearInterval(resourceInterval);
+    if (improvementInterval) clearInterval(improvementInterval);
     if (automationInterval) clearInterval(automationInterval);
     db.close();
   });
@@ -2168,6 +2334,7 @@ export async function buildControlPlane(
     repositories,
     kernels,
     supervisor: { actions: supervisorActions, openHands, scheduler, runtime: supervisorRuntime },
+    improvements,
     ...(automation ? { automation } : {}),
     ...(projectPlanQueue ? { projectPlanQueue } : {}),
     singleActivePlanEnabled,

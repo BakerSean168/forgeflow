@@ -47,6 +47,10 @@ implementation commit
 
 A failure at a later stage preserves the earlier evidence and produces a repair/recovery path rather than rewriting history.
 
-## Self-change boundary
+## Improvement loop and self-change boundary
 
-V1 already provides the primitives needed to represent system repair and replanning, but ForgeFlow does not mutate live prompts, policies, or code in place. A future improvement engine must convert observations into explicit candidates/Plans and use the same implementation-review-test-canary-release chain as ordinary product work.
+ForgeFlow can deterministically aggregate repeated bounded execution failures into durable Improvement Candidates. Discovery is read-only with respect to project repositories: it groups allowlisted local engineering failure codes, deduplicates them by project/phase/failure identity, and records stable evidence without asking a model to invent a diagnosis. Candidate discovery and Plan adoption are separate operator gates.
+
+Adopting a Candidate does not grant Maintenance a writer. It creates an ordinary root Plan with a normal WorkItem, project scheduling lease, Supervisor, Resource Selector policy, implementation execution, independent exact-revision review, integration, and delivery requirements. Candidate completion is derived from that linked Plan: `SUCCEEDED` closes the Candidate, while cancellation makes it stale. No Candidate can mark itself complete or fabricate review/delivery evidence.
+
+Self-change has an additional hard gate. Even if the `forgeflow` project is accidentally included in the Improvement project allowlist, a Plan targeting ForgeFlow's own repository is rejected unless `FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED=true`. The checked-in deployment defaults discovery, adoption, project allowlists, and self-change to disabled. This preserves the current operating mode in which ForgeFlow may observe or represent improvement work, but cannot silently rewrite its live code, prompts, policy, or release state.

@@ -37,6 +37,12 @@ test('ForgeFlow runtime fails closed when execution automation is disabled', asy
   const health = await runtime.app.inject({ method: 'GET', url: '/api/health' });
   assert.equal(health.statusCode, 200);
   assert.equal(health.json().executionRuntime.enabled, false);
+  assert.deepEqual(health.json().improvementRuntime, {
+    discoveryEnabled: false,
+    adoptionEnabled: false,
+    selfChangeEnabled: false,
+    allowedProjectKeys: [],
+  });
   const run = await runtime.app.inject({ method: 'POST', url: '/api/v1/plans/missing/run' });
   assert.equal(run.statusCode, 503);
   assert.equal(run.json().error, 'EXECUTION_RUNTIME_DISABLED');
@@ -929,6 +935,113 @@ test('single-active-plan API queues later root tasks without supervisor or execu
   assert.equal(after.json().lease.activeRootPlanId, secondPlanId);
   assert.equal(after.json().items.length, 0);
   await runtime.app.close();
+});
+
+test('Improvement API discovers repeated failures and adopts them only as an ordinary queued Plan', async () => {
+  const value = fixture();
+  const runtime = await buildControlPlane({
+    dbFile: ':memory:',
+    environment: 'test',
+    logger: false,
+    env: {
+      NODE_ENV: 'test',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'false',
+      FORGEFLOW_SINGLE_ACTIVE_PLAN_ENABLED: 'true',
+      FORGEFLOW_IMPROVEMENT_DISCOVERY_ENABLED: 'true',
+      FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED: 'true',
+      FORGEFLOW_IMPROVEMENT_PROJECTS: 'improvement-api',
+      FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED: 'false',
+      FORGEFLOW_IMPROVEMENT_RECONCILE_MS: '300000',
+    },
+  });
+  const health = await runtime.app.inject({ method: 'GET', url: '/api/health' });
+  assert.deepEqual(health.json().improvementRuntime, {
+    discoveryEnabled: true,
+    adoptionEnabled: true,
+    selfChangeEnabled: false,
+    allowedProjectKeys: ['improvement-api'],
+  });
+
+  for (let index = 1; index <= 3; index += 1) {
+    const plan = runtime.repositories.plans.createPlan({
+      idempotencyKey: 'improvement-history-plan-' + index,
+      projectKey: 'improvement-api',
+      objective: 'historical failure',
+      repositoryPath: value.repository,
+      baseRevision: value.revision,
+    }).value!;
+    const executionId = 'improvement-history-execution-' + index;
+    runtime.repositories.executions.create({
+      idempotencyKey: executionId,
+      identity: {
+        executionId,
+        planId: plan.planId,
+        phase: 'IMPLEMENT',
+        attempt: 1,
+        route: 'historical-route',
+        sourceRevision: value.revision,
+      },
+      objective: 'historical failure',
+    });
+    runtime.repositories.executions.updateStatus(executionId, 'RUNNING');
+    runtime.repositories.executions.recordResult(executionId, {
+      status: 'FAILED',
+      errorCode: 'TEST_API_REGRESSION',
+      retryable: false,
+    });
+  }
+
+  const discovery = await runtime.app.inject({
+    method: 'POST',
+    url: '/api/v1/improvements/discover',
+    payload: {
+      programId: 'improvement-api-program',
+      projectKey: 'improvement-api',
+      repositoryPath: value.repository,
+      autonomousScope: 'CONSERVATIVE',
+      autoMerge: false,
+      failureThreshold: 3,
+      recentExecutionLimit: 100,
+      candidateRisk: 'LOW',
+    },
+  });
+  assert.equal(discovery.statusCode, 200);
+  assert.equal(discovery.json().count, 1);
+  assert.equal(discovery.json().items[0].errorCode, 'TEST_API_REGRESSION');
+  const candidateId = discovery.json().items[0].candidate.candidateId as string;
+
+  const adopted = await runtime.app.inject({
+    method: 'POST',
+    url: '/api/v1/improvements/' + candidateId + '/adopt',
+    payload: {},
+  });
+  assert.equal(adopted.statusCode, 200);
+  assert.equal(adopted.json().candidate.status, 'ADOPTED');
+  assert.equal(adopted.json().plan.projectKey, 'improvement-api');
+  assert.equal(adopted.json().plan.status, 'READY');
+  assert.equal(adopted.json().scheduling.status, 'ACTIVE');
+  const improvementPlanId = adopted.json().plan.planId as string;
+  assert.equal(runtime.repositories.executions.listByPlan(improvementPlanId).length, 0);
+  assert.ok(runtime.repositories.supervisors.getByPlanId(improvementPlanId));
+
+  const detail = await runtime.app.inject({
+    method: 'GET',
+    url: '/api/v1/improvements/' + candidateId,
+  });
+  assert.equal(detail.statusCode, 200);
+  assert.equal(detail.json().candidate.planId, improvementPlanId);
+  assert.equal(detail.json().plan.workItems.length, 1);
+
+  runtime.repositories.plans.updateStatus(improvementPlanId, 'RUNNING');
+  runtime.repositories.plans.updateStatus(improvementPlanId, 'SUCCEEDED');
+  const reconciled = await runtime.app.inject({
+    method: 'POST',
+    url: '/api/v1/improvements/' + candidateId + '/reconcile',
+  });
+  assert.equal(reconciled.statusCode, 200);
+  assert.equal(reconciled.json().candidate.status, 'COMPLETED');
+  await runtime.app.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
 });
 
 test('literal worktree canary is project-scoped and keeps legacy projects on isolated clones', async () => {

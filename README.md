@@ -19,6 +19,18 @@ Objective
   -> Complete
 ```
 
+Repeated bounded engineering failures can also enter a separate improvement intake path:
+
+```text
+Repeated verified failure
+  -> deterministic Improvement Candidate
+  -> explicit adoption
+  -> ordinary ForgeFlow Plan
+  -> the same implementation / independent review / integration / delivery gates
+```
+
+Discovery, adoption, and self-change are independent opt-in controls; Maintenance never receives a privileged repository writer.
+
 A bounded AI Supervisor observes durable state and handles exceptional cases such as replanning the remaining graph, changing an execution route, creating a repair/follow-up plan, or escalating a genuine external gate. Deterministic code retains authority over state transitions, leases, workspace ownership, review provenance, and delivery safety.
 
 ## V1 principles
@@ -31,7 +43,8 @@ A bounded AI Supervisor observes durable state and handles exceptional cases suc
 - **Resource-aware execution** — models/providers are selected through a governed resource directory rather than hard-coded attempt ladders.
 - **Bounded intelligence** — AI may diagnose and propose typed actions; it does not bypass deterministic safety gates.
 - **Recoverable execution** — retries, process restarts, provider failures, and interrupted sessions preserve durable lineage.
-- **Explicit self-change** — ForgeFlow may create a system-repair plan, but changes to ForgeFlow itself still pass implementation, independent review, tests, and release gates. It never silently rewrites its live policy.
+- **Explicit improvement adoption** — repeated failures become durable Candidates first; adoption creates an ordinary Plan rather than a privileged repair path.
+- **Hard-gated self-change** — even an allowlisted `forgeflow` Candidate cannot target ForgeFlow's own repository unless the separate self-change gate is explicitly enabled; all resulting changes still pass implementation, independent review, tests, and release gates.
 
 ## Repository layout
 

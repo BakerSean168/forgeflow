@@ -40,6 +40,19 @@ test('Supervisor deployment uses governed bounded resource selection rather than
   assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_SUPERVISOR_ENDPOINT=/);
 });
 
+test('Improvement deployment is opt-in and self-change is disabled by default', () => {
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_DISCOVERY_ENABLED=false/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED=false/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_PROJECTS=\n/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED=false/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_PROJECT_KEY=forgeflow/);
+  assert.match(
+    forgeFlowEnv,
+    /FORGEFLOW_IMPROVEMENT_SELF_REPOSITORY=\/home\/dev\/projects\/forgeflow/,
+  );
+  assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED=true/);
+});
+
 test('OpenHands execution plane uses ForgeFlow-only paths and no visualization surface', () => {
   assert.match(compose, /container_name: forgeflow-openhands/);
   assert.match(compose, /dns:\s*\n\s*- 100\.100\.100\.100/);
