@@ -51,6 +51,7 @@ import {
   resourceTierRank,
   validateExecutionResourceSelection,
   validateResourceStateOverride,
+  validateRuntimeAdmissionRecord,
   type ExecutionResourceSelection,
   type ResourceState,
   type ResourceStateOverride,
@@ -58,6 +59,8 @@ import {
   type NormalizedFailureClass,
   type ResourceTier,
   type RoutingExecutionPhase,
+  type RuntimeAdmissionRecord,
+  type ResourceTransport,
 } from '../domain/resourceRouting.js';
 import {
   transitionAction,
@@ -3293,6 +3296,173 @@ function sameOverrideInput(
   );
 }
 
+interface RuntimeAdmissionRow {
+  admission_key: string;
+  agent_backend: string;
+  transport: ResourceTransport;
+  resource_id: string;
+  binding_id: string;
+  model_family: string;
+  route_model: string;
+  ready: number;
+  error_code: string | null;
+  checked_at: string;
+}
+
+function runtimeAdmissionFrom(row: RuntimeAdmissionRow): RuntimeAdmissionRecord {
+  const record: RuntimeAdmissionRecord = {
+    admissionKey: row.admission_key,
+    agentBackend: row.agent_backend,
+    transport: row.transport,
+    resourceId: row.resource_id,
+    bindingId: row.binding_id,
+    modelFamily: row.model_family,
+    routeModel: row.route_model,
+    ready: Boolean(row.ready),
+    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    checkedAt: row.checked_at,
+  };
+  validateRuntimeAdmissionRecord(record);
+  return record;
+}
+
+export class RuntimeAdmissionRepository {
+  constructor(
+    readonly db: DatabaseSync,
+    readonly events = new EventStore(db),
+  ) {
+    assertCurrentSchema(db);
+  }
+
+  get(admissionKey: string): RuntimeAdmissionRecord | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM runtime_admissions WHERE admission_key=?')
+      .get(admissionKey) as RuntimeAdmissionRow | undefined;
+    return row ? runtimeAdmissionFrom(row) : undefined;
+  }
+
+  list(): RuntimeAdmissionRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM runtime_admissions ORDER BY admission_key')
+      .all() as unknown as RuntimeAdmissionRow[];
+    return rows.map(runtimeAdmissionFrom);
+  }
+
+  record(input: RuntimeAdmissionRecord): MutationResult<RuntimeAdmissionRecord> {
+    validateRuntimeAdmissionRecord(input);
+    assertSafeEventPayload(input);
+    return withTransaction(this.db, () => {
+      const current = this.get(input.admissionKey);
+      if (
+        current &&
+        (current.agentBackend !== input.agentBackend ||
+          current.transport !== input.transport ||
+          current.resourceId !== input.resourceId ||
+          current.bindingId !== input.bindingId ||
+          current.modelFamily !== input.modelFamily ||
+          current.routeModel !== input.routeModel)
+      )
+        throw new ForgeFlowError('RUNTIME_ADMISSION_IDENTITY_CONFLICT');
+      const changedState =
+        !current || current.ready !== input.ready || current.errorCode !== input.errorCode;
+      const result = current
+        ? this.db
+            .prepare(
+              `UPDATE runtime_admissions
+               SET ready=?,error_code=?,checked_at=? WHERE admission_key=?`,
+            )
+            .run(Number(input.ready), input.errorCode ?? null, input.checkedAt, input.admissionKey)
+        : this.db
+            .prepare(
+              `INSERT INTO runtime_admissions(
+                 admission_key,agent_backend,transport,resource_id,binding_id,model_family,route_model,ready,error_code,checked_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+            )
+            .run(
+              input.admissionKey,
+              input.agentBackend,
+              input.transport,
+              input.resourceId,
+              input.bindingId,
+              input.modelFamily,
+              input.routeModel,
+              Number(input.ready),
+              input.errorCode ?? null,
+              input.checkedAt,
+            );
+      if (Number(result.changes) !== 1)
+        return { status: 'rejected', value: this.get(input.admissionKey), reason: 'RUNTIME_ADMISSION_STALE' };
+      if (changedState)
+        this.events.appendInTransaction(
+          makeEvent(input.admissionKey, 'RESOURCE', 'RUNTIME_ADMISSION_CHANGED', {
+            agentBackend: input.agentBackend,
+            transport: input.transport,
+            resourceId: input.resourceId,
+            bindingId: input.bindingId,
+            modelFamily: input.modelFamily,
+            routeModel: input.routeModel,
+            ready: input.ready,
+            errorCode: input.errorCode ?? null,
+            checkedAt: input.checkedAt,
+          }),
+        );
+      return { status: current ? 'updated' : 'created', value: this.get(input.admissionKey)! };
+    });
+  }
+
+  invalidateResource(resourceId: string): number {
+    failClosed(resourceId.trim().length > 0, 'RUNTIME_ADMISSION_RESOURCE_REQUIRED');
+    return withTransaction(this.db, () => {
+      const rows = this.db
+        .prepare('SELECT admission_key FROM runtime_admissions WHERE resource_id=?')
+        .all(resourceId) as unknown as Array<{ admission_key: string }>;
+      if (rows.length === 0) return 0;
+      this.db.prepare('DELETE FROM runtime_admissions WHERE resource_id=?').run(resourceId);
+      this.events.appendInTransaction(
+        makeEvent(resourceId, 'RESOURCE', 'RUNTIME_ADMISSION_INVALIDATED', {
+          resourceId,
+          count: rows.length,
+        }),
+      );
+      return rows.length;
+    });
+  }
+
+  invalidateBinding(resourceId: string, bindingId: string): number {
+    failClosed(resourceId.trim().length > 0, 'RUNTIME_ADMISSION_RESOURCE_REQUIRED');
+    failClosed(bindingId.trim().length > 0, 'RUNTIME_ADMISSION_BINDING_REQUIRED');
+    return withTransaction(this.db, () => {
+      const rows = this.db
+        .prepare('SELECT admission_key FROM runtime_admissions WHERE resource_id=? AND binding_id=?')
+        .all(resourceId, bindingId) as unknown as Array<{ admission_key: string }>;
+      if (rows.length === 0) return 0;
+      this.db
+        .prepare('DELETE FROM runtime_admissions WHERE resource_id=? AND binding_id=?')
+        .run(resourceId, bindingId);
+      this.events.appendInTransaction(
+        makeEvent(resourceId, 'RESOURCE', 'RUNTIME_ADMISSION_BINDING_INVALIDATED', {
+          resourceId,
+          bindingId,
+          count: rows.length,
+        }),
+      );
+      return rows.length;
+    });
+  }
+
+  retain(admissionKeys: readonly string[]): number {
+    const keep = new Set(admissionKeys);
+    const remove = this.list().filter((row) => !keep.has(row.admissionKey));
+    if (remove.length === 0) return 0;
+    return withTransaction(this.db, () => {
+      let changed = 0;
+      const statement = this.db.prepare('DELETE FROM runtime_admissions WHERE admission_key=?');
+      for (const row of remove) changed += Number(statement.run(row.admissionKey).changes);
+      return changed;
+    });
+  }
+}
+
 interface SupervisorDirectAdmissionRow {
   admission_key: string;
   resource_id: string;
@@ -4200,6 +4370,7 @@ export interface ForgeFlowRepositories {
   executionResourceSelections: ExecutionResourceSelectionRepository;
   resourceStateOverrides: ResourceStateOverrideRepository;
   supervisorDirectAdmissions: SupervisorDirectAdmissionRepository;
+  runtimeAdmissions: RuntimeAdmissionRepository;
   projectPlans: ProjectPlanSchedulerRepository;
   planWorktrees: PlanWorktreeRepository;
   events: EventStore;
@@ -4224,6 +4395,7 @@ export function createRepositories(db: DatabaseSync): ForgeFlowRepositories {
     executionResourceSelections: resourceSelections,
     resourceStateOverrides,
     supervisorDirectAdmissions: new SupervisorDirectAdmissionRepository(db, events),
+    runtimeAdmissions: new RuntimeAdmissionRepository(db, events),
     projectPlans: new ProjectPlanSchedulerRepository(db, events),
     planWorktrees: new PlanWorktreeRepository(db, events),
     events,

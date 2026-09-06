@@ -28,7 +28,11 @@ import {
   ResourceSelector,
 } from '../src/core/orchestration/resourceSelector.js';
 import { openDatabase, SCHEMA_VERSION } from '../src/core/persistence/database.js';
-import { RuntimeAdmissionRegistry } from '../src/core/orchestration/runtimeAdmission.js';
+import {
+  RuntimeAdmissionRegistry,
+  createRuntimeAdmissionStatus,
+  runtimeAdmissionKey,
+} from '../src/core/orchestration/runtimeAdmission.js';
 import { createRepositories } from '../src/core/persistence/repositories.js';
 
 const NOW = '2026-09-03T00:00:00.000Z';
@@ -811,4 +815,77 @@ test('runtime admission invalidation is scoped to the changed binding/resource a
   assert.equal(registry.retain([first.candidate]), 1);
   assert.equal(registry.get(first.candidate)?.ready, true);
   assert.equal(registry.get(second.candidate), undefined);
+});
+
+
+test('durable runtime admission cache preserves scoped invalidation and retention semantics', () => {
+  const resources = [
+    resource({
+      resourceId: 'durable-admission-a',
+      resourceTier: 'FREE',
+      resourceSequence: 1,
+      bindings: [binding('durable-admission-a-binding', 'deepseek-v4-flash')],
+    }),
+    resource({
+      resourceId: 'durable-admission-b',
+      resourceTier: 'FREE',
+      resourceSequence: 2,
+      bindings: [binding('durable-admission-b-binding', 'deepseek-v4-flash')],
+    }),
+  ];
+  const first = selectExecutableProfile(resources, { phase: 'IMPLEMENT' });
+  assert.equal(first.status, 'SELECTED');
+  if (first.status !== 'SELECTED') return;
+  const second = selectExecutableProfile(resources, {
+    phase: 'IMPLEMENT',
+    priorAttempts: [{
+      resourceId: first.profile.resourceId,
+      bindingId: first.profile.bindingId,
+      modelFamily: first.profile.modelFamily,
+    }],
+  });
+  assert.equal(second.status, 'SELECTED');
+  if (second.status !== 'SELECTED') return;
+
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const firstRecord = createRuntimeAdmissionStatus(first.candidate, {
+    ready: false,
+    errorCode: 'RUNTIME_PROBE_TRANSPORT_ERROR',
+    checkedAt: NOW,
+  });
+  const secondRecord = createRuntimeAdmissionStatus(second.candidate, {
+    ready: true,
+    checkedAt: NOW,
+  });
+  repositories.runtimeAdmissions.record(firstRecord);
+  repositories.runtimeAdmissions.record(secondRecord);
+  assert.equal(repositories.runtimeAdmissions.list().length, 2);
+  assert.equal(
+    repositories.runtimeAdmissions.get(runtimeAdmissionKey(first.candidate))?.errorCode,
+    'RUNTIME_PROBE_TRANSPORT_ERROR',
+  );
+
+  assert.equal(
+    repositories.runtimeAdmissions.invalidateBinding(
+      first.profile.resourceId,
+      first.profile.bindingId!,
+    ),
+    1,
+  );
+  assert.equal(repositories.runtimeAdmissions.get(runtimeAdmissionKey(first.candidate)), undefined);
+  assert.equal(repositories.runtimeAdmissions.get(runtimeAdmissionKey(second.candidate))?.ready, true);
+
+  repositories.runtimeAdmissions.record(firstRecord);
+  assert.equal(repositories.runtimeAdmissions.invalidateResource(second.profile.resourceId), 1);
+  assert.equal(repositories.runtimeAdmissions.get(runtimeAdmissionKey(second.candidate)), undefined);
+  assert.equal(repositories.runtimeAdmissions.get(runtimeAdmissionKey(first.candidate))?.ready, false);
+
+  repositories.runtimeAdmissions.record(secondRecord);
+  assert.equal(repositories.runtimeAdmissions.retain([runtimeAdmissionKey(first.candidate)]), 1);
+  assert.deepEqual(
+    repositories.runtimeAdmissions.list().map((item) => item.admissionKey),
+    [runtimeAdmissionKey(first.candidate)],
+  );
+  db.close();
 });

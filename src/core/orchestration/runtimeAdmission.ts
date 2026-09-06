@@ -1,20 +1,13 @@
+import {
+  validateRuntimeAdmissionRecord,
+  type RuntimeAdmissionRecord,
+} from '../domain/resourceRouting.js';
 import type {
   ResourceCandidateReadinessPort,
   ResourceSelectionCandidate,
 } from './resourceSelector.js';
 
-export interface RuntimeAdmissionStatus {
-  key: string;
-  agentBackend: string;
-  transport: string;
-  resourceId: string;
-  bindingId: string;
-  modelFamily: string;
-  routeModel?: string;
-  ready: boolean;
-  checkedAt: string;
-  errorCode?: string;
-}
+export type RuntimeAdmissionStatus = RuntimeAdmissionRecord;
 
 export function runtimeAdmissionKey(candidate: ResourceSelectionCandidate): string {
   const profile = candidate.profile;
@@ -25,6 +18,27 @@ export function runtimeAdmissionKey(candidate: ResourceSelectionCandidate): stri
     profile.bindingId ?? candidate.binding.bindingId,
     profile.routeModel ?? profile.modelFamily,
   ].join('|');
+}
+
+export function createRuntimeAdmissionStatus(
+  candidate: ResourceSelectionCandidate,
+  input: { ready: boolean; checkedAt?: string; errorCode?: string },
+): RuntimeAdmissionStatus {
+  const profile = candidate.profile;
+  const status: RuntimeAdmissionStatus = {
+    admissionKey: runtimeAdmissionKey(candidate),
+    agentBackend: profile.agentBackend,
+    transport: profile.transport,
+    resourceId: profile.resourceId,
+    bindingId: profile.bindingId ?? candidate.binding.bindingId,
+    modelFamily: profile.modelFamily,
+    routeModel: profile.routeModel ?? profile.modelFamily,
+    ready: input.ready,
+    checkedAt: input.checkedAt ?? new Date().toISOString(),
+    ...(input.errorCode ? { errorCode: input.errorCode.slice(0, 500) } : {}),
+  };
+  validateRuntimeAdmissionRecord(status);
+  return status;
 }
 
 export function requiresAcpRuntimeAdmission(candidate: ResourceSelectionCandidate): boolean {
@@ -57,20 +71,16 @@ export class RuntimeAdmissionRegistry implements ResourceCandidateReadinessPort 
     candidate: ResourceSelectionCandidate,
     input: { ready: boolean; checkedAt?: string; errorCode?: string },
   ): RuntimeAdmissionStatus {
-    const status: RuntimeAdmissionStatus = {
-      key: runtimeAdmissionKey(candidate),
-      agentBackend: candidate.profile.agentBackend,
-      transport: candidate.profile.transport,
-      resourceId: candidate.profile.resourceId,
-      bindingId: candidate.profile.bindingId ?? candidate.binding.bindingId,
-      modelFamily: candidate.profile.modelFamily,
-      ...(candidate.profile.routeModel ? { routeModel: candidate.profile.routeModel } : {}),
-      ready: input.ready,
-      checkedAt: input.checkedAt ?? new Date().toISOString(),
-      ...(input.errorCode ? { errorCode: input.errorCode.slice(0, 500) } : {}),
-    };
-    this.statuses.set(status.key, status);
+    const status = createRuntimeAdmissionStatus(candidate, input);
+    this.restore([status]);
     return status;
+  }
+
+  restore(records: readonly RuntimeAdmissionStatus[]): void {
+    for (const record of records) {
+      validateRuntimeAdmissionRecord(record);
+      this.statuses.set(record.admissionKey, record);
+    }
   }
 
   isStale(
@@ -122,7 +132,7 @@ export class RuntimeAdmissionRegistry implements ResourceCandidateReadinessPort 
   }
 
   list(): RuntimeAdmissionStatus[] {
-    return [...this.statuses.values()].sort((a, b) => a.key.localeCompare(b.key));
+    return [...this.statuses.values()].sort((a, b) => a.admissionKey.localeCompare(b.admissionKey));
   }
 
   summary(): {

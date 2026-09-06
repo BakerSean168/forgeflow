@@ -353,6 +353,39 @@ export function validateExecutionResource(resource: ExecutionResource): void {
     nonEmpty(resource.requiresPolicy, 'RESOURCE_POLICY_INVALID');
 }
 
+export interface RuntimeAdmissionRecord {
+  admissionKey: string;
+  agentBackend: string;
+  transport: ResourceTransport;
+  resourceId: string;
+  bindingId: string;
+  modelFamily: string;
+  routeModel: string;
+  ready: boolean;
+  errorCode?: string;
+  checkedAt: string;
+}
+
+export function validateRuntimeAdmissionRecord(record: RuntimeAdmissionRecord): void {
+  for (const [value, code] of [
+    [record.admissionKey, 'RUNTIME_ADMISSION_KEY_REQUIRED'],
+    [record.agentBackend, 'RUNTIME_ADMISSION_BACKEND_REQUIRED'],
+    [record.resourceId, 'RUNTIME_ADMISSION_RESOURCE_REQUIRED'],
+    [record.bindingId, 'RUNTIME_ADMISSION_BINDING_REQUIRED'],
+    [record.modelFamily, 'RUNTIME_ADMISSION_MODEL_REQUIRED'],
+    [record.routeModel, 'RUNTIME_ADMISSION_ROUTE_REQUIRED'],
+  ] as const)
+    nonEmpty(value, code, 2_000);
+  oneOf(record.transport, RESOURCE_TRANSPORTS, 'RUNTIME_ADMISSION_TRANSPORT_INVALID');
+  failClosed(Number.isFinite(Date.parse(record.checkedAt)), 'RUNTIME_ADMISSION_TIME_INVALID');
+  failClosed(
+    !record.errorCode ||
+      (record.errorCode.length <= 500 && /^[A-Z0-9_.:-]+$/.test(record.errorCode)),
+    'RUNTIME_ADMISSION_ERROR_CODE_INVALID',
+  );
+  failClosed(!record.ready || !record.errorCode, 'RUNTIME_ADMISSION_READY_WITH_ERROR');
+}
+
 export interface ExecutableProfile {
   readonly capability: ExecutionCapability;
   readonly phase: RoutingExecutionPhase;

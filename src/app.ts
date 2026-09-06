@@ -69,6 +69,7 @@ import {
 } from './core/orchestration/resourceSelector.js';
 import {
   RuntimeAdmissionRegistry,
+  createRuntimeAdmissionStatus,
   requiresAcpRuntimeAdmission,
   runtimeAdmissionKey,
 } from './core/orchestration/runtimeAdmission.js';
@@ -552,6 +553,7 @@ async function buildExecutionAutomation(
     'RUNTIME_ADMISSION_TRANSIENT_FAILURE_TTL_INVALID',
   );
   const runtimeAdmission = new RuntimeAdmissionRegistry();
+  if (runtimeAdmissionEnabled) runtimeAdmission.restore(repositories.runtimeAdmissions.list());
   const runtimeAdmissionHasDemand = (): boolean => {
     if (repositories.executions.listByStatuses(['QUEUED', 'RUNNING'], 1).length > 0) return true;
     return (['READY', 'RUNNING', 'WAITING_FOR_RESOURCE'] as const).some(
@@ -876,6 +878,18 @@ async function buildExecutionAutomation(
     };
   };
 
+  const recordRuntimeAdmission = (
+    candidate: ResourceSelectionCandidate,
+    input: { ready: boolean; checkedAt?: string; errorCode?: string },
+  ) => {
+    const status = createRuntimeAdmissionStatus(candidate, input);
+    const persisted = repositories.runtimeAdmissions.record(status);
+    if (!persisted.value || persisted.status === 'rejected')
+      throw new ForgeFlowError(persisted.reason ?? 'RUNTIME_ADMISSION_STALE');
+    runtimeAdmission.restore([persisted.value]);
+    return persisted.value;
+  };
+
   const probeAdmissionCandidate = async (candidate: ResourceSelectionCandidate): Promise<void> => {
     const key = runtimeAdmissionKey(candidate);
     const probeId =
@@ -896,7 +910,7 @@ async function buildExecutionAutomation(
       const clean = prepared.git(['status', '--porcelain=v1']) === '';
       const head = prepared.git(['rev-parse', '--verify', 'HEAD^{commit}']);
       const ready = result.ready && clean && head === prepared.sourceRevision;
-      runtimeAdmission.record(candidate, {
+      recordRuntimeAdmission(candidate, {
         ready,
         ...(!ready
           ? {
@@ -911,7 +925,7 @@ async function buildExecutionAutomation(
           : {}),
       });
     } catch (error) {
-      runtimeAdmission.record(candidate, {
+      recordRuntimeAdmission(candidate, {
         ready: false,
         errorCode: error instanceof ForgeFlowError ? error.code : 'RUNTIME_ADMISSION_PROBE_FAILED',
       });
@@ -925,6 +939,7 @@ async function buildExecutionAutomation(
     if (!runtimeAdmissionEnabled) return;
     const candidates = admissionCandidates();
     runtimeAdmission.retain(candidates);
+    repositories.runtimeAdmissions.retain(candidates.map(runtimeAdmissionKey));
     if (!runtimeAdmissionHasDemand()) return;
     if (runtimeAdmissionCycle) return await runtimeAdmissionCycle;
     runtimeAdmissionCycle = (async () => {
@@ -1673,6 +1688,14 @@ export async function buildControlPlane(
             demandDriven: true,
             hasDemand: automation.runtimeAdmissionHasDemand(),
             ...automation.runtimeAdmission.summary(),
+            durableCache: (() => {
+              const items = repositories.runtimeAdmissions.list();
+              return {
+                checked: items.length,
+                ready: items.filter((item) => item.ready).length,
+                unready: items.filter((item) => !item.ready).length,
+              };
+            })(),
           }
         : {
             enabled: false,
@@ -1683,6 +1706,7 @@ export async function buildControlPlane(
             unready: 0,
             implementationReady: 0,
             reviewReady: 0,
+            durableCache: { checked: 0, ready: 0, unready: 0 },
           },
       routingAuthority: automation?.resourceSelectorEnabled
         ? 'RESOURCE_SELECTOR'
@@ -1821,20 +1845,32 @@ export async function buildControlPlane(
 
   app.get('/api/v1/runtime-admission', async () => {
     const runtime = requireAutomation();
+    const project = (item: import('./core/domain/resourceRouting.js').RuntimeAdmissionRecord) => ({
+      agentBackend: item.agentBackend,
+      transport: item.transport,
+      resourceId: item.resourceId,
+      bindingId: item.bindingId,
+      modelFamily: item.modelFamily,
+      routeModel: item.routeModel,
+      ready: item.ready,
+      checkedAt: item.checkedAt,
+      errorCode: item.errorCode ?? null,
+    });
+    const durableItems = repositories.runtimeAdmissions.list();
     return {
       enabled: runtime.runtimeAdmissionEnabled,
+      demandDriven: true,
+      hasDemand: runtime.runtimeAdmissionHasDemand(),
       summary: runtime.runtimeAdmission.summary(),
-      items: runtime.runtimeAdmission.list().map((item) => ({
-        agentBackend: item.agentBackend,
-        transport: item.transport,
-        resourceId: item.resourceId,
-        bindingId: item.bindingId,
-        modelFamily: item.modelFamily,
-        routeModel: item.routeModel ?? null,
-        ready: item.ready,
-        checkedAt: item.checkedAt,
-        errorCode: item.errorCode ?? null,
-      })),
+      items: runtime.runtimeAdmission.list().map(project),
+      durableCache: {
+        summary: {
+          checked: durableItems.length,
+          ready: durableItems.filter((item) => item.ready).length,
+          unready: durableItems.filter((item) => !item.ready).length,
+        },
+        items: durableItems.map(project),
+      },
     };
   });
 
@@ -1883,6 +1919,7 @@ export async function buildControlPlane(
     if (result.status === 'rejected') throw new ForgeFlowError(result.reason ?? 'STALE_RESOURCE_STATE');
     repositories.supervisorDirectAdmissions.invalidateResource(resourceId);
     supervisorDirectAdmission.invalidateResource(resourceId);
+    repositories.runtimeAdmissions.invalidateResource(resourceId);
     runtime.runtimeAdmission.invalidateResource(resourceId);
     await runtime.reconcileRuntimeAdmission();
     const resourceWake = await reconcileSupervisorReadiness();
@@ -1918,6 +1955,7 @@ export async function buildControlPlane(
     await runtime.liteLlmResources.refresh();
     repositories.supervisorDirectAdmissions.invalidateResource(resourceId);
     supervisorDirectAdmission.invalidateResource(resourceId);
+    repositories.runtimeAdmissions.invalidateBinding(resourceId, bindingId);
     runtime.runtimeAdmission.invalidateBinding(resourceId, bindingId);
     await runtime.reconcileRuntimeAdmission();
     const resourceWake = await reconcileSupervisorReadiness();

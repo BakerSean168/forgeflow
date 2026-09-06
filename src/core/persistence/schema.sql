@@ -263,6 +263,22 @@ CREATE TABLE IF NOT EXISTS supervisor_direct_admissions (
 CREATE INDEX IF NOT EXISTS idx_supervisor_direct_admissions_resource
   ON supervisor_direct_admissions(resource_id, binding_id);
 
+
+CREATE TABLE IF NOT EXISTS runtime_admissions (
+  admission_key TEXT PRIMARY KEY,
+  agent_backend TEXT NOT NULL,
+  transport TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  binding_id TEXT NOT NULL,
+  model_family TEXT NOT NULL,
+  route_model TEXT NOT NULL,
+  ready INTEGER NOT NULL,
+  error_code TEXT,
+  checked_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_admissions_resource
+  ON runtime_admissions(resource_id, binding_id);
+
 CREATE TABLE IF NOT EXISTS project_plan_leases (
   project_key TEXT PRIMARY KEY,
   repository_path TEXT NOT NULL,
@@ -357,4 +373,4 @@ CREATE TABLE IF NOT EXISTS improvement_candidates (
   updated_at TEXT NOT NULL
 );
 INSERT OR IGNORE INTO schema_meta(schema_id, schema_version, created_at)
-VALUES ('forgeflow', 13, CAST(strftime('%s','now') AS INTEGER));
+VALUES ('forgeflow', 14, CAST(strftime('%s','now') AS INTEGER));

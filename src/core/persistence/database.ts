@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { DataResetRequiredError, ForgeFlowError } from '../domain/errors.js';
 
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 const CREATE_EXECUTION_SESSIONS_SQL = `
 CREATE TABLE IF NOT EXISTS execution_sessions (
@@ -152,6 +152,23 @@ CREATE INDEX IF NOT EXISTS idx_supervisor_direct_admissions_resource
   ON supervisor_direct_admissions(resource_id, binding_id);
 `;
 
+const CREATE_RUNTIME_ADMISSIONS_SQL = `
+CREATE TABLE IF NOT EXISTS runtime_admissions (
+  admission_key TEXT PRIMARY KEY,
+  agent_backend TEXT NOT NULL,
+  transport TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  binding_id TEXT NOT NULL,
+  model_family TEXT NOT NULL,
+  route_model TEXT NOT NULL,
+  ready INTEGER NOT NULL,
+  error_code TEXT,
+  checked_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_admissions_resource
+  ON runtime_admissions(resource_id, binding_id);
+`;
+
 const CREATE_PROTECTED_REF_SNAPSHOT_SQL = `
 CREATE TABLE IF NOT EXISTS plan_protected_refs (
   root_plan_id TEXT NOT NULL REFERENCES plans(plan_id),
@@ -188,6 +205,7 @@ export const SCHEMA_SQL = [
   'CREATE TABLE IF NOT EXISTS resources (resource_id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, capabilities TEXT NOT NULL, quota_remaining REAL, observation TEXT NOT NULL, updated_at TEXT NOT NULL, observed_at TEXT NOT NULL);',
   CREATE_RESOURCE_ROUTING_SQL,
   CREATE_SUPERVISOR_DIRECT_ADMISSIONS_SQL,
+  CREATE_RUNTIME_ADMISSIONS_SQL,
   CREATE_PROJECT_PLAN_SCHEDULING_SQL,
   CREATE_PLAN_WORKTREES_SQL,
   CREATE_PROTECTED_REF_SNAPSHOT_SQL,
@@ -195,7 +213,7 @@ export const SCHEMA_SQL = [
   'CREATE TABLE IF NOT EXISTS plan_relationships (relationship_id TEXT PRIMARY KEY, parent_plan_id TEXT NOT NULL REFERENCES plans(plan_id), child_plan_id TEXT NOT NULL UNIQUE REFERENCES plans(plan_id), kind TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(parent_plan_id, child_plan_id, kind));',
   'CREATE TABLE IF NOT EXISTS maintenance_programs (program_id TEXT PRIMARY KEY, project_key TEXT NOT NULL, policy TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);',
   "CREATE TABLE IF NOT EXISTS improvement_candidates (candidate_id TEXT PRIMARY KEY, program_id TEXT NOT NULL REFERENCES maintenance_programs(program_id), fingerprint TEXT NOT NULL UNIQUE, title TEXT NOT NULL, evidence TEXT NOT NULL, status TEXT NOT NULL, plan_id TEXT REFERENCES plans(plan_id), pull_request_id TEXT, risk TEXT NOT NULL DEFAULT 'LOW', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);",
-  "INSERT OR IGNORE INTO schema_meta(schema_id, schema_version, created_at) VALUES ('forgeflow', 13, CAST(strftime('%s','now') AS INTEGER));",
+  "INSERT OR IGNORE INTO schema_meta(schema_id, schema_version, created_at) VALUES ('forgeflow', 14, CAST(strftime('%s','now') AS INTEGER));",
 ].join('\n');
 
 const V1_REQUIRED_COLUMNS = {
@@ -578,6 +596,22 @@ const V13_REQUIRED_COLUMNS = {
   ],
 } as const satisfies Record<string, readonly string[]>;
 
+const V14_REQUIRED_COLUMNS = {
+  ...V13_REQUIRED_COLUMNS,
+  runtime_admissions: [
+    'admission_key',
+    'agent_backend',
+    'transport',
+    'resource_id',
+    'binding_id',
+    'model_family',
+    'route_model',
+    'ready',
+    'error_code',
+    'checked_at',
+  ],
+} as const satisfies Record<string, readonly string[]>;
+
 export interface DatabaseOptions {
   env?: NodeJS.ProcessEnv;
   environment?: 'test' | 'development' | 'staging' | 'production';
@@ -884,6 +918,34 @@ function migrateV12ToV13(db: DatabaseSync): void {
     const result = db
       .prepare(
         "UPDATE schema_meta SET schema_version=13 WHERE schema_id='forgeflow' AND schema_version=12",
+      )
+      .run();
+    if (Number(result.changes) !== 1) throw new ForgeFlowError('SCHEMA_MIGRATION_STALE');
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* preserve original migration failure */
+    }
+    throw error;
+  }
+}
+
+function migrateV13ToV14(db: DatabaseSync): void {
+  if (schemaVersion(db) !== 13) return;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const lockedVersion = schemaVersion(db);
+    if (lockedVersion !== 13) throw new ForgeFlowError('SCHEMA_MIGRATION_STALE');
+    assertSchemaColumns(db, V13_REQUIRED_COLUMNS);
+    assertV11Relationships(db);
+    db.exec(CREATE_RUNTIME_ADMISSIONS_SQL);
+    assertSchemaColumns(db, V14_REQUIRED_COLUMNS);
+    assertV11Relationships(db);
+    const result = db
+      .prepare(
+        "UPDATE schema_meta SET schema_version=14 WHERE schema_id='forgeflow' AND schema_version=13",
       )
       .run();
     if (Number(result.changes) !== 1) throw new ForgeFlowError('SCHEMA_MIGRATION_STALE');
@@ -1270,9 +1332,10 @@ function migrateKnownSchema(db: DatabaseSync): void {
   migrateV10ToV11(db);
   migrateV11ToV12(db);
   migrateV12ToV13(db);
+  migrateV13ToV14(db);
   const current = schemaVersion(db);
   if (current !== SCHEMA_VERSION) throw new ForgeFlowError('SCHEMA_VERSION_INVALID');
-  assertSchemaColumns(db, V13_REQUIRED_COLUMNS);
+  assertSchemaColumns(db, V14_REQUIRED_COLUMNS);
   assertV11Relationships(db);
 }
 
@@ -1328,9 +1391,10 @@ export function assertCurrentSchema(db: DatabaseSync): void {
   migrateV10ToV11(db);
   migrateV11ToV12(db);
   migrateV12ToV13(db);
+  migrateV13ToV14(db);
   const current = schemaVersion(db);
   if (current !== SCHEMA_VERSION) throw new ForgeFlowError('SCHEMA_VERSION_INVALID');
-  assertSchemaColumns(db, V13_REQUIRED_COLUMNS);
+  assertSchemaColumns(db, V14_REQUIRED_COLUMNS);
   assertV11Relationships(db);
 }
 

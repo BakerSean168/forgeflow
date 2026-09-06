@@ -247,6 +247,7 @@ test('ForgeFlow creates a durable first execution through the public plan runtim
       unready: 0,
       implementationReady: 0,
       reviewReady: 0,
+      durableCache: { checked: 0, ready: 0, unready: 0 },
     },
     routingAuthority: 'LEGACY_ROUTE_LIST',
     compatibilityImplementationRoutes: ['gpt-5.6-luna'],
@@ -1452,6 +1453,174 @@ test('runtime admission is demand-driven, single-flights probes, and uses execut
   await runtime.automation!.reconcileRuntimeAdmission();
   assert.equal(providerRequests, 1);
   await runtime.app.close();
+});
+
+test('ACP runtime admission TTL survives restart without duplicate provider probes and stays read-only when disabled', async () => {
+  const value = fixture();
+  const dbFile = path.join(value.root, 'runtime-admission-restart.sqlite');
+  const adminEnv = path.join(value.root, 'litellm-runtime-admission-restart.env');
+  fs.writeFileSync(adminEnv, 'LITELLM_MASTER_KEY=test-master-key\n');
+  let providerRequests = 0;
+  const fakeFetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const url = String(input);
+    if (url.endsWith('/model/info')) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              model_name: 'route-durable-runtime-deepseek',
+              litellm_params: { litellm_credential_name: 'durable-runtime-provider' },
+              model_info: {
+                id: 'deployment-durable-runtime-deepseek',
+                blocked: false,
+                metadata: {
+                  automatic_core: true,
+                  resource_id: 'durable-runtime-provider',
+                  resource_sequence: 451,
+                  model_family: 'deepseek-v4-flash',
+                  route_model: 'route-durable-runtime-deepseek',
+                  protocol: 'openai-chat-completions',
+                  commercial_type: 'FREE',
+                  supply_origin: 'COMMUNITY_RELAY',
+                  resource_lifecycle: 'RECURRING',
+                },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    if (url.endsWith('/api/conversations') && init.method === 'POST') {
+      providerRequests += 1;
+      throw new Error('private runtime admission diagnostic');
+    }
+    throw new Error('unexpected runtime-admission restart fetch: ' + url);
+  }) as typeof fetch;
+  const env = {
+    NODE_ENV: 'test',
+    FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'true',
+    FORGEFLOW_AUTOMATION_RUNTIME_ENABLED: 'false',
+    FORGEFLOW_RESOURCE_SELECTOR_ENABLED: 'true',
+    FORGEFLOW_RUNTIME_ADMISSION_ENABLED: 'true',
+    FORGEFLOW_RUNTIME_ADMISSION_TTL_MS: '300000',
+    FORGEFLOW_RUNTIME_ADMISSION_TRANSIENT_FAILURE_TTL_MS: '300000',
+    FORGEFLOW_BUSINESS_RESOURCE_ENABLED: 'false',
+    FORGEFLOW_OPENHANDS_URL: 'http://openhands.test',
+    FORGEFLOW_OPENHANDS_TOKEN: 'test-session-key',
+    FORGEFLOW_LITELLM_API_KEY: 'test-litellm-key',
+    FORGEFLOW_LITELLM_BASE_URL: 'http://litellm.test/v1',
+    FORGEFLOW_LITELLM_ADMIN_BASE_URL: 'http://litellm.test',
+    FORGEFLOW_LITELLM_ADMIN_ENV_FILE: adminEnv,
+    FORGEFLOW_ALLOWED_REPOSITORY_ROOTS: value.allowed,
+    FORGEFLOW_WORKSPACE_HOST_ROOT: value.managed,
+    FORGEFLOW_WORKSPACE_EXECUTION_ROOT: '/workspace',
+    FORGEFLOW_AUTOMATION_PROJECTS: 'durable-runtime-project',
+    FORGEFLOW_WORKSPACE_UID: String(process.getuid?.() ?? 0),
+    FORGEFLOW_WORKSPACE_GID: String(process.getgid?.() ?? 0),
+    FORGEFLOW_RESOURCE_REFRESH_MS: '3600000',
+  };
+
+  const first = await buildControlPlane({
+    dbFile,
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env,
+  });
+  let errorCode = '';
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(providerRequests, 0);
+    const created = await first.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans',
+      headers: { 'idempotency-key': 'durable-runtime-demand-plan' },
+      payload: {
+        projectKey: 'durable-runtime-project',
+        objective: 'create durable ACP runtime admission demand',
+        repositoryPath: value.repository,
+        baseRevision: value.revision,
+        workItems: [
+          {
+            itemKey: 'probe',
+            title: 'Probe durable admission',
+            objective: 'exercise durable ACP admission',
+            dependencies: [],
+            acceptanceCriteria: ['probe once inside TTL'],
+          },
+        ],
+      },
+    });
+    assert.equal(created.statusCode, 201);
+    await first.automation!.reconcileRuntimeAdmission();
+    assert.equal(providerRequests, 1);
+    const durable = first.repositories.runtimeAdmissions.list();
+    assert.equal(durable.length, 1);
+    assert.equal(durable[0]?.ready, false);
+    errorCode = durable[0]?.errorCode ?? '';
+    assert.ok(errorCode);
+  } finally {
+    await first.app.close();
+  }
+
+  const second = await buildControlPlane({
+    dbFile,
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env,
+  });
+  try {
+    assert.deepEqual(second.automation!.runtimeAdmission.summary(), {
+      checked: 1,
+      ready: 0,
+      unready: 1,
+      implementationReady: 0,
+      reviewReady: 0,
+    });
+    await second.automation!.reconcileRuntimeAdmission();
+    assert.equal(providerRequests, 1);
+    const endpoint = await second.app.inject({ method: 'GET', url: '/api/v1/runtime-admission' });
+    assert.equal(endpoint.statusCode, 200);
+    assert.equal(endpoint.json().items[0].errorCode, errorCode);
+    assert.equal(endpoint.json().durableCache.items[0].errorCode, errorCode);
+    assert.deepEqual(endpoint.json().durableCache.summary, { checked: 1, ready: 0, unready: 1 });
+    assert.equal(JSON.stringify(endpoint.json()).includes('private runtime admission diagnostic'), false);
+    assert.equal(JSON.stringify(endpoint.json()).includes('test-litellm-key'), false);
+  } finally {
+    await second.app.close();
+  }
+
+  const callsBeforeDisabledRead = providerRequests;
+  const disabled = await buildControlPlane({
+    dbFile,
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env: { ...env, FORGEFLOW_RUNTIME_ADMISSION_ENABLED: 'false' },
+  });
+  try {
+    const endpoint = await disabled.app.inject({ method: 'GET', url: '/api/v1/runtime-admission' });
+    assert.equal(endpoint.statusCode, 200);
+    assert.equal(endpoint.json().enabled, false);
+    assert.deepEqual(endpoint.json().summary, {
+      checked: 0,
+      ready: 0,
+      unready: 0,
+      implementationReady: 0,
+      reviewReady: 0,
+    });
+    assert.deepEqual(endpoint.json().items, []);
+    assert.deepEqual(endpoint.json().durableCache.summary, { checked: 1, ready: 0, unready: 1 });
+    assert.equal(endpoint.json().durableCache.items[0].resourceId, 'durable-runtime-provider');
+    assert.equal(endpoint.json().durableCache.items[0].errorCode, errorCode);
+    assert.equal('admissionKey' in endpoint.json().durableCache.items[0], false);
+    assert.equal(providerRequests, callsBeforeDisabledRead);
+  } finally {
+    await disabled.app.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
 });
 
 test('single-active-plan API queues later root tasks without supervisor or execution activity and hands off atomically', async () => {

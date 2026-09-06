@@ -393,6 +393,55 @@ test('Supervisor direct admission cache survives restart, updates TTL without ev
   db.close();
 });
 
+test('ACP runtime admission cache survives restart, refreshes TTL without event spam, and invalidates durably', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-runtime-admission-'));
+  const file = path.join(directory, 'control-plane.sqlite');
+  const admissionKey = 'dsh-acp|LITELLM_MANAGED|provider|binding|route-deepseek';
+  const firstCheckedAt = '2026-09-06T00:00:00.000Z';
+  const secondCheckedAt = '2026-09-06T00:01:00.000Z';
+  let db = openDatabase(file, { environment: 'test', env: { NODE_ENV: 'test' } });
+  let repositories = createRepositories(db);
+  const created = repositories.runtimeAdmissions.record({
+    admissionKey,
+    agentBackend: 'dsh-acp',
+    transport: 'LITELLM_MANAGED',
+    resourceId: 'provider',
+    bindingId: 'binding',
+    modelFamily: 'deepseek-v4-flash',
+    routeModel: 'route-deepseek',
+    ready: false,
+    errorCode: 'OPENHANDS_UNAVAILABLE',
+    checkedAt: firstCheckedAt,
+  });
+  assert.equal(created.status, 'created');
+  assert.equal(repositories.events.listByAggregate(admissionKey).length, 1);
+  const refreshed = repositories.runtimeAdmissions.record({
+    ...created.value!,
+    checkedAt: secondCheckedAt,
+  });
+  assert.equal(refreshed.status, 'updated');
+  assert.equal(refreshed.value?.checkedAt, secondCheckedAt);
+  assert.equal(repositories.events.listByAggregate(admissionKey).length, 1);
+  db.close();
+
+  db = openDatabase(file, { environment: 'test', env: { NODE_ENV: 'test' } });
+  repositories = createRepositories(db);
+  const recovered = repositories.runtimeAdmissions.get(admissionKey);
+  assert.equal(recovered?.ready, false);
+  assert.equal(recovered?.errorCode, 'OPENHANDS_UNAVAILABLE');
+  assert.equal(recovered?.checkedAt, secondCheckedAt);
+  assert.equal(repositories.runtimeAdmissions.invalidateBinding('provider', 'binding'), 1);
+  assert.equal(repositories.runtimeAdmissions.get(admissionKey), undefined);
+  const invalidationEvents = repositories.events.listByAggregate('provider');
+  assert.equal(invalidationEvents.at(-1)?.type, 'RUNTIME_ADMISSION_BINDING_INVALIDATED');
+  assert.deepEqual(invalidationEvents.at(-1)?.payload, {
+    resourceId: 'provider',
+    bindingId: 'binding',
+    count: 1,
+  });
+  db.close();
+});
+
 test('maintenance candidates survive database restart with immutable plan binding', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-maintenance-'));
   const file = path.join(dir, 'control-plane.sqlite');
