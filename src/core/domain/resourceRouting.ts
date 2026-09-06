@@ -667,7 +667,7 @@ export function transitionResourceState(
   return Object.freeze({
     state: 'SUSPENDED',
     suspendedUntil: later(now, duration),
-    probeRequired: isCommunityFree(input),
+    probeRequired: true,
     reasonClass: failure.failureClass,
     sanitizedReason: failure.sanitizedReason,
   });

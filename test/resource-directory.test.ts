@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   CompositeResourceDirectory,
   LiteLlmResourceDirectory,
+  LiteLlmResourceProbe,
   LiteLlmResourceStateEffect,
   ResourceLifecycleManager,
   ResourceStateService,
@@ -18,6 +19,7 @@ import { ResourceSelector } from '../src/core/orchestration/resourceSelector.js'
 import { createRepositories } from '../src/core/persistence/repositories.js';
 import {
   COMMUNITY_SUSPENSION_MS,
+  PAID_TRANSIENT_COOLDOWN_MS,
   normalizeResourceFailure,
   transitionResourceState,
   type ExecutionResource,
@@ -226,6 +228,138 @@ function selectedResourceId(selector: ResourceSelector): string {
   if (selected.status !== 'SELECTED') throw new Error('expected selected resource');
   return selected.profile.resourceId;
 }
+
+test('LiteLLM resource probe honors Chat Completions and Responses binding protocols', async () => {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const probe = new LiteLlmResourceProbe({
+    baseUrl: 'http://litellm.test/v1',
+    bearerToken: 'test-probe-key',
+    fetchImpl: (async (input: string | URL | Request, init: RequestInit = {}) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init.body)) as Record<string, unknown> });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch,
+  });
+  const base: Omit<ExecutionResource, 'resourceId' | 'bindings'> = {
+    resourceTier: 'METERED',
+    resourceSequence: 200,
+    state: 'ACTIVE',
+    ready: true,
+    commercialType: 'METERED',
+    supplyOrigin: 'COMMERCIAL_RELAY',
+    resourceLifecycle: 'RECURRING',
+  };
+  assert.equal(
+    await probe.probe({
+      ...base,
+      resourceId: 'responses-provider',
+      bindings: [
+        {
+          bindingId: 'responses-binding',
+          modelFamily: 'gpt-5.6-sol',
+          transport: 'LITELLM_MANAGED',
+          enabled: true,
+          ready: true,
+          routeModel: 'route-responses-sol',
+          protocol: 'openai-responses',
+        },
+      ],
+    }),
+    true,
+  );
+  assert.equal(
+    await probe.probe({
+      ...base,
+      resourceId: 'chat-provider',
+      bindings: [
+        {
+          bindingId: 'chat-binding',
+          modelFamily: 'deepseek-v4-flash',
+          transport: 'LITELLM_MANAGED',
+          enabled: true,
+          ready: true,
+          routeModel: 'route-chat-deepseek',
+          protocol: 'openai-chat-completions',
+        },
+      ],
+    }),
+    true,
+  );
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    ['http://litellm.test/v1/responses', 'http://litellm.test/v1/chat/completions'],
+  );
+  assert.equal(calls[0]?.body.model, 'route-responses-sol');
+  assert.equal(calls[0]?.body.max_output_tokens, 1);
+  assert.equal('messages' in (calls[0]?.body ?? {}), false);
+  assert.equal(calls[1]?.body.model, 'route-chat-deepseek');
+  assert.equal(calls[1]?.body.max_tokens, 1);
+  assert.equal(Array.isArray(calls[1]?.body.messages), true);
+});
+
+test('paid transient suspension probes before reactivation and re-suspends after a failed probe', async () => {
+  const db = openDatabase(':memory:', { environment: 'test', env: { NODE_ENV: 'test' } });
+  const repositories = createRepositories(db);
+  const resource: ExecutionResource = {
+    resourceId: 'metered-provider',
+    resourceTier: 'METERED',
+    resourceSequence: 210,
+    state: 'ACTIVE',
+    ready: true,
+    commercialType: 'METERED',
+    supplyOrigin: 'COMMERCIAL_RELAY',
+    resourceLifecycle: 'RECURRING',
+    bindings: [
+      {
+        bindingId: 'metered-binding',
+        modelFamily: 'gpt-5.6-sol',
+        transport: 'LITELLM_MANAGED',
+        enabled: true,
+        ready: true,
+        routeModel: 'route-metered-sol',
+        protocol: 'openai-responses',
+      },
+    ],
+  };
+  repositories.resourceStateOverrides.create({
+    resourceId: resource.resourceId,
+    state: 'SUSPENDED',
+    suspendedUntil: '2026-09-06T00:00:00.000Z',
+    reasonClass: 'TEMPORARY_PROVIDER_FAILURE',
+    sanitizedReason: 'TEMPORARY_PROVIDER_FAILURE',
+    source: 'SUPERVISOR',
+  });
+  let healthy = false;
+  let probes = 0;
+  const lifecycle = new ResourceLifecycleManager(
+    new StaticResourceDirectory([resource]),
+    repositories.resourceStateOverrides,
+    {
+      probe: async () => {
+        probes += 1;
+        return healthy;
+      },
+    },
+  );
+  const firstAt = new Date('2026-09-06T00:15:00.000Z');
+  assert.equal(await lifecycle.reconcileOnce(firstAt), 1);
+  assert.equal(probes, 1);
+  const afterFailure = repositories.resourceStateOverrides.get(resource.resourceId)!;
+  assert.equal(afterFailure.state, 'SUSPENDED');
+  assert.equal(afterFailure.source, 'PROBE');
+  assert.equal(afterFailure.reasonClass, 'CONNECTION_UNAVAILABLE');
+  assert.equal(
+    Date.parse(afterFailure.suspendedUntil!) - firstAt.getTime(),
+    PAID_TRANSIENT_COOLDOWN_MS,
+  );
+  assert.equal(await lifecycle.reconcileOnce(new Date(firstAt.getTime() + 1_000)), 0);
+  assert.equal(probes, 1);
+
+  healthy = true;
+  assert.equal(await lifecycle.reconcileOnce(new Date(afterFailure.suspendedUntil!)), 1);
+  assert.equal(probes, 2);
+  assert.equal(repositories.resourceStateOverrides.get(resource.resourceId)?.state, 'ACTIVE');
+  db.close();
+});
 
 test('state service disables quota exhaustion and suspends free transient failures', () => {
   const db = openDatabase(':memory:', { environment: 'test', env: { NODE_ENV: 'test' } });

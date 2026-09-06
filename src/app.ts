@@ -31,6 +31,7 @@ import {
 import {
   CompositeResourceDirectory,
   LiteLlmResourceDirectory,
+  LiteLlmResourceProbe,
   LiteLlmResourceStateEffect,
   ResourceLifecycleManager,
   ResourceStateService,
@@ -560,33 +561,23 @@ async function buildExecutionAutomation(
     3,
     resourceStateEffect,
   );
+  const liteLlmResourceProbe = new LiteLlmResourceProbe({
+    baseUrl: liteLlmBaseUrl,
+    bearerToken: liteLlmApiKey,
+    fetchImpl,
+    timeoutMs: integerValue(
+      env.FORGEFLOW_RESOURCE_PROBE_TIMEOUT_MS,
+      30_000,
+      1_000,
+      120_000,
+      'RESOURCE_PROBE_TIMEOUT_INVALID',
+    ),
+  });
   const resourceProbe: ResourceProbePort = {
     probe: async (resource: ExecutionResource): Promise<boolean> => {
       if (resource.resourceId === 'chatgpt-business-primary') return businessReady;
       if (resource.resourceId === 'antigravity-primary') return antigravityReady;
-      const binding = resource.bindings.find(
-        (item) => item.enabled && item.routeModel && item.ready,
-      );
-      if (!binding?.routeModel) return false;
-      try {
-        const response = await fetchImpl(liteLlmBaseUrl.replace(/\/$/, '') + '/chat/completions', {
-          method: 'POST',
-          headers: {
-            ['Author' + 'ization']: 'Bearer ' + liteLlmApiKey,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: binding.routeModel,
-            messages: [{ role: 'user', content: 'Reply with OK.' }],
-            max_tokens: 1,
-            user: 'forgeflow-resource-probe',
-          }),
-          signal: AbortSignal.timeout(30_000),
-        });
-        return response.ok;
-      } catch {
-        return false;
-      }
+      return await liteLlmResourceProbe.probe(resource);
     },
   };
   const resourceLifecycle = new ResourceLifecycleManager(

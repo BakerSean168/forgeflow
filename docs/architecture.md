@@ -24,7 +24,7 @@ ForgeFlow supports isolated execution workspaces and shared-common-dir literal G
 
 ### Resource selector
 
-Execution resources combine model family, agent backend, transport, resource tier, ordering, health, runtime admission, and durable selection evidence. Selection is deterministic within policy and the chosen resource is immutable for an Execution.
+Execution resources combine model family, agent backend, transport, resource tier, ordering, health, runtime admission, and durable selection evidence. Selection is deterministic within policy and the chosen resource is immutable for an Execution. Transient resource suspension is recovery-gated rather than timer-only: community/free resources probe after their longer suspension and disable on a failed recovery probe, while metered/subscription resources probe after each bounded cooldown and remain suspended for another cooldown when the probe still fails. LiteLLM probes honor each binding's declared wire protocol (`/chat/completions` or `/responses`) and never persist provider response bodies.
 
 ### AI Supervisor
 

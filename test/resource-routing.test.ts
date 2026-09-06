@@ -587,6 +587,7 @@ test('fault classification and pure resource state policy follow the ForgeFlow l
     NOW,
   );
   assert.equal(Date.parse(paid.suspendedUntil!) - Date.parse(NOW), PAID_TRANSIENT_COOLDOWN_MS);
+  assert.equal(paid.probeRequired, true);
   assert.deepEqual(
     transitionResourceStateOnSuccess(
       lifecycle({ state: 'SUSPENDED', suspendedUntil: paid.suspendedUntil }),

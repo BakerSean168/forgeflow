@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { ForgeFlowError, failClosed } from '../domain/errors.js';
 import {
   deriveResourceTier,
+  PAID_TRANSIENT_COOLDOWN_MS,
   normalizeResourceFailure,
   transitionResourceState,
   transitionResourceStateOnSuccess,
@@ -542,6 +543,69 @@ export class ResourceStateService implements ResourceFeedbackPort {
 export interface ResourceProbePort {
   probe(resource: ExecutionResource): Promise<boolean>;
 }
+
+export class LiteLlmResourceProbe implements ResourceProbePort {
+  readonly #baseUrl: string;
+  readonly #bearerToken: string;
+  readonly #fetch: typeof fetch;
+  readonly #timeoutMs: number;
+
+  constructor(options: {
+    baseUrl: string;
+    bearerToken: string;
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+  }) {
+    failClosed(options.baseUrl.trim().length > 0, 'RESOURCE_PROBE_BASE_URL_REQUIRED');
+    failClosed(options.bearerToken.trim().length > 0, 'RESOURCE_PROBE_KEY_REQUIRED');
+    this.#baseUrl = options.baseUrl.replace(/\/$/, '');
+    this.#bearerToken = options.bearerToken;
+    this.#fetch = options.fetchImpl ?? fetch;
+    this.#timeoutMs = Math.max(1_000, options.timeoutMs ?? 30_000);
+  }
+
+  async probe(resource: ExecutionResource): Promise<boolean> {
+    const bindings = resource.bindings.filter(
+      (binding) =>
+        binding.transport === 'LITELLM_MANAGED' &&
+        binding.enabled &&
+        binding.ready &&
+        Boolean(binding.routeModel),
+    );
+    for (const binding of bindings) {
+      const responses = binding.protocol === 'openai-responses';
+      const endpoint = this.#baseUrl + (responses ? '/responses' : '/chat/completions');
+      const body = responses
+        ? {
+            model: binding.routeModel!,
+            input: 'Reply with OK.',
+            max_output_tokens: 1,
+          }
+        : {
+            model: binding.routeModel!,
+            messages: [{ role: 'user', content: 'Reply with OK.' }],
+            max_tokens: 1,
+            user: 'forgeflow-resource-probe',
+          };
+      try {
+        const response = await this.#fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            ['Author' + 'ization']: 'Bearer ' + this.#bearerToken,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.#timeoutMs),
+        });
+        if (response.ok) return true;
+      } catch {
+        // Probe failures are intentionally reduced to a boolean; provider bodies are never persisted.
+      }
+    }
+    return false;
+  }
+}
+
 export class ResourceLifecycleManager {
   constructor(
     readonly directory: ResourceDirectoryPort,
@@ -562,15 +626,25 @@ export class ResourceLifecycleManager {
         .listResources()
         .find((item) => item.resourceId === current.resourceId);
       if (!resource) continue;
-      let active = resource.resourceTier !== 'FREE';
-      if (!active) active = await this.probe.probe(resource);
+      const active = await this.probe.probe(resource);
+      const disableOnProbeFailure = resource.resourceTier === 'FREE';
       const result = this.overrides.compareAndSet(resource.resourceId, current.version, {
         resourceId: resource.resourceId,
-        state: active ? 'ACTIVE' : 'DISABLED',
+        state: active ? 'ACTIVE' : disableOnProbeFailure ? 'DISABLED' : 'SUSPENDED',
         source: 'PROBE',
         ...(active
           ? {}
-          : { reasonClass: 'CONNECTION_UNAVAILABLE', sanitizedReason: 'CONNECTION_UNAVAILABLE' }),
+          : {
+              reasonClass: 'CONNECTION_UNAVAILABLE',
+              sanitizedReason: 'CONNECTION_UNAVAILABLE',
+              ...(disableOnProbeFailure
+                ? {}
+                : {
+                    suspendedUntil: new Date(
+                      now.getTime() + PAID_TRANSIENT_COOLDOWN_MS,
+                    ).toISOString(),
+                  }),
+            }),
       });
       if (result.status !== 'rejected') {
         changed += 1;
