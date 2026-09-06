@@ -95,6 +95,14 @@ npm run check
 
 `npm run check` performs product-boundary validation, type checking, the full test suite, and a clean production build.
 
+A real-provider Improvement Diagnostician smoke test is intentionally separate from the deterministic suite:
+
+```bash
+npm run smoke:improvement-diagnosis
+```
+
+The smoke runner uses an in-memory ForgeFlow database and no-op resource feedback, so it never mutates the production database or durable resource state. It reads the live LiteLLM resource directory and performs a bounded `REASONING` request through the same typed diagnosis client used by production. `FORGEFLOW_IMPROVEMENT_SMOKE_RESOURCE_IDS` may contain a comma-separated allowlist when a specific provider path must be tested. Runtime credentials must already be present in the process environment; the runner never prints them or provider response bodies on failure.
+
 See [Architecture](docs/architecture.md) and [Development](docs/development.md) for the system model and contribution workflow.
 
 ## Deployment safety

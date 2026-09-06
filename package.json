@@ -10,6 +10,7 @@
     "dev": "tsx src/main.ts",
     "clean": "rm -rf dist",
     "check:boundary": "node scripts/check-product-boundary.mjs",
+    "smoke:improvement-diagnosis": "tsx scripts/smoke-improvement-diagnosis.mts",
     "check": "npm run check:boundary && npm run check-types && npm test && npm run build"
   },
   "dependencies": {
