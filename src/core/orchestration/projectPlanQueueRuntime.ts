@@ -243,6 +243,8 @@ export class ProjectPlanQueueRuntime {
         );
         const durable = this.repositories.executions.get(execution.identity.executionId);
         if (durable.status === 'CANCELLED') {
+          if (result.status !== 'SUCCEEDED')
+            throw new ForgeFlowError(result.code || 'PROJECT_PLAN_CANCEL_EXECUTION_CLEANUP_FAILED');
           cancelledExecutionIds.add(durable.identity.executionId);
           continue;
         }

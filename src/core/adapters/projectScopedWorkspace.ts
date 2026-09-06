@@ -88,6 +88,11 @@ export class ProjectScopedWorkspaceAdapter implements WorkspaceProviderPort {
     return await provider.progressFingerprint(workspace);
   }
 
+  async abandonExecution(workspace: WorkspaceDescriptor): Promise<void> {
+    const provider = this.isLiteral(workspace) ? this.literal : this.legacy;
+    if (provider.abandonExecution) await provider.abandonExecution(workspace);
+  }
+
   storageStatus(): WorkspaceStorageStatus {
     if (!this.legacy.storageStatus) throw new ForgeFlowError('WORKSPACE_STORAGE_STATUS_UNAVAILABLE');
     return this.legacy.storageStatus();

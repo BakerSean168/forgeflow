@@ -643,12 +643,18 @@ export class ExecutionWorker {
       if (!reason.trim() || reason.length > 2_000)
         throw new ForgeFlowError('EXECUTION_CANCEL_REASON_INVALID');
       const execution = this.repositories.executions.get(executionId);
-      if (execution.status === 'CANCELLED')
+      const session = this.repositories.sessions.getOptional(executionId);
+      const abandonWorkspace = async () => {
+        if (session && this.workspace.abandonExecution)
+          await this.workspace.abandonExecution(session.workspace);
+      };
+      if (execution.status === 'CANCELLED') {
+        await abandonWorkspace();
         return { executionId, status: 'SUCCEEDED', code: 'EXECUTION_ALREADY_CANCELLED' };
+      }
       if (execution.status === 'SUCCEEDED')
         return { executionId, status: 'SKIPPED', code: 'EXECUTION_ALREADY_SUCCEEDED' };
 
-      const session = this.repositories.sessions.getOptional(executionId);
       let remoteProviderStatus: string | undefined = session?.providerStatus;
       const providerSessionId = session?.providerSessionId;
       const cancellationEvidenceName =
@@ -753,6 +759,7 @@ export class ExecutionWorker {
 
       appendCancellationEvidence();
       this.repositories.executions.updateStatus(executionId, 'CANCELLED');
+      await abandonWorkspace();
       return {
         executionId,
         status: 'SUCCEEDED',

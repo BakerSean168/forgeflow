@@ -655,3 +655,76 @@ test('schema v9 migrates additively to durable protected-ref snapshots', () => {
   migrated.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('cancelled execution abandonment resets unaccepted work and releases literal writer ownership', async () => {
+  const value = fixture();
+  let worktree = await value.manager.ensureWorkItem({
+    projectKey: 'project-gamma',
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-cancel-abandon',
+    value.revision,
+  );
+  worktree = await value.manager.attachWriter(worktree.worktreeId, 'exec-cancel-abandon');
+  fs.writeFileSync(path.join(worktree.hostPath, 'unaccepted.txt'), 'unaccepted commit\n');
+  git(worktree.hostPath, ['add', 'unaccepted.txt']);
+  git(worktree.hostPath, ['commit', '-m', 'wip: unaccepted cancellation work']);
+  fs.writeFileSync(path.join(worktree.hostPath, 'dirty.txt'), 'dirty\n');
+
+  const abandoned = await value.manager.abandonExecutionWorktree(
+    worktree.worktreeId,
+    'exec-cancel-abandon',
+    value.revision,
+  );
+  assert.equal(abandoned.ownerExecutionId, undefined);
+  assert.equal(abandoned.state, 'QUIESCENT');
+  assert.equal(abandoned.currentRevision, value.revision);
+  assert.equal(git(worktree.hostPath, ['rev-parse', 'HEAD']), value.revision);
+  assert.equal(git(worktree.hostPath, ['status', '--porcelain=v1']), '');
+  assert.equal(fs.existsSync(path.join(worktree.hostPath, 'dirty.txt')), false);
+  assert.equal(fs.existsSync(path.join(worktree.hostPath, 'unaccepted.txt')), false);
+
+  const repeated = await value.manager.abandonExecutionWorktree(
+    worktree.worktreeId,
+    'exec-cancel-abandon',
+    value.revision,
+  );
+  assert.equal(repeated.ownerExecutionId, undefined);
+  assert.equal(repeated.currentRevision, value.revision);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('cancelled review abandonment resets the detached review worktree and makes it quiescent', async () => {
+  const value = fixture();
+  const review = await value.manager.createReview({
+    projectKey: 'project-gamma',
+    rootPlanId: value.plan.planId,
+    reviewId: 'review-cancel-abandon',
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+    reviewedSha: value.revision,
+  });
+  assert.equal(review.state, 'REVIEWING');
+  fs.writeFileSync(path.join(review.hostPath, 'review-dirty.txt'), 'must be discarded\n');
+
+  const abandoned = await value.manager.abandonExecutionWorktree(
+    review.worktreeId,
+    'exec-review-cancel-abandon',
+    value.revision,
+  );
+  assert.equal(abandoned.state, 'QUIESCENT');
+  assert.equal(abandoned.ownerExecutionId, undefined);
+  assert.equal(git(review.hostPath, ['rev-parse', 'HEAD']), value.revision);
+  assert.equal(git(review.hostPath, ['status', '--porcelain=v1']), '');
+  assert.equal(fs.existsSync(path.join(review.hostPath, 'review-dirty.txt')), false);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});

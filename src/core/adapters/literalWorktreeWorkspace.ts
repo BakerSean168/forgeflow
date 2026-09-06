@@ -265,6 +265,26 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
     );
   }
 
+  async abandonExecution(workspace: WorkspaceDescriptor): Promise<void> {
+    const descriptor = this.validateWorkspace(workspace);
+    const record = this.repositories.planWorktrees.findByPath(descriptor.hostPath);
+    if (!record) throw new ForgeFlowError('WORKTREE_NOT_FOUND');
+    await this.manager.abandonExecutionWorktree(
+      record.worktreeId,
+      descriptor.executionId,
+      descriptor.sourceRevision,
+    );
+    for (const candidate of [
+      descriptor.evidenceHostPath,
+      path.join(descriptor.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE),
+    ]) {
+      const stat = fs.lstatSync(candidate, { throwIfNoEntry: false });
+      if (!stat) continue;
+      failClosed(stat.isFile() && !stat.isSymbolicLink(), 'WORKSPACE_CANCEL_EVIDENCE_UNSAFE');
+      fs.rmSync(candidate, { force: true });
+    }
+  }
+
   async progressFingerprint(workspace: WorkspaceDescriptor): Promise<string> {
     const descriptor = this.validateWorkspace(workspace);
     const head = await this.git(descriptor.hostPath, ['rev-parse', '--verify', 'HEAD^{commit}']);

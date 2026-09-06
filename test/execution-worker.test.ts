@@ -94,7 +94,9 @@ class FakeWorkspace implements WorkspaceProviderPort {
   readonly progressFingerprints = new Map<string, string>();
   readonly progressFailures = new Map<string, ForgeFlowError[]>();
   provisionError?: ForgeFlowError;
+  abandonError?: ForgeFlowError;
   provisionCalls = 0;
+  abandonCalls = 0;
 
   hasCompletionEvidence(workspace: WorkspaceDescriptor): boolean {
     return this.completionEvidence.has(workspace.executionId);
@@ -106,6 +108,11 @@ class FakeWorkspace implements WorkspaceProviderPort {
     return (
       this.progressFingerprints.get(workspace.executionId) ?? 'workspace:' + workspace.executionId
     );
+  }
+
+  async abandonExecution(_workspace: WorkspaceDescriptor): Promise<void> {
+    this.abandonCalls += 1;
+    if (this.abandonError) throw this.abandonError;
   }
 
   async observeRepository(repositoryPath: string, revision: string) {
@@ -2134,6 +2141,7 @@ test('execution worker operator cancel quiesces a running provider before durabl
   assert.equal(cancelled.status, 'SUCCEEDED');
   assert.equal(cancelled.code, 'EXECUTION_OPERATOR_CANCELLED');
   assert.equal(provider.cancelCalls, 1);
+  assert.equal(workspace.abandonCalls, 1);
   assert.equal(
     seeded.repositories.executions.get(execution.identity.executionId).status,
     'CANCELLED',
@@ -2226,5 +2234,51 @@ test('execution worker operator cancel handles queued work without launching a p
     seeded.repositories.executions.get(execution.identity.executionId).status,
     'CANCELLED',
   );
+  seeded.db.close();
+});
+
+
+test('execution worker retries cancelled workspace cleanup without re-cancelling the provider', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-operator-cancel-cleanup-retry',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const provider = new FakeProvider();
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-operator-cancel-cleanup-retry' },
+  );
+  await worker.runExecution(execution.identity.executionId);
+  workspace.abandonError = new ForgeFlowError('WORKTREE_CANCEL_CLEANUP_FAILED');
+
+  const first = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-cleanup-retry-1',
+    'cancel and prove workspace cleanup retry',
+  );
+  assert.equal(first.status, 'FAILED');
+  assert.equal(first.code, 'WORKTREE_CANCEL_CLEANUP_FAILED');
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(workspace.abandonCalls, 1);
+  assert.equal(
+    seeded.repositories.executions.get(execution.identity.executionId).status,
+    'CANCELLED',
+  );
+
+  workspace.abandonError = undefined;
+  const second = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-cleanup-retry-1',
+    'cancel and prove workspace cleanup retry',
+  );
+  assert.equal(second.status, 'SUCCEEDED');
+  assert.equal(second.code, 'EXECUTION_ALREADY_CANCELLED');
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(workspace.abandonCalls, 2);
   seeded.db.close();
 });

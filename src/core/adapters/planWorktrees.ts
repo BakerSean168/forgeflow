@@ -568,6 +568,56 @@ export class PlanWorktreeManager {
     return result.value;
   }
 
+  async abandonExecutionWorktree(
+    worktreeIdValue: string,
+    executionId: string,
+    expectedRevision: string,
+  ): Promise<PlanWorktree> {
+    failClosed(expectedRevision.trim().length > 0, 'WORKTREE_CURRENT_REVISION_REQUIRED');
+    let current = this.repositories.planWorktrees.get(worktreeIdValue);
+    await this.assertProtectedRefsStable(current.rootPlanId);
+    await this.assertCommit(current.repositoryPath, expectedRevision);
+
+    if (current.role === 'REVIEW') {
+      failClosed(!current.ownerExecutionId, 'WORKTREE_REVIEW_WRITER_FORBIDDEN');
+      await this.resetWorktreeToRevision(current, expectedRevision);
+      current = this.repositories.planWorktrees.get(worktreeIdValue);
+      if (current.state === 'REVIEWING') {
+        const transitioned = this.repositories.planWorktrees.transition(
+          worktreeIdValue,
+          current.version,
+          'QUIESCENT',
+        );
+        if (!transitioned.value || transitioned.status === 'rejected')
+          throw new ForgeFlowError(transitioned.reason ?? 'WORKTREE_STATE_STALE');
+        return transitioned.value;
+      }
+      failClosed(
+        current.state === 'QUIESCENT' || current.state === 'RETIRED',
+        'WORKTREE_REVIEW_CANCEL_STATE_INVALID',
+      );
+      return current;
+    }
+
+    failClosed(
+      current.role === 'WORK_ITEM' || current.role === 'DELIVERY_REPAIR',
+      'WORKTREE_CANCEL_ROLE_INVALID',
+    );
+    if (!current.ownerExecutionId) return current;
+    failClosed(current.ownerExecutionId === executionId, 'WORKTREE_WRITER_OWNER_MISMATCH');
+    await this.resetWorktreeToRevision(current, expectedRevision);
+    current = this.repositories.planWorktrees.get(worktreeIdValue);
+    const released = this.repositories.planWorktrees.releaseWriter(
+      worktreeIdValue,
+      executionId,
+      current.version,
+      expectedRevision,
+    );
+    if (!released.value || released.status === 'rejected')
+      throw new ForgeFlowError(released.reason ?? 'WORKTREE_WRITER_RELEASE_FAILED');
+    return released.value;
+  }
+
   async markIntegrated(worktreeIdValue: string): Promise<PlanWorktree> {
     const current = this.repositories.planWorktrees.get(worktreeIdValue);
     failClosed(!current.ownerExecutionId, 'WORKTREE_WRITER_HELD');
