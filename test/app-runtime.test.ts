@@ -543,7 +543,14 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
     resourceSelectorEnabled: true,
     readinessAuthority: 'DIRECT_PROTOCOL_ADMISSION_AND_FEEDBACK',
     resourceWakeMode: 'EVENT_DRIVEN_WITH_15M_FALLBACK',
-    directAdmission: { enabled: true, checked: 0, ready: 0, unready: 0 },
+    directAdmission: {
+      enabled: true,
+      demandDriven: true,
+      hasDemand: false,
+      checked: 0,
+      ready: 0,
+      unready: 0,
+    },
     maxResourceAttempts: 3,
   });
   const supervisorAdmission = await runtime.app.inject({
@@ -1008,7 +1015,25 @@ test('Supervisor direct admission failure TTL survives control-plane restart wit
   });
   try {
     await first.supervisor.reconcileReadiness();
+    assert.equal(admissionCalls, 0);
+    const idleHealth = await first.app.inject({ method: 'GET', url: '/api/health' });
+    assert.equal(idleHealth.json().supervisorRuntime.directAdmission.hasDemand, false);
+    const demandPlan = first.repositories.plans.createPlan({
+      idempotencyKey: 'durable-admission-demand-plan',
+      projectKey: 'durable-admission-project',
+      objective: 'create Supervisor admission demand',
+      repositoryPath: value.repository,
+      baseRevision: value.revision,
+    }).value!;
+    first.repositories.plans.updateStatus(demandPlan.planId, 'READY');
+    const demandSupervisor = first.repositories.supervisors.create({
+      planId: demandPlan.planId,
+    }).value!;
+    first.repositories.supervisors.updateStatus(demandSupervisor.supervisorId, 'ACTIVE');
+    await first.supervisor.reconcileReadiness();
     assert.equal(admissionCalls, 1);
+    const demandHealth = await first.app.inject({ method: 'GET', url: '/api/health' });
+    assert.equal(demandHealth.json().supervisorRuntime.directAdmission.hasDemand, true);
     assert.deepEqual(first.supervisor.directAdmission.summary(), {
       checked: 1,
       ready: 0,

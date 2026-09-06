@@ -2460,6 +2460,14 @@ export class SupervisorRepository {
     return rows.map((row) => this.getById(row.supervisor_id));
   }
 
+  hasNonTerminal(): boolean {
+    return Boolean(
+      this.db
+        .prepare("SELECT 1 AS present FROM supervisors WHERE status NOT IN ('COMPLETED','CANCELLED') LIMIT 1")
+        .get(),
+    );
+  }
+
   listByStatus(status: SupervisorStatus, limit = 1000): Supervisor[] {
     failClosed(SUPERVISOR_STATUSES.includes(status), 'SUPERVISOR_STATUS_INVALID');
     const bounded = Math.max(1, Math.min(limit, 5_000));

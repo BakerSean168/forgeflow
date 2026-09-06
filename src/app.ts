@@ -1389,6 +1389,7 @@ export async function buildControlPlane(
   let supervisorDirectAdmissionCycle: Promise<void> | undefined;
   const reconcileSupervisorDirectAdmission = async (): Promise<void> => {
     if (!supervisorDirectAdmissionEnabled || !supervisorDirectAdmissionProbe) return;
+    if (!repositories.supervisors.hasNonTerminal()) return;
     if (supervisorDirectAdmissionCycle) return await supervisorDirectAdmissionCycle;
     supervisorDirectAdmissionCycle = (async () => {
       const candidates = supervisorAdmissionCandidates();
@@ -1608,6 +1609,8 @@ export async function buildControlPlane(
       resourceWakeMode: 'EVENT_DRIVEN_WITH_15M_FALLBACK',
       directAdmission: {
         enabled: supervisorDirectAdmissionEnabled,
+        demandDriven: true,
+        hasDemand: repositories.supervisors.hasNonTerminal(),
         ...supervisorDirectAdmission.summary(),
       },
       maxResourceAttempts: supervisorMaxResourceAttempts,
