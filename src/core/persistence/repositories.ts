@@ -68,6 +68,7 @@ import {
 import {
   transitionSupervisor,
   validateSupervisor,
+  SUPERVISOR_STATUSES,
   type Supervisor,
   type SupervisorDecision,
   type SupervisorStatus,
@@ -2454,6 +2455,15 @@ export class SupervisorRepository {
         "SELECT * FROM supervisors WHERE status NOT IN ('COMPLETED','CANCELLED') AND next_wake_at<=? ORDER BY next_wake_at",
       )
       .all(at) as unknown as SupervisorRow[];
+    return rows.map((row) => this.getById(row.supervisor_id));
+  }
+
+  listByStatus(status: SupervisorStatus, limit = 1000): Supervisor[] {
+    failClosed(SUPERVISOR_STATUSES.includes(status), 'SUPERVISOR_STATUS_INVALID');
+    const bounded = Math.max(1, Math.min(limit, 5_000));
+    const rows = this.db
+      .prepare('SELECT * FROM supervisors WHERE status=? ORDER BY updated_at,supervisor_id LIMIT ?')
+      .all(status, bounded) as unknown as SupervisorRow[];
     return rows.map((row) => this.getById(row.supervisor_id));
   }
 

@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { SupervisorRepository } from '../persistence/repositories.js';
 import type { SupervisorWakeReason } from '../domain/supervisor.js';
 import { withTransaction } from '../persistence/database.js';
+import { EventStore } from '../persistence/eventStore.js';
 
 export interface WakeRequest {
   supervisorId: string;
@@ -27,7 +28,28 @@ export class SupervisorWakeScheduler {
 
   recoverDue(now = new Date().toISOString()): WakeRequest[] {
     return (this.supervisors?.listDue(now) ?? []).map((supervisor) => ({
-      supervisorId: supervisor.supervisorId, observationCursor: supervisor.observationCursor, reason: 'STALL' as const, requestedAt: now,
+      supervisorId: supervisor.supervisorId,
+      observationCursor: supervisor.observationCursor,
+      reason: supervisor.status === 'WAITING_FOR_RESOURCE' ? ('RESOURCE_WATCHDOG' as const) : ('STALL' as const),
+      requestedAt: now,
     }));
+  }
+
+  scheduleWaitingForResource(requestedAt = new Date().toISOString()): WakeRequest[] {
+    if (!this.supervisors) return [];
+    const cursor = new EventStore(this.db).latestCursor();
+    if (cursor <= 0) return [];
+    const scheduled: WakeRequest[] = [];
+    for (const supervisor of this.supervisors.listByStatus('WAITING_FOR_RESOURCE')) {
+      if (cursor <= supervisor.observationCursor) continue;
+      const request: WakeRequest = {
+        supervisorId: supervisor.supervisorId,
+        observationCursor: cursor,
+        reason: 'RESOURCE_TRANSITION',
+        requestedAt,
+      };
+      if (this.schedule(request).status === 'created') scheduled.push(request);
+    }
+    return scheduled;
   }
 }

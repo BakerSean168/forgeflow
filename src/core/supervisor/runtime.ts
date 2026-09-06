@@ -99,6 +99,8 @@ const SUPERVISOR_RESOURCE_WAIT_CODES = new Set([
   'SUPERVISOR_RESOURCE_DECISION_QUALITY_EXHAUSTED',
 ]);
 
+const SUPERVISOR_RESOURCE_WAIT_FALLBACK_MS = 15 * 60_000;
+
 function shouldWaitForSupervisorResource(error: unknown): boolean {
   return error instanceof ForgeFlowError && SUPERVISOR_RESOURCE_WAIT_CODES.has(error.code);
 }
@@ -146,7 +148,13 @@ export class SupervisorRuntime {
     if (!claim.value || claim.status === 'rejected') return { supervisorId: request.supervisorId, status: 'SKIPPED', code: claim.reason ?? 'LEASE_HELD' };
     try {
       let supervisor = this.supervisors.getById(request.supervisorId);
-      if (supervisor.lastDecisionAt && request.observationCursor <= supervisor.observationCursor) {
+      const resourceWatchdog =
+        supervisor.status === 'WAITING_FOR_RESOURCE' && request.reason === 'RESOURCE_WATCHDOG';
+      if (
+        supervisor.lastDecisionAt &&
+        request.observationCursor <= supervisor.observationCursor &&
+        !resourceWatchdog
+      ) {
         return { supervisorId: request.supervisorId, status: 'SKIPPED', code: 'STALE_WAKE' };
       }
       const planState = this.db.prepare('SELECT status FROM plans WHERE plan_id=?').get(supervisor.planId) as { status: string } | undefined;
@@ -200,7 +208,13 @@ export class SupervisorRuntime {
           this.supervisors.updateStatus(current.supervisorId, 'SLEEPING');
         }
       }
-      this.supervisors.deferWake(request.supervisorId, new Date(Date.now() + Math.min(this.leaseTtlMs, 30_000)).toISOString());
+      const waitMs = shouldWaitForSupervisorResource(error)
+        ? SUPERVISOR_RESOURCE_WAIT_FALLBACK_MS
+        : Math.min(this.leaseTtlMs, 30_000);
+      this.supervisors.deferWake(
+        request.supervisorId,
+        new Date(Date.now() + waitMs).toISOString(),
+      );
       const code = error instanceof ForgeFlowError ? (error.code + (error.message !== error.code ? ':' + error.message.replace(/[^A-Za-z0-9_.=:-]/g, '_').slice(0, 100) : '')) : error instanceof Error ? error.message.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 120) : 'SUPERVISOR_RUNTIME_FAILED';
       return { supervisorId: request.supervisorId, status: 'FAILED', code };
     } finally {

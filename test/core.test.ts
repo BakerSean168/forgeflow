@@ -321,6 +321,34 @@ test('supervisor wake queue is durable, idempotent and atomically drained', () =
   db.close();
 });
 
+test('resource availability creates one durable RESOURCE_TRANSITION wake for each waiting Supervisor', () => {
+  const db = memory();
+  const seeded = seedPlan(db, 'resource-transition-wake-plan');
+  seeded.repos.supervisors.updateStatus(seeded.supervisor.supervisorId, 'OBSERVING');
+  seeded.repos.supervisors.updateStatus(seeded.supervisor.supervisorId, 'DIAGNOSING');
+  seeded.repos.supervisors.updateStatus(seeded.supervisor.supervisorId, 'WAITING_FOR_RESOURCE');
+  const store = new EventStore(db);
+  store.appendNew({
+    aggregateId: 'resource-availability-test',
+    aggregateType: 'RESOURCE',
+    type: 'SUPERVISOR_RESOURCE_AVAILABILITY_CHANGED',
+    payload: { becameAvailable: ['reasoning-a'] },
+    occurredAt: new Date().toISOString(),
+    correlationId: 'resource-availability-test',
+  });
+  const latestCursor = store.latestCursor();
+  const scheduler = new SupervisorWakeScheduler(seeded.repos.supervisors, db);
+  const first = scheduler.scheduleWaitingForResource('2026-09-06T00:00:00.000Z');
+  assert.equal(first.length, 1);
+  assert.equal(first[0]?.observationCursor, latestCursor);
+  assert.equal(first[0]?.reason, 'RESOURCE_TRANSITION');
+  assert.deepEqual(scheduler.scheduleWaitingForResource('2026-09-06T00:00:01.000Z'), []);
+  const drained = scheduler.drain();
+  assert.equal(drained.length, 1);
+  assert.equal(drained[0]?.observationCursor, latestCursor);
+  db.close();
+});
+
 test('maintenance candidates survive database restart with immutable plan binding', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-maintenance-'));
   const file = path.join(dir, 'control-plane.sqlite');
@@ -622,7 +650,52 @@ test('supervisor runtime parks exhausted reasoning resources without losing the 
   const supervisor = seeded.repos.supervisors.getById(seeded.supervisor.supervisorId);
   assert.equal(supervisor.lease, undefined);
   assert.equal(supervisor.status, 'WAITING_FOR_RESOURCE');
-  assert.ok(Date.parse(supervisor.nextWakeAt) > Date.now());
+  const fallbackDelay = Date.parse(supervisor.nextWakeAt) - Date.now();
+  assert.ok(fallbackDelay >= 14 * 60_000);
+  assert.ok(fallbackDelay <= 16 * 60_000);
+  db.close();
+});
+
+test('resource watchdog rechecks a waiting Supervisor even when its observation cursor is unchanged', async () => {
+  const db = memory();
+  const seeded = seedPlan(db, 'runtime-resource-watchdog-plan');
+  const initialProjection = buildBoundedProjection(db, seeded.supervisor.supervisorId);
+  seeded.repos.supervisors.advanceObservation(
+    seeded.supervisor.supervisorId,
+    initialProjection.cursor,
+    initialProjection.digest,
+    '2026-09-06T00:00:00.000Z',
+  );
+  seeded.repos.supervisors.updateStatus(seeded.supervisor.supervisorId, 'OBSERVING');
+  seeded.repos.supervisors.updateStatus(seeded.supervisor.supervisorId, 'DIAGNOSING');
+  seeded.repos.supervisors.updateStatus(seeded.supervisor.supervisorId, 'WAITING_FOR_RESOURCE');
+  seeded.repos.supervisors.deferWake(seeded.supervisor.supervisorId, '2026-09-06T00:00:00.000Z');
+  const scheduler = new SupervisorWakeScheduler(seeded.repos.supervisors, db);
+  const due = scheduler.recoverDue('2026-09-06T00:15:00.000Z');
+  assert.equal(due.length, 1);
+  assert.equal(due[0]?.reason, 'RESOURCE_WATCHDOG');
+  const host = new OpenHandsSupervisorAdapter({
+    createSupervisorConversation: () => ({ conversationId: 'conversation-resource-watchdog', replaced: false }),
+    resumeSupervisorConversation: () => ({ conversationId: 'conversation-resource-watchdog', replaced: false }),
+  });
+  const client = { decide: async (input: { projection: { cursor: number; digest: string }; supervisorId: string; planId: string }) => JSON.stringify({
+    version: 1, decisionId: 'decision-resource-watchdog', planId: input.planId, supervisorId: input.supervisorId, observationCursor: input.projection.cursor,
+    projectionDigest: input.projection.digest, idempotencyKey: 'resource-watchdog-noop', preconditionSnapshot: {},
+    action: { type: 'NO_ACTION', idempotencyKey: 'resource-watchdog-noop', payload: { type: 'NO_ACTION', reason: 'watchdog resource recheck' } },
+  }) };
+  const runtime = new SupervisorRuntime(
+    db,
+    seeded.repos.supervisors,
+    scheduler,
+    host,
+    new SupervisorActionExecutor(seeded.repos.actions, seeded.repos.decisions, {}, seeded.repos.supervisors),
+    client,
+    'runtime-resource-watchdog-owner',
+  );
+  const result = await runtime.runOnce('2026-09-06T00:15:00.000Z');
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.status, 'SUCCEEDED');
+  assert.notEqual(result[0]?.code, 'STALE_WAKE');
   db.close();
 });
 

@@ -1352,6 +1352,47 @@ export async function buildControlPlane(
     modelClient,
   );
   const app = Fastify({ logger: options.logger ?? true });
+  const availableSupervisorResourceIds = (): string[] =>
+    automation
+      ? automation.resources
+          .listResources()
+          .filter(
+            (resource) =>
+              selectExecutableProfile([resource], {
+                phase: 'SUPERVISE',
+                includeProviderNativeProfiles: false,
+                policy: {
+                  allowProviderNative: false,
+                  allowedTransports: ['LITELLM_MANAGED'],
+                  isAllowed: (candidate) => Boolean(candidate.profile.routeModel),
+                },
+              }).status === 'SELECTED',
+          )
+          .map((resource) => resource.resourceId)
+          .sort()
+      : [];
+  let lastAvailableSupervisorResourceIds = new Set<string>();
+  const reconcileSupervisorResourceAvailability = () => {
+    const current = new Set(availableSupervisorResourceIds());
+    const becameAvailable = [...current].filter(
+      (resourceId) => !lastAvailableSupervisorResourceIds.has(resourceId),
+    );
+    lastAvailableSupervisorResourceIds = current;
+    if (becameAvailable.length === 0) return { becameAvailable, scheduledWakes: 0 };
+    if (repositories.supervisors.listByStatus('WAITING_FOR_RESOURCE').length === 0)
+      return { becameAvailable, scheduledWakes: 0 };
+    repositories.events.appendNew({
+      aggregateId: 'supervisor-resource-availability',
+      aggregateType: 'RESOURCE',
+      type: 'SUPERVISOR_RESOURCE_AVAILABILITY_CHANGED',
+      payload: { becameAvailable: [...becameAvailable].sort() },
+      occurredAt: new Date().toISOString(),
+      correlationId: 'supervisor-resource-availability',
+    });
+    const wakes = scheduler.scheduleWaitingForResource();
+    return { becameAvailable, scheduledWakes: wakes.length };
+  };
+  reconcileSupervisorResourceAvailability();
   const affinityEntries = [
     ...DEFAULT_AFFINITY_POLICY.capabilities.IMPLEMENTATION,
     ...DEFAULT_AFFINITY_POLICY.capabilities.REASONING,
@@ -1452,6 +1493,7 @@ export async function buildControlPlane(
       enabled: supervisorRuntimeEnabled,
       resourceSelectorEnabled: Boolean(modelClient),
       readinessAuthority: supervisorRuntimeEnabled ? 'DIRECT_PROTOCOL_FEEDBACK' : 'DISABLED',
+      resourceWakeMode: 'EVENT_DRIVEN_WITH_15M_FALLBACK',
       maxResourceAttempts: supervisorMaxResourceAttempts,
     },
     improvementRuntime: improvements.status(),
@@ -1655,7 +1697,10 @@ export async function buildControlPlane(
       .listResources()
       .find((item) => item.resourceId === resourceId);
     if (!projected) throw new ForgeFlowError('RESOURCE_NOT_FOUND');
-    return { resource: resourceProjection(projected), mutation: result.status };
+    return {
+      resource: resourceProjection(projected),
+      mutation: result.status,
+    };
   });
 
   app.post('/api/v1/resources/:resourceId/bindings/:bindingId/state', async (request) => {
@@ -1677,11 +1722,12 @@ export async function buildControlPlane(
       throw new ForgeFlowError('RESOURCE_BINDING_STATE_UNSUPPORTED');
     await runtime.resourceStateEffect.applyBinding(resource, binding, state);
     await runtime.liteLlmResources.refresh();
+    const resourceWake = reconcileSupervisorResourceAvailability();
     const projected = runtime.resources
       .listResources()
       .find((item) => item.resourceId === resourceId);
     if (!projected) throw new ForgeFlowError('RESOURCE_NOT_FOUND');
-    return { resource: resourceProjection(projected), bindingId, state };
+    return { resource: resourceProjection(projected), bindingId, state, resourceWake };
   });
 
   const planView = (planId: string) => {
@@ -2239,6 +2285,11 @@ export async function buildControlPlane(
           void automation.liteLlmResources
             .refresh()
             .then(() => automation.resourceLifecycle.reconcileOnce())
+            .then(() => {
+              const resourceWake = reconcileSupervisorResourceAvailability();
+              if (resourceWake.scheduledWakes > 0)
+                app.log.info(resourceWake, 'resource availability woke waiting supervisors');
+            })
             .then(() => automation.reconcileRuntimeAdmission())
             .catch((error) =>
               app.log.error(

@@ -47,7 +47,7 @@ export interface SupervisorDecision {
 
 export type SupervisorWakeReason =
   | 'NEW_PLAN' | 'TERMINAL_RESULT' | 'UNKNOWN_FAILURE' | 'REPEATED_FAILURE'
-  | 'STALL' | 'LIMIT' | 'RESOURCE_TRANSITION' | 'EXTERNAL_RESULT'
+  | 'STALL' | 'LIMIT' | 'RESOURCE_TRANSITION' | 'RESOURCE_WATCHDOG' | 'EXTERNAL_RESULT'
   | 'CHILD_PLAN' | 'OPERATOR_REQUEST';
 
 export function transitionSupervisor(supervisor: Supervisor, next: SupervisorStatus, now: string): Supervisor {

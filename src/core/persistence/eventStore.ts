@@ -70,6 +70,15 @@ export class EventStore {
     return rows.map(fromRow);
   }
 
+  latestCursor(): number {
+    const row = this.db.prepare('SELECT COALESCE(MAX(event_order),0) AS cursor FROM events').get() as {
+      cursor: number;
+    };
+    const cursor = Number(row.cursor);
+    if (!Number.isInteger(cursor) || cursor < 0) throw new ForgeFlowError('EVENT_CURSOR_INVALID');
+    return cursor;
+  }
+
   listAfterCursor(cursor = 0, limit = 500): { cursor: number; events: EventEnvelope[] } {
     const rows = this.db.prepare('SELECT event_order,event_id,aggregate_id,aggregate_type,sequence,type,payload,occurred_at,correlation_id FROM events WHERE event_order>? ORDER BY event_order LIMIT ?').all(cursor, limit) as unknown as EventRow[];
     const last = rows.at(-1);

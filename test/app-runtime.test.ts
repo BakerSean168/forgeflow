@@ -486,6 +486,7 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
     enabled: true,
     resourceSelectorEnabled: true,
     readinessAuthority: 'DIRECT_PROTOCOL_FEEDBACK',
+    resourceWakeMode: 'EVENT_DRIVEN_WITH_15M_FALLBACK',
     maxResourceAttempts: 3,
   });
   assert.equal(selectorHealth.json().executionRuntime.routingAuthority, 'RESOURCE_SELECTOR');
@@ -577,6 +578,277 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
   });
   assert.equal(waitingState.json().plan.status, 'WAITING_FOR_RESOURCE');
   await runtime.app.close();
+});
+
+test('reasoning resource recovery wakes waiting Supervisors without implementation-only false positives', async () => {
+  const value = fixture();
+  const adminEnv = path.join(value.root, 'litellm-resource-wake.env');
+  fs.writeFileSync(adminEnv, 'LITELLM_MASTER_KEY=test-master-key\n');
+  let reasoningBlocked = true;
+  let implementationBlocked = true;
+  const modelInfo = () => ({
+    data: [
+      {
+        model_name: 'route-resource-wake-sol',
+        litellm_params: { litellm_credential_name: 'reasoning-provider' },
+        model_info: {
+          id: 'deployment-resource-wake-sol',
+          blocked: reasoningBlocked,
+          metadata: {
+            automatic_core: true,
+            resource_id: 'reasoning-provider',
+            resource_sequence: 201,
+            model_family: 'gpt-5.6-sol',
+            route_model: 'route-resource-wake-sol',
+            protocol: 'openai-chat-completions',
+            commercial_type: 'METERED',
+            supply_origin: 'COMMERCIAL_RELAY',
+            resource_lifecycle: 'RECURRING',
+          },
+        },
+      },
+      {
+        model_name: 'route-resource-wake-deepseek',
+        litellm_params: { litellm_credential_name: 'implementation-provider' },
+        model_info: {
+          id: 'deployment-resource-wake-deepseek',
+          blocked: implementationBlocked,
+          metadata: {
+            automatic_core: true,
+            resource_id: 'implementation-provider',
+            resource_sequence: 202,
+            model_family: 'deepseek-v4-flash',
+            route_model: 'route-resource-wake-deepseek',
+            protocol: 'openai-chat-completions',
+            commercial_type: 'METERED',
+            supply_origin: 'COMMERCIAL_RELAY',
+            resource_lifecycle: 'RECURRING',
+          },
+        },
+      },
+    ],
+  });
+  const fakeFetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const url = String(input);
+    if (url.endsWith('/model/info'))
+      return new Response(JSON.stringify(modelInfo()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    if (url.includes('/model/deployment-resource-wake-sol/update')) {
+      reasoningBlocked = Boolean((JSON.parse(String(init.body)) as { blocked: boolean }).blocked);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (url.includes('/model/deployment-resource-wake-deepseek/update')) {
+      implementationBlocked = Boolean((JSON.parse(String(init.body)) as { blocked: boolean }).blocked);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    throw new Error('unexpected resource-wake fetch: ' + url);
+  }) as typeof fetch;
+
+  const runtime = await buildControlPlane({
+    dbFile: ':memory:',
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env: {
+      NODE_ENV: 'test',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'true',
+      FORGEFLOW_AUTOMATION_RUNTIME_ENABLED: 'false',
+      FORGEFLOW_RESOURCE_SELECTOR_ENABLED: 'true',
+      FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED: 'true',
+      FORGEFLOW_SUPERVISOR_POLL_MS: '300000',
+      FORGEFLOW_BUSINESS_RESOURCE_ENABLED: 'false',
+      FORGEFLOW_OPENHANDS_URL: 'http://openhands.test',
+      FORGEFLOW_OPENHANDS_TOKEN: 'test-session-key',
+      FORGEFLOW_LITELLM_API_KEY: 'test-litellm-key',
+      FORGEFLOW_LITELLM_BASE_URL: 'http://litellm.test/v1',
+      FORGEFLOW_LITELLM_ADMIN_BASE_URL: 'http://litellm.test',
+      FORGEFLOW_LITELLM_ADMIN_ENV_FILE: adminEnv,
+      FORGEFLOW_ALLOWED_REPOSITORY_ROOTS: value.allowed,
+      FORGEFLOW_WORKSPACE_HOST_ROOT: value.managed,
+      FORGEFLOW_WORKSPACE_EXECUTION_ROOT: '/workspace',
+      FORGEFLOW_AUTOMATION_PROJECTS: 'resource-wake-project',
+      FORGEFLOW_WORKSPACE_UID: String(process.getuid?.() ?? 0),
+      FORGEFLOW_WORKSPACE_GID: String(process.getgid?.() ?? 0),
+    },
+  });
+  try {
+    const plan = runtime.repositories.plans.createPlan({
+      idempotencyKey: 'resource-wake-plan',
+      projectKey: 'resource-wake-project',
+      objective: 'wait for a reasoning resource',
+      repositoryPath: value.repository,
+      baseRevision: value.revision,
+    }).value!;
+    runtime.repositories.plans.updateStatus(plan.planId, 'READY');
+    const supervisor = runtime.repositories.supervisors.create({ planId: plan.planId }).value!;
+    runtime.repositories.supervisors.updateStatus(supervisor.supervisorId, 'ACTIVE');
+    runtime.repositories.supervisors.updateStatus(supervisor.supervisorId, 'OBSERVING');
+    runtime.repositories.supervisors.updateStatus(supervisor.supervisorId, 'DIAGNOSING');
+    runtime.repositories.supervisors.updateStatus(supervisor.supervisorId, 'WAITING_FOR_RESOURCE');
+
+    const implementation = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/resources/implementation-provider/bindings/deployment-resource-wake-deepseek/state',
+      payload: { state: 'ACTIVE' },
+    });
+    assert.equal(implementation.statusCode, 200);
+    assert.deepEqual(implementation.json().resourceWake, {
+      becameAvailable: [],
+      scheduledWakes: 0,
+    });
+    assert.deepEqual(runtime.supervisor.scheduler.drain(), []);
+
+    const reasoning = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/resources/reasoning-provider/bindings/deployment-resource-wake-sol/state',
+      payload: { state: 'ACTIVE' },
+    });
+    assert.equal(reasoning.statusCode, 200);
+    assert.deepEqual(reasoning.json().resourceWake, {
+      becameAvailable: ['reasoning-provider'],
+      scheduledWakes: 1,
+    });
+    const wakes = runtime.supervisor.scheduler.drain();
+    assert.equal(wakes.length, 1);
+    assert.equal(wakes[0]?.supervisorId, supervisor.supervisorId);
+    assert.equal(wakes[0]?.reason, 'RESOURCE_TRANSITION');
+    const availabilityEvents = runtime.repositories.events.listByAggregate(
+      'supervisor-resource-availability',
+    );
+    assert.equal(availabilityEvents.at(-1)?.type, 'SUPERVISOR_RESOURCE_AVAILABILITY_CHANGED');
+    assert.deepEqual(availabilityEvents.at(-1)?.payload, {
+      becameAvailable: ['reasoning-provider'],
+    });
+
+    const duplicate = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/resources/reasoning-provider/bindings/deployment-resource-wake-sol/state',
+      payload: { state: 'ACTIVE' },
+    });
+    assert.equal(duplicate.statusCode, 200);
+    assert.deepEqual(duplicate.json().resourceWake, {
+      becameAvailable: [],
+      scheduledWakes: 0,
+    });
+    assert.deepEqual(runtime.supervisor.scheduler.drain(), []);
+  } finally {
+    await runtime.app.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test('startup reconciles a recovered reasoning resource for a durable waiting Supervisor', async () => {
+  const value = fixture();
+  const dbFile = path.join(value.root, 'resource-wake-restart.sqlite');
+  const adminEnv = path.join(value.root, 'litellm-resource-wake-restart.env');
+  fs.writeFileSync(adminEnv, 'LITELLM_MASTER_KEY=test-master-key\n');
+  let blocked = true;
+  const fakeFetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const url = String(input);
+    if (url.endsWith('/model/info'))
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              model_name: 'route-restart-sol',
+              litellm_params: { litellm_credential_name: 'restart-reasoning' },
+              model_info: {
+                id: 'deployment-restart-sol',
+                blocked,
+                metadata: {
+                  automatic_core: true,
+                  resource_id: 'restart-reasoning',
+                  resource_sequence: 301,
+                  model_family: 'gpt-5.6-sol',
+                  route_model: 'route-restart-sol',
+                  protocol: 'openai-chat-completions',
+                  commercial_type: 'METERED',
+                  supply_origin: 'COMMERCIAL_RELAY',
+                  resource_lifecycle: 'RECURRING',
+                },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    if (url.includes('/model/deployment-restart-sol/update')) {
+      blocked = Boolean((JSON.parse(String(init.body)) as { blocked: boolean }).blocked);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    throw new Error('unexpected resource-wake restart fetch: ' + url);
+  }) as typeof fetch;
+  const env = {
+    NODE_ENV: 'test',
+    FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'true',
+    FORGEFLOW_AUTOMATION_RUNTIME_ENABLED: 'false',
+    FORGEFLOW_RESOURCE_SELECTOR_ENABLED: 'true',
+    FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED: 'true',
+    FORGEFLOW_SUPERVISOR_POLL_MS: '300000',
+    FORGEFLOW_BUSINESS_RESOURCE_ENABLED: 'false',
+    FORGEFLOW_OPENHANDS_URL: 'http://openhands.test',
+    FORGEFLOW_OPENHANDS_TOKEN: 'test-session-key',
+    FORGEFLOW_LITELLM_API_KEY: 'test-litellm-key',
+    FORGEFLOW_LITELLM_BASE_URL: 'http://litellm.test/v1',
+    FORGEFLOW_LITELLM_ADMIN_BASE_URL: 'http://litellm.test',
+    FORGEFLOW_LITELLM_ADMIN_ENV_FILE: adminEnv,
+    FORGEFLOW_ALLOWED_REPOSITORY_ROOTS: value.allowed,
+    FORGEFLOW_WORKSPACE_HOST_ROOT: value.managed,
+    FORGEFLOW_WORKSPACE_EXECUTION_ROOT: '/workspace',
+    FORGEFLOW_AUTOMATION_PROJECTS: 'resource-wake-restart-project',
+    FORGEFLOW_WORKSPACE_UID: String(process.getuid?.() ?? 0),
+    FORGEFLOW_WORKSPACE_GID: String(process.getgid?.() ?? 0),
+  };
+
+  const first = await buildControlPlane({
+    dbFile,
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env,
+  });
+  let supervisorId = '';
+  try {
+    const plan = first.repositories.plans.createPlan({
+      idempotencyKey: 'resource-wake-restart-plan',
+      projectKey: 'resource-wake-restart-project',
+      objective: 'survive provider recovery across restart',
+      repositoryPath: value.repository,
+      baseRevision: value.revision,
+    }).value!;
+    first.repositories.plans.updateStatus(plan.planId, 'READY');
+    const supervisor = first.repositories.supervisors.create({ planId: plan.planId }).value!;
+    supervisorId = supervisor.supervisorId;
+    first.repositories.supervisors.updateStatus(supervisorId, 'ACTIVE');
+    first.repositories.supervisors.updateStatus(supervisorId, 'OBSERVING');
+    first.repositories.supervisors.updateStatus(supervisorId, 'DIAGNOSING');
+    first.repositories.supervisors.updateStatus(supervisorId, 'WAITING_FOR_RESOURCE');
+  } finally {
+    await first.app.close();
+  }
+
+  blocked = false;
+  const second = await buildControlPlane({
+    dbFile,
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env,
+  });
+  try {
+    const wakes = second.supervisor.scheduler.drain();
+    assert.equal(wakes.length, 1);
+    assert.equal(wakes[0]?.supervisorId, supervisorId);
+    assert.equal(wakes[0]?.reason, 'RESOURCE_TRANSITION');
+    const events = second.repositories.events.listByAggregate('supervisor-resource-availability');
+    assert.equal(events.at(-1)?.type, 'SUPERVISOR_RESOURCE_AVAILABILITY_CHANGED');
+    assert.deepEqual(events.at(-1)?.payload, { becameAvailable: ['restart-reasoning'] });
+  } finally {
+    await second.app.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
 });
 
 test('selector-off rollback preserves durable selector provenance in the same durable database', async () => {
