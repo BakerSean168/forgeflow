@@ -128,6 +128,14 @@ export class PlanWorktreeManager {
   private async activatePlan(rootPlanId: string): Promise<PlanWorktree> {
     const plan = this.repositories.plans.getPlan(rootPlanId);
     failClosed(!plan.parentPlanId, 'WORKTREE_ROOT_PLAN_REQUIRED');
+    failClosed(
+      plan.status === 'READY' ||
+        plan.status === 'RUNNING' ||
+        plan.status === 'WAITING_FOR_RESOURCE' ||
+        plan.status === 'WAITING_FOR_SYSTEM_REPAIR' ||
+        plan.status === 'WAITING_FOR_EXTERNAL_EVIDENCE',
+      'WORKTREE_PLAN_NOT_ACTIVATABLE',
+    );
     const lease = this.repositories.projectPlans.getLease(plan.projectKey);
     failClosed(lease?.activeRootPlanId === rootPlanId, 'WORKTREE_ACTIVE_PLAN_REQUIRED');
     failClosed(lease.repositoryPath === plan.repositoryPath, 'WORKTREE_REPOSITORY_MISMATCH');
@@ -1004,6 +1012,7 @@ export class PlanWorktreeManager {
   }
 
   private async ensurePlanDirectory(record: PlanWorktree): Promise<void> {
+    this.ensureManagedPlanParents(record);
     const roleRoot = path.dirname(record.hostPath);
     fs.mkdirSync(roleRoot, { recursive: true, mode: 0o755 });
     const identity = this.repositoryIdentity(record.repositoryPath);
@@ -1011,6 +1020,34 @@ export class PlanWorktreeManager {
     failClosed(stat.isDirectory() && !stat.isSymbolicLink(), 'WORKTREE_PARENT_UNSAFE');
     fs.chownSync(roleRoot, identity.uid, identity.gid);
     fs.chmodSync(roleRoot, 0o755);
+  }
+
+  private ensureManagedPlanParents(record: PlanWorktree): void {
+    const managerUid = process.getuid?.();
+    const managerGid = process.getgid?.();
+    const project = worktreeRefComponent(record.projectKey);
+    const plan = worktreeRefComponent(record.rootPlanId);
+    const directories = [
+      path.join(this.managedHostRoot, 'forgeflow'),
+      path.join(this.managedHostRoot, 'forgeflow', 'plans'),
+      path.join(this.managedHostRoot, 'forgeflow', 'plans', project),
+      path.join(this.managedHostRoot, 'forgeflow', 'plans', project, plan),
+    ];
+    for (const directory of directories) {
+      failClosed(inside(directory, this.managedHostRoot), 'WORKTREE_PARENT_UNSAFE');
+      fs.mkdirSync(directory, { recursive: true, mode: 0o711 });
+      const stat = fs.lstatSync(directory);
+      failClosed(stat.isDirectory() && !stat.isSymbolicLink(), 'WORKTREE_PARENT_UNSAFE');
+      if (
+        managerUid !== undefined &&
+        managerGid !== undefined &&
+        (stat.uid !== managerUid || stat.gid !== managerGid)
+      ) {
+        if (managerUid !== 0) throw new ForgeFlowError('WORKTREE_MANAGED_PARENT_OWNER_INVALID');
+        fs.chownSync(directory, managerUid, managerGid);
+      }
+      fs.chmodSync(directory, 0o711);
+    }
   }
 
   private async verifyRegistered(

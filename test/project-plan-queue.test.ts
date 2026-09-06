@@ -242,6 +242,30 @@ test('schema v6 migrates additively to the single-active-plan scheduling schema'
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('SAFETY_HOLD root Plans keep the lease fenced without automatic lifecycle activation', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const calls: string[] = [];
+  const runtime = new ProjectPlanQueueRuntime(repositories, {
+    activate: async (planId) => calls.push('activate:' + planId),
+    retire: async (planId) => calls.push('retire:' + planId),
+  });
+  createRoot(repositories, 'plan-held');
+  runtime.scheduleRootPlan('plan-held');
+  repositories.plans.updateStatus('plan-held', 'SAFETY_HOLD');
+
+  const result = await runtime.reconcile();
+
+  assert.deepEqual(result, []);
+  assert.deepEqual(calls, []);
+  assert.equal(repositories.plans.getPlan('plan-held').status, 'SAFETY_HOLD');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-held',
+  );
+  db.close();
+});
+
 test('terminal Plan cleanup must succeed before the project lease can hand off', async () => {
   const db = openDatabase(':memory:', { environment: 'test' });
   const repositories = createRepositories(db);

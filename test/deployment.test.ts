@@ -186,7 +186,8 @@ test('literal worktree deployment is project-mounted, runtime-verified, and smok
   assert.match(appSource, /safe\.directory=\$\{repositoryPath\}/);
   assert.match(appSource, /docker'[\s\S]*inspect'[\s\S]*\{\{json \.Mounts\}\}/);
   assert.match(appSource, /mount\.Source === common && mount\.Destination === common && mount\.RW === true/);
-  assert.match(appSource, /literalProjects\.has\(plan\.projectKey\) && !isTerminalPlanStatus\(plan\.status\)/);
+  assert.match(appSource, /plan\.status !== 'SAFETY_HOLD'/);
+  assert.match(appSource, /!isTerminalPlanStatus\(plan\.status\)/);
   assert.match(literalSmoke, /FORGEFLOW_WORKTREE_SMOKE_USE_RUNNING_CONTAINER/);
   assert.match(literalSmoke, /useRunningContainer[\s\S]*'exec'/);
 });

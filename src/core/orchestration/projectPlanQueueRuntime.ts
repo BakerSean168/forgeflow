@@ -124,7 +124,8 @@ export class ProjectPlanQueueRuntime {
         }
         const plan = this.repositories.plans.getPlan(activePlanId);
         if (!isTerminalPlanStatus(plan.status)) {
-          if (this.lifecycle) await this.lifecycle.activate(activePlanId);
+          if (plan.status !== 'SAFETY_HOLD' && this.lifecycle)
+            await this.lifecycle.activate(activePlanId);
           this.ensureSupervisorActive(activePlanId);
           continue;
         }

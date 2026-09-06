@@ -1463,7 +1463,11 @@ export async function buildControlPlane(
       for (const lease of repositories.projectPlans.listLeases()) {
         if (!lease.activeRootPlanId) continue;
         const plan = repositories.plans.getPlan(lease.activeRootPlanId);
-        if (literalProjects.has(plan.projectKey) && !isTerminalPlanStatus(plan.status))
+        if (
+          literalProjects.has(plan.projectKey) &&
+          plan.status !== 'SAFETY_HOLD' &&
+          !isTerminalPlanStatus(plan.status)
+        )
           await automation.planWorktreeManager.ensurePlanActivated(lease.activeRootPlanId);
       }
     }

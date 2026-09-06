@@ -143,6 +143,40 @@ test('PlanWorktreeManager creates one literal shared-common-dir worktree per rol
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+test('literal Plan parents remain controller-owned and traversable under production umask 0077', async () => {
+  const value = fixture();
+  const previousUmask = process.umask(0o077);
+  try {
+    await value.manager.ensurePlanActivated(value.plan.planId);
+    await value.manager.ensureWorkItem({
+      projectKey: value.plan.projectKey,
+      rootPlanId: value.plan.planId,
+      workItemId: value.itemA.workItemId,
+      repositoryPath: value.repository,
+      baseRevision: value.revision,
+    });
+  } finally {
+    process.umask(previousUmask);
+  }
+
+  const directories = [
+    path.join(value.managed, 'forgeflow'),
+    path.join(value.managed, 'forgeflow', 'plans'),
+    path.join(value.managed, 'forgeflow', 'plans', value.plan.projectKey),
+    path.join(value.managed, 'forgeflow', 'plans', value.plan.projectKey, value.plan.planId),
+  ];
+  for (const directory of directories) {
+    const stat = fs.statSync(directory);
+    assert.equal(stat.mode & 0o777, 0o711);
+    assert.equal(stat.uid, process.getuid?.() ?? stat.uid);
+    assert.equal(stat.gid, process.getgid?.() ?? stat.gid);
+  }
+
+  await value.manager.retirePlan(value.plan.planId, process.getuid?.() ?? 1000);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('work-item provisioning cannot bypass a failed root Plan admission', async () => {
   const value = fixture();
   const manager = new PlanWorktreeManager({
@@ -643,7 +677,8 @@ test('protected ref drift enters SAFETY_HOLD and blocks further worktree activit
         repositoryPath: value.repository,
         baseRevision: value.revision,
       }),
-    (error: unknown) => error instanceof ForgeFlowError && error.code === 'WORKTREE_PROTECTED_REF_DRIFT',
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKTREE_PLAN_NOT_ACTIVATABLE',
   );
 
   value.db.close();
