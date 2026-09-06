@@ -478,6 +478,7 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
   assert.deepEqual(selectorHealth.json().supervisorRuntime, {
     enabled: true,
     resourceSelectorEnabled: true,
+    readinessAuthority: 'DIRECT_PROTOCOL_FEEDBACK',
     maxResourceAttempts: 3,
   });
   assert.equal(selectorHealth.json().executionRuntime.routingAuthority, 'RESOURCE_SELECTOR');

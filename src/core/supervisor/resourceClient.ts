@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { ForgeFlowError, failClosed } from '../domain/errors.js';
 import {
@@ -111,6 +111,22 @@ function extractOpenAIResponsesSupervisorDecision(payload: unknown): string {
   throw new ForgeFlowError('SUPERVISOR_DECISION_INVALID');
 }
 
+export function supervisorDecisionContextDigest(input: SupervisorDecisionInput): string {
+  const projection = input.projection;
+  const recentEvents = projection.recentEvents.filter(
+    (event) => !['SUPERVISOR', 'DECISION', 'ACTION'].includes(event.aggregateType),
+  );
+  const context = {
+    plan: projection.plan,
+    delivery: projection.delivery ?? null,
+    graph: projection.graph,
+    executions: projection.executions,
+    reviews: projection.reviews,
+    recentEvents,
+  };
+  return createHash('sha256').update(JSON.stringify(context)).digest('hex');
+}
+
 function selectionEventPayload(
   selection: ExecutionResourceSelection,
   attempt: number,
@@ -120,6 +136,7 @@ function selectionEventPayload(
     attempt,
     observationCursor: input.projection.cursor,
     projectionDigest: input.projection.digest,
+    decisionContextDigest: supervisorDecisionContextDigest(input),
     resourceId: selection.resourceId,
     resourceTier: selection.resourceTier,
     modelFamily: selection.modelFamily,
@@ -170,6 +187,7 @@ export class ResourceSelectedSupervisorDecisionClient implements SupervisorDecis
     input: SupervisorDecisionInput,
   ): ResourceSelectionExclusion[] {
     const values = new Map<string, ResourceSelectionExclusion>();
+    const decisionContextDigest = supervisorDecisionContextDigest(input);
     for (const event of this.events.listRecentByAggregate(input.supervisorId, 500)) {
       if (event.type !== 'SUPERVISOR_RESOURCE_FAILED') continue;
       const payload =
@@ -178,7 +196,7 @@ export class ResourceSelectedSupervisorDecisionClient implements SupervisorDecis
           : {};
       if (
         payload.failureClass !== 'INVALID_DECISION' ||
-        payload.projectionDigest !== input.projection.digest ||
+        payload.decisionContextDigest !== decisionContextDigest ||
         typeof payload.resourceId !== 'string' ||
         typeof payload.modelFamily !== 'string'
       )

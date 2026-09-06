@@ -1259,9 +1259,12 @@ export async function buildControlPlane(
     throw new ForgeFlowError('SUPERVISOR_STATIC_ROUTE_UNSUPPORTED');
   if (supervisorRuntimeEnabled && !automation?.resourceSelectorEnabled)
     throw new ForgeFlowError('SUPERVISOR_RESOURCE_SELECTOR_REQUIRED');
+  const supervisorResourceSelector = supervisorRuntimeEnabled
+    ? new ResourceSelector(automation!.resources, DEFAULT_AFFINITY_POLICY)
+    : undefined;
   const modelClient = supervisorRuntimeEnabled
     ? new ResourceSelectedSupervisorDecisionClient(
-        automation!.resourceSelector,
+        supervisorResourceSelector!,
         requiredText(env.FORGEFLOW_LITELLM_BASE_URL, 'SUPERVISOR_RESOURCE_BASE_URL_REQUIRED'),
         requiredText(env.FORGEFLOW_LITELLM_API_KEY, 'SUPERVISOR_RESOURCE_KEY_REQUIRED'),
         repositories.events,
@@ -1385,6 +1388,7 @@ export async function buildControlPlane(
     supervisorRuntime: {
       enabled: supervisorRuntimeEnabled,
       resourceSelectorEnabled: Boolean(modelClient),
+      readinessAuthority: supervisorRuntimeEnabled ? 'DIRECT_PROTOCOL_FEEDBACK' : 'DISABLED',
       maxResourceAttempts: supervisorMaxResourceAttempts,
     },
     executionRuntime: {

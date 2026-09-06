@@ -3,15 +3,14 @@ import test from 'node:test';
 
 import { StaticResourceDirectory } from '../src/core/adapters/resourceDirectory.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
-import type {
-  ExecutionResource,
-  ExecutionResourceSelection,
-  ResourceStateOverrideSource,
-} from '../src/core/domain/resourceRouting.js';
+import { DEFAULT_AFFINITY_POLICY, type ExecutionResource, type ExecutionResourceSelection, type ResourceStateOverrideSource } from '../src/core/domain/resourceRouting.js';
 import { ResourceSelector } from '../src/core/orchestration/resourceSelector.js';
 import { openDatabase } from '../src/core/persistence/database.js';
 import { createRepositories } from '../src/core/persistence/repositories.js';
-import { ResourceSelectedSupervisorDecisionClient } from '../src/core/supervisor/resourceClient.js';
+import {
+  ResourceSelectedSupervisorDecisionClient,
+  supervisorDecisionContextDigest,
+} from '../src/core/supervisor/resourceClient.js';
 import type { SupervisorDecisionInput } from '../src/core/supervisor/runtime.js';
 
 function reasoningResource(
@@ -140,6 +139,21 @@ function fixture(resources: ExecutionResource[], fetchImpl: typeof fetch, maxAtt
   );
   return { db, repositories, feedback, client };
 }
+
+test('Supervisor direct-protocol selection is not coupled to ACP runtime readiness', () => {
+  const directory = new StaticResourceDirectory([
+    reasoningResource('reasoning-direct', 10, 'route-reasoning-direct'),
+  ]);
+  const acpGated = new ResourceSelector(directory, DEFAULT_AFFINITY_POLICY, {
+    isReady: () => false,
+  });
+  assert.equal(acpGated.select({ phase: 'SUPERVISE' }).status, 'WAITING_FOR_RESOURCE');
+  const direct = new ResourceSelector(directory);
+  const selected = direct.select({ phase: 'SUPERVISE' });
+  assert.equal(selected.status, 'SELECTED');
+  if (selected.status !== 'SELECTED') throw new Error('expected direct Supervisor resource');
+  assert.equal(selected.profile.resourceId, 'reasoning-direct');
+});
 
 test('Supervisor selects a governed reasoning route instead of a static model alias', async () => {
   const requestedModels: string[] = [];
@@ -281,6 +295,7 @@ test('Supervisor retries malformed decisions without poisoning resource health a
   assert.equal(failures[0]?.payload.failureStage, 'PROTOCOL_VALIDATE');
   assert.equal(failures[0]?.payload.failureCode, 'DECISION_VERSION_UNSUPPORTED');
   assert.equal(failures[0]?.payload.projectionDigest, input.projection.digest);
+  assert.equal(failures[0]?.payload.decisionContextDigest, supervisorDecisionContextDigest(input));
   assert.equal(failures[0]?.payload.observationCursor, input.projection.cursor);
   value.db.close();
 });
@@ -304,8 +319,30 @@ test('Supervisor durably excludes a malformed resource for the unchanged project
       error instanceof ForgeFlowError && error.code === 'SUPERVISOR_RESOURCE_ATTEMPTS_EXHAUSTED',
   );
   assert.equal(calls, 1);
+  const housekeepingInput: SupervisorDecisionInput = {
+    ...input,
+    projection: {
+      ...input.projection,
+      cursor: input.projection.cursor + 9,
+      digest: 'projection-digest-after-supervisor-housekeeping',
+      recentEvents: [
+        {
+          cursor: input.projection.cursor + 1,
+          type: 'SUPERVISOR_RESOURCE_FAILED',
+          aggregateType: 'SUPERVISOR',
+          aggregateId: input.supervisorId,
+          occurredAt: '2026-09-06T04:00:00.000Z',
+        },
+      ],
+    },
+  };
+  assert.notEqual(housekeepingInput.projection.digest, input.projection.digest);
+  assert.equal(
+    supervisorDecisionContextDigest(housekeepingInput),
+    supervisorDecisionContextDigest(input),
+  );
   await assert.rejects(
-    () => value.client.decide(input),
+    () => value.client.decide(housekeepingInput),
     (error: unknown) =>
       error instanceof ForgeFlowError &&
       error.code === 'SUPERVISOR_RESOURCE_DECISION_QUALITY_EXHAUSTED',
