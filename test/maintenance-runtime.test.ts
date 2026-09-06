@@ -15,6 +15,7 @@ function setup(options: {
   allowedProjectKeys?: string[];
   selfChangeEnabled?: boolean;
   selfRepositoryPath?: string;
+  autoAdoptLowRisk?: boolean;
 } = {}) {
   const db = openDatabase(':memory:', { environment: 'test', env: { NODE_ENV: 'test' } });
   const repositories = createRepositories(db);
@@ -24,6 +25,7 @@ function setup(options: {
   const runtime = new MaintenanceImprovementRuntime(db, registry, repositories, plans, queue, {
     discoveryEnabled: options.discoveryEnabled ?? true,
     adoptionEnabled: options.adoptionEnabled ?? true,
+    autoAdoptLowRisk: options.autoAdoptLowRisk ?? false,
     allowedProjectKeys: options.allowedProjectKeys ?? ['project-alpha'],
     selfChangeEnabled: options.selfChangeEnabled ?? false,
     selfProjectKey: 'forgeflow',
@@ -106,6 +108,30 @@ test('recurring local failures create one deterministic improvement candidate an
   value.db.close();
 });
 
+test('maintenance program lifecycle is durable and gates candidate adoption', () => {
+  const value = setup();
+  const durable = value.registry.upsertProgram(program());
+  assert.equal(durable.enabled, true);
+  const candidate = value.registry.create(program(), {
+    title: 'Disabled program candidate',
+    evidence: ['failure-code:TEST_DISABLED'],
+    risk: 'LOW',
+  }).candidate;
+  const disabled = value.registry.setProgramEnabled(durable.programId, false);
+  assert.equal(disabled.enabled, false);
+  assert.equal(value.registry.getProgram(durable.programId).enabled, false);
+  assert.throws(
+    () => value.runtime.adopt(candidate.candidateId, { baseRevision: 'base-sha' }),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'MAINTENANCE_PROGRAM_DISABLED',
+  );
+  const enabled = value.registry.setProgramEnabled(durable.programId, true);
+  assert.equal(enabled.enabled, true);
+  const events = value.registry.events.listByAggregate(durable.programId);
+  assert.ok(events.some((event) => event.type === 'MAINTENANCE_PROGRAM_STATUS_CHANGED'));
+  value.db.close();
+});
+
 test('discovery is project-gated and does not persist a program when disabled or disallowed', () => {
   const disabled = setup({ discoveryEnabled: false });
   assert.throws(
@@ -183,6 +209,66 @@ test('self-change remains hard-disabled even when the ForgeFlow project is accid
     (error: unknown) => error instanceof ForgeFlowError && error.code === 'IMPROVEMENT_SELF_CHANGE_DISABLED',
   );
   assert.equal(value.registry.get(candidate.candidateId).planId, undefined);
+  value.db.close();
+});
+
+test('periodic cycle never auto-adopts CONSERVATIVE programs even when the global low-risk switch is on', () => {
+  const value = setup({ autoAdoptLowRisk: true });
+  for (let index = 1; index <= 3; index += 1)
+    recordFailure(value, index, 'TEST_CONSERVATIVE_FAILURE');
+  value.registry.upsertProgram(program());
+  const cycle = value.runtime.runCycle();
+  assert.equal(cycle.programs.length, 1);
+  assert.equal(cycle.programs[0]?.created, 1);
+  assert.deepEqual(cycle.programs[0]?.adoptedPlanIds, []);
+  const candidate = value.registry.list()[0]!;
+  assert.equal(candidate.status, 'DISCOVERED');
+  assert.equal(candidate.planId, undefined);
+  value.db.close();
+});
+
+test('STANDARD program plus explicit global auto-adopt creates only a LOW-risk ordinary Plan', () => {
+  const value = setup({ autoAdoptLowRisk: true });
+  for (let index = 1; index <= 3; index += 1)
+    recordFailure(value, index, 'TEST_STANDARD_FAILURE');
+  value.registry.upsertProgram({ ...program(), autonomousScope: 'STANDARD' });
+  const cycle = value.runtime.runCycle();
+  assert.equal(cycle.programs.length, 1);
+  assert.equal(cycle.programs[0]?.created, 1);
+  assert.equal(cycle.programs[0]?.adoptedPlanIds.length, 1);
+  assert.deepEqual(cycle.programs[0]?.errors, []);
+  const candidate = value.registry.list()[0]!;
+  assert.equal(candidate.status, 'ADOPTED');
+  assert.ok(candidate.planId);
+  const plan = value.repositories.plans.getPlan(candidate.planId!);
+  assert.equal(plan.status, 'READY');
+  assert.equal(value.repositories.executions.listByPlan(plan.planId).length, 0);
+  value.db.close();
+});
+
+test('automatic low-risk adoption still cannot cross the independent self-change gate', () => {
+  const value = setup({
+    autoAdoptLowRisk: true,
+    allowedProjectKeys: ['forgeflow'],
+    selfRepositoryPath: '/srv/forgeflow',
+    selfChangeEnabled: false,
+  });
+  for (let index = 1; index <= 3; index += 1)
+    recordFailure(value, index, 'TEST_SELF_LOOP', 'forgeflow', '/srv/forgeflow');
+  value.registry.upsertProgram({
+    ...program(),
+    programId: 'forgeflow-auto-maintenance',
+    projectKey: 'forgeflow',
+    repositoryPath: '/srv/forgeflow',
+    autonomousScope: 'STANDARD',
+  });
+  const cycle = value.runtime.runCycle();
+  assert.equal(cycle.programs[0]?.created, 1);
+  assert.deepEqual(cycle.programs[0]?.adoptedPlanIds, []);
+  assert.deepEqual(cycle.programs[0]?.errors, ['IMPROVEMENT_SELF_CHANGE_DISABLED']);
+  const candidate = value.registry.list()[0]!;
+  assert.equal(candidate.status, 'DISCOVERED');
+  assert.equal(candidate.planId, undefined);
   value.db.close();
 });
 

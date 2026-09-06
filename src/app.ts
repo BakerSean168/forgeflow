@@ -1165,6 +1165,7 @@ export async function buildControlPlane(
     {
       discoveryEnabled: env.FORGEFLOW_IMPROVEMENT_DISCOVERY_ENABLED === 'true',
       adoptionEnabled: env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true',
+      autoAdoptLowRisk: env.FORGEFLOW_IMPROVEMENT_AUTO_ADOPT_LOW_RISK === 'true',
       allowedProjectKeys: commaList(env.FORGEFLOW_IMPROVEMENT_PROJECTS),
       selfChangeEnabled: env.FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED === 'true',
       selfProjectKey: env.FORGEFLOW_IMPROVEMENT_SELF_PROJECT_KEY ?? 'forgeflow',
@@ -1489,6 +1490,17 @@ export async function buildControlPlane(
     items: improvementRegistry.listPrograms(),
   }));
 
+  app.post('/api/v1/maintenance/programs/:programId/state', async (request) => {
+    const programId = requiredText(
+      (request.params as { programId?: string }).programId,
+      'MAINTENANCE_PROGRAM_REQUIRED',
+    );
+    const body = bodyRecord(request.body);
+    if (typeof body.enabled !== 'boolean')
+      throw new ForgeFlowError('MAINTENANCE_PROGRAM_STATE_INVALID');
+    return { program: improvementRegistry.setProgramEnabled(programId, body.enabled) };
+  });
+
   app.get('/api/v1/improvements', async (request) => {
     const query = request.query as { programId?: string; status?: string; limit?: string };
     const limit = integerValue(query.limit, 100, 1, 1_000, 'CANDIDATE_LIST_LIMIT_INVALID');
@@ -1521,6 +1533,8 @@ export async function buildControlPlane(
     const items = improvements.discover(program);
     return { program: improvementRegistry.getProgram(program.programId), items, count: items.length };
   });
+
+  app.post('/api/v1/improvements/cycle', async () => improvements.runCycle());
 
   app.post('/api/v1/improvements/:candidateId/adopt', async (request) => {
     const candidateId = requiredText(
@@ -2247,24 +2261,40 @@ export async function buildControlPlane(
     : undefined;
 
   const improvementInterval =
+    env.FORGEFLOW_IMPROVEMENT_DISCOVERY_ENABLED === 'true' ||
     env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true'
       ? setInterval(
           () => {
             try {
-              improvements.reconcileAll();
+              const result = improvements.runCycle();
+              if (result.programs.length > 0 || result.reconciledCandidateIds.length > 0)
+                app.log.info(
+                  {
+                    reconciledCandidates: result.reconciledCandidateIds.length,
+                    programs: result.programs.map((program) => ({
+                      programId: program.programId,
+                      projectKey: program.projectKey,
+                      discovered: program.discovered,
+                      created: program.created,
+                      adoptedPlans: program.adoptedPlanIds.length,
+                      errors: program.errors,
+                    })),
+                  },
+                  'improvement cycle',
+                );
             } catch (error) {
               app.log.error(
                 { error: error instanceof Error ? error.message : String(error) },
-                'improvement reconciliation cycle failed',
+                'improvement cycle failed',
               );
             }
           },
           integerValue(
-            env.FORGEFLOW_IMPROVEMENT_RECONCILE_MS,
+            env.FORGEFLOW_IMPROVEMENT_CYCLE_MS ?? env.FORGEFLOW_IMPROVEMENT_RECONCILE_MS,
             30_000,
             5_000,
             3_600_000,
-            'IMPROVEMENT_RECONCILE_INTERVAL_INVALID',
+            'IMPROVEMENT_CYCLE_INTERVAL_INVALID',
           ),
         )
       : undefined;

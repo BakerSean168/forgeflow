@@ -40,6 +40,7 @@ test('ForgeFlow runtime fails closed when execution automation is disabled', asy
   assert.deepEqual(health.json().improvementRuntime, {
     discoveryEnabled: false,
     adoptionEnabled: false,
+    autoAdoptLowRisk: false,
     selfChangeEnabled: false,
     allowedProjectKeys: [],
   });
@@ -951,13 +952,14 @@ test('Improvement API discovers repeated failures and adopts them only as an ord
       FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED: 'true',
       FORGEFLOW_IMPROVEMENT_PROJECTS: 'improvement-api',
       FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED: 'false',
-      FORGEFLOW_IMPROVEMENT_RECONCILE_MS: '300000',
+      FORGEFLOW_IMPROVEMENT_CYCLE_MS: '300000',
     },
   });
   const health = await runtime.app.inject({ method: 'GET', url: '/api/health' });
   assert.deepEqual(health.json().improvementRuntime, {
     discoveryEnabled: true,
     adoptionEnabled: true,
+    autoAdoptLowRisk: false,
     selfChangeEnabled: false,
     allowedProjectKeys: ['improvement-api'],
   });
@@ -1009,6 +1011,28 @@ test('Improvement API discovers repeated failures and adopts them only as an ord
   assert.equal(discovery.json().count, 1);
   assert.equal(discovery.json().items[0].errorCode, 'TEST_API_REGRESSION');
   const candidateId = discovery.json().items[0].candidate.candidateId as string;
+
+  const disabled = await runtime.app.inject({
+    method: 'POST',
+    url: '/api/v1/maintenance/programs/improvement-api-program/state',
+    payload: { enabled: false },
+  });
+  assert.equal(disabled.statusCode, 200);
+  assert.equal(disabled.json().program.enabled, false);
+  const blockedAdoption = await runtime.app.inject({
+    method: 'POST',
+    url: '/api/v1/improvements/' + candidateId + '/adopt',
+    payload: {},
+  });
+  assert.equal(blockedAdoption.statusCode, 503);
+  assert.equal(blockedAdoption.json().error, 'MAINTENANCE_PROGRAM_DISABLED');
+  const enabled = await runtime.app.inject({
+    method: 'POST',
+    url: '/api/v1/maintenance/programs/improvement-api-program/state',
+    payload: { enabled: true },
+  });
+  assert.equal(enabled.statusCode, 200);
+  assert.equal(enabled.json().program.enabled, true);
 
   const adopted = await runtime.app.inject({
     method: 'POST',

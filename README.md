@@ -24,12 +24,12 @@ Repeated bounded engineering failures can also enter a separate improvement inta
 ```text
 Repeated verified failure
   -> deterministic Improvement Candidate
-  -> explicit adoption
+  -> explicit adoption (or separately enabled STANDARD/LOW-risk auto-adoption)
   -> ordinary ForgeFlow Plan
   -> the same implementation / independent review / integration / delivery gates
 ```
 
-Discovery, adoption, and self-change are independent opt-in controls; Maintenance never receives a privileged repository writer.
+Discovery, adoption, low-risk auto-adoption, and self-change are independent opt-in controls. `CONSERVATIVE` programs remain human-adopted even if the global auto-adopt switch is enabled, and Maintenance never receives a privileged repository writer.
 
 A bounded AI Supervisor observes durable state and handles exceptional cases such as replanning the remaining graph, changing an execution route, creating a repair/follow-up plan, or escalating a genuine external gate. Deterministic code retains authority over state transitions, leases, workspace ownership, review provenance, and delivery safety.
 

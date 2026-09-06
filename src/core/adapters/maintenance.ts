@@ -324,6 +324,35 @@ export class MaintenanceCandidateRegistry {
     ).map(programFrom);
   }
 
+  setProgramEnabled(programId: string, enabled: boolean): MaintenanceProgram {
+    failClosed(programId.trim().length > 0, 'MAINTENANCE_PROGRAM_REQUIRED');
+    failClosed(typeof enabled === 'boolean', 'MAINTENANCE_PROGRAM_STATE_INVALID');
+    return withTransaction(this.db, () => {
+      const current = this.getProgram(programId);
+      if (current.enabled === enabled) return current;
+      const from = current.enabled ? 'ACTIVE' : 'DISABLED';
+      const to = enabled ? 'ACTIVE' : 'DISABLED';
+      const now = new Date().toISOString();
+      const result = this.db
+        .prepare(
+          'UPDATE maintenance_programs SET status=?,updated_at=? WHERE program_id=? AND status=?',
+        )
+        .run(to, now, programId, from);
+      if (Number(result.changes) !== 1)
+        throw new ForgeFlowError('MAINTENANCE_PROGRAM_STATE_STALE');
+      this.events.appendInTransaction({
+        eventId: randomUUID(),
+        aggregateId: programId,
+        aggregateType: 'MAINTENANCE',
+        type: 'MAINTENANCE_PROGRAM_STATUS_CHANGED',
+        payload: { from, to },
+        occurredAt: now,
+        correlationId: programId,
+      });
+      return this.getProgram(programId);
+    });
+  }
+
   create(
     program: MaintenanceProgram,
     input: {

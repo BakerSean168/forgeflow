@@ -61,6 +61,7 @@ export interface ImprovementAdoptionResult {
 export interface ImprovementRuntimeOptions {
   discoveryEnabled: boolean;
   adoptionEnabled: boolean;
+  autoAdoptLowRisk?: boolean;
   allowedProjectKeys: readonly string[];
   selfChangeEnabled?: boolean;
   selfProjectKey?: string;
@@ -182,6 +183,7 @@ export class MaintenanceImprovementRuntime {
     if (candidate.status !== 'DISCOVERED' && candidate.status !== 'QUEUED' && candidate.status !== 'ADOPTED')
       throw new ForgeFlowError('CANDIDATE_NOT_ADOPTABLE');
     const program = this.registry.getProgram(candidate.programId);
+    failClosed(program.enabled, 'MAINTENANCE_PROGRAM_DISABLED');
     const existingPlan = candidate.planId
       ? this.repositories.plans.getPlan(candidate.planId)
       : undefined;
@@ -290,15 +292,74 @@ export class MaintenanceImprovementRuntime {
       .map((candidate) => this.reconcile(candidate.candidateId));
   }
 
+  runCycle(): {
+    reconciledCandidateIds: string[];
+    programs: Array<{
+      programId: string;
+      projectKey: string;
+      discovered: number;
+      created: number;
+      adoptedPlanIds: string[];
+      errors: string[];
+    }>;
+  } {
+    const reconciledCandidateIds = this.options.adoptionEnabled
+      ? this.reconcileAll().map((candidate) => candidate.candidateId)
+      : [];
+    if (!this.options.discoveryEnabled) return { reconciledCandidateIds, programs: [] };
+    const programs = [];
+    for (const program of this.registry.listPrograms().slice(0, 100)) {
+      if (!program.enabled || !this.allowedProjects.has(program.projectKey)) continue;
+      const result = {
+        programId: program.programId,
+        projectKey: program.projectKey,
+        discovered: 0,
+        created: 0,
+        adoptedPlanIds: [] as string[],
+        errors: [] as string[],
+      };
+      try {
+        const discovered = this.discover(program);
+        result.discovered = discovered.length;
+        result.created = discovered.filter((item) => item.mutation === 'created').length;
+        if (
+          this.options.autoAdoptLowRisk === true &&
+          this.options.adoptionEnabled &&
+          program.autonomousScope === 'STANDARD'
+        ) {
+          for (const item of discovered) {
+            if (item.candidate.risk !== 'LOW' || item.candidate.status !== 'DISCOVERED') continue;
+            try {
+              const adopted = this.adopt(item.candidate.candidateId);
+              result.adoptedPlanIds.push(adopted.plan.planId);
+            } catch (error) {
+              result.errors.push(
+                error instanceof ForgeFlowError ? error.code : 'IMPROVEMENT_AUTO_ADOPT_FAILED',
+              );
+            }
+          }
+        }
+      } catch (error) {
+        result.errors.push(
+          error instanceof ForgeFlowError ? error.code : 'IMPROVEMENT_DISCOVERY_FAILED',
+        );
+      }
+      programs.push(result);
+    }
+    return { reconciledCandidateIds, programs };
+  }
+
   status(): {
     discoveryEnabled: boolean;
     adoptionEnabled: boolean;
+    autoAdoptLowRisk: boolean;
     selfChangeEnabled: boolean;
     allowedProjectKeys: string[];
   } {
     return {
       discoveryEnabled: this.options.discoveryEnabled,
       adoptionEnabled: this.options.adoptionEnabled,
+      autoAdoptLowRisk: this.options.autoAdoptLowRisk === true,
       selfChangeEnabled: this.options.selfChangeEnabled === true,
       allowedProjectKeys: [...this.allowedProjects].sort(),
     };
