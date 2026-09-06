@@ -18,10 +18,14 @@ git -C "$canonical_root" cat-file -e "${source_sha}^{commit}"
 mkdir -p "$release_root"
 git -C "$canonical_root" worktree prune --expire now
 worktree="$release_root/${source_sha}-$$"
+candidate=""
 cleanup() {
   git -C "$canonical_root" worktree unlock -- "$worktree" >/dev/null 2>&1 || true
   git -C "$canonical_root" worktree remove --force -- "$worktree" >/dev/null 2>&1 || true
   git -C "$canonical_root" worktree prune --expire now >/dev/null 2>&1 || true
+  if [[ -n "$candidate" && "$candidate" == "$canonical_root/.release-candidates/"* ]]; then
+    rm -rf -- "$candidate"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -39,14 +43,19 @@ mkdir -p "$(dirname "$candidate")"
 test -s "$candidate/main.js"
 
 if [[ -f "$db_file" ]]; then
-  install -d -m 0750 "$backup_dir"
+  sudo install -d -o root -g root -m 0750 "$backup_dir"
   backup="$backup_dir/forgeflow-$(date -u +%Y%m%dT%H%M%SZ)-${source_sha:0:12}.sqlite"
-  /usr/bin/node --input-type=module - "$db_file" "$backup" <<'NODE'
+  # Production state is deliberately root:root 0600. Release backup therefore crosses
+  # that privilege boundary explicitly instead of weakening database permissions.
+  sudo /usr/bin/node --input-type=module - "$db_file" "$backup" <<'NODE'
 import { DatabaseSync, backup } from 'node:sqlite';
 const [source, target] = process.argv.slice(2);
-const db = new DatabaseSync(source);
+const db = new DatabaseSync(source, { readOnly: true });
 try { await backup(db, target); } finally { db.close(); }
 NODE
+  sudo chown root:root "$backup"
+  sudo chmod 0600 "$backup"
+  sudo test -s "$backup"
 fi
 
 live="$canonical_root/dist"

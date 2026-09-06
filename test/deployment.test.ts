@@ -71,6 +71,10 @@ test('exact-SHA release is rooted in refs/forgeflow and validates v1 health', ()
   assert.match(release, /worktree add --detach/);
   assert.match(release, /npm run check-types && npm test/);
   assert.match(release, /atomic-exchange-directories\.py/);
+  assert.match(release, /sudo \/usr\/bin\/node --input-type=module/);
+  assert.match(release, /new DatabaseSync\(source, \{ readOnly: true \}\)/);
+  assert.match(release, /sudo chmod 0600 \"\$backup\"/);
+  assert.match(release, /candidate.*release-candidates/);
   assert.match(release, /h\.service !== 'forgeflow-control-plane'/);
   assert.match(release, /h\.apiVersion !== 1/);
 });
