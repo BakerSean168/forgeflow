@@ -4,6 +4,7 @@ import {
   IMPROVEMENT_DIAGNOSIS_CLASSIFICATIONS,
   IMPROVEMENT_DIAGNOSIS_CONFIDENCES,
   IMPROVEMENT_DIAGNOSIS_DISPOSITIONS,
+  assertSafeImprovementDiagnosisText,
   type ImprovementCandidate,
   type ImprovementDiagnosisProposal,
 } from './maintenance.js';
@@ -121,22 +122,6 @@ function stringArray(
     code,
   );
   return normalized;
-}
-
-function assertSafeProposalText(values: readonly string[]): void {
-  const combined = values.join(' ');
-  failClosed(
-    !/(?:disable|skip|bypass|weaken|remove|turn\s+off).{0,50}(?:test|review|safety|gate|approval|policy)/i.test(
-      combined,
-    ),
-    'IMPROVEMENT_DIAGNOSIS_UNSAFE_PROPOSAL',
-  );
-  failClosed(
-    !/(?:password|api[_ -]?key|private[_ -]?key|bearer[_ -]?token|access[_ -]?token|credential|secret)/i.test(
-      combined,
-    ),
-    'IMPROVEMENT_DIAGNOSIS_UNSAFE_PROPOSAL',
-  );
 }
 
 function normalizeJsonContent(value: unknown): string {
@@ -294,7 +279,7 @@ export function parseImprovementDiagnosis(
   );
   if (disposition === 'NO_ACTION')
     failClosed(objective === '', 'IMPROVEMENT_DIAGNOSIS_NO_ACTION_OBJECTIVE');
-  else assertSafeProposalText([diagnosis, objective, ...acceptanceCriteria]);
+  else assertSafeImprovementDiagnosisText([diagnosis, objective, ...acceptanceCriteria]);
   const evidenceRefs = stringArray(
     value.evidenceRefs,
     'IMPROVEMENT_DIAGNOSIS_EVIDENCE_INVALID',

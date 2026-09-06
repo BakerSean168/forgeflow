@@ -308,20 +308,38 @@ function diagnosisStringList(
   return normalized;
 }
 
-function assertSafeDiagnosisProposalText(values: readonly string[]): void {
-  const combined = values.join(' ');
-  failClosed(
-    !/(?:disable|skip|bypass|weaken|remove|turn\s+off).{0,50}(?:test|review|safety|gate|approval|policy)/i.test(
-      combined,
-    ),
-    'IMPROVEMENT_DIAGNOSIS_UNSAFE_PROPOSAL',
-  );
-  failClosed(
-    !/(?:password|api[_ -]?key|private[_ -]?key|bearer[_ -]?token|access[_ -]?token|credential|secret)/i.test(
-      combined,
-    ),
-    'IMPROVEMENT_DIAGNOSIS_UNSAFE_PROPOSAL',
-  );
+const DIAGNOSIS_NEGATION = /(?:\bwithout(?:\s+\w+){0,4}\s*|\bnever(?:\s+\w+){0,4}\s*|\b(?:do|does|must|should)\s+not(?:\s+\w+){0,4}\s*|\bcannot(?:\s+\w+){0,4}\s*|\bcan't(?:\s+\w+){0,4}\s*|\bnot(?:\s+\w+){0,4}\s*|\bno\s+need\s+to(?:\s+\w+){0,4}\s*)$/i;
+
+function hasUnnegatedDiagnosisMatch(value: string, pattern: RegExp): boolean {
+  pattern.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value)) !== null) {
+    const sentenceStart = Math.max(
+      value.lastIndexOf('.', match.index),
+      value.lastIndexOf('!', match.index),
+      value.lastIndexOf('?', match.index),
+      value.lastIndexOf('\n', match.index),
+      value.lastIndexOf(';', match.index),
+    );
+    const prefix = value.slice(Math.max(sentenceStart + 1, match.index - 48), match.index);
+    if (!DIAGNOSIS_NEGATION.test(prefix)) return true;
+  }
+  return false;
+}
+
+export function assertSafeImprovementDiagnosisText(values: readonly string[]): void {
+  const gateWeakening = /\b(?:disabl(?:e|ed|es|ing)|skip(?:s|ped|ping)?|bypass(?:es|ed|ing)?|weaken(?:s|ed|ing)?|remov(?:e|es|ed|ing)|turn(?:s|ed|ing)?\s+off)\b[^.!?\n;]{0,60}\b(?:test|tests|review|reviews|safety|gate|gates|approval|approvals|policy|policies)\b/gi;
+  const secretAuthority = /\b(?:access(?:es|ed|ing)?|read(?:s|ing)?|request(?:s|ed|ing)?|provid(?:e|es|ed|ing)|expos(?:e|es|ed|ing)|retriev(?:e|es|ed|ing)|cop(?:y|ies|ied|ying)|stor(?:e|es|ed|ing)|us(?:e|es|ed|ing)|rotat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|writ(?:e|es|ing)|print(?:s|ed|ing)?|log(?:s|ged|ging)?)\b[^.!?\n;]{0,50}\b(?:password|passwords|api[_ -]?key|api[_ -]?keys|private[_ -]?key|private[_ -]?keys|bearer[_ -]?token|bearer[_ -]?tokens|access[_ -]?token|access[_ -]?tokens|credential|credentials|secret|secrets)\b/gi;
+  for (const value of values) {
+    failClosed(
+      !hasUnnegatedDiagnosisMatch(value, gateWeakening),
+      'IMPROVEMENT_DIAGNOSIS_UNSAFE_PROPOSAL',
+    );
+    failClosed(
+      !hasUnnegatedDiagnosisMatch(value, secretAuthority),
+      'IMPROVEMENT_DIAGNOSIS_UNSAFE_PROPOSAL',
+    );
+  }
 }
 
 function effectiveDiagnosisRisk(
@@ -382,7 +400,7 @@ function validateDiagnosisAttestation(attestation: ImprovementDiagnosisAttestati
       8,
       500,
     );
-    assertSafeDiagnosisProposalText([
+    assertSafeImprovementDiagnosisText([
       attestation.diagnosis,
       attestation.objective,
       ...attestation.acceptanceCriteria,

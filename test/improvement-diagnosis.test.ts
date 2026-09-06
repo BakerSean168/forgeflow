@@ -158,6 +158,30 @@ test('diagnosis parser accepts only grounded typed proposals and rejects unsafe 
     (error: unknown) =>
       error instanceof ForgeFlowError && error.code === 'IMPROVEMENT_DIAGNOSIS_UNSAFE_PROPOSAL',
   );
+  assert.throws(
+    () =>
+      parseImprovementDiagnosis(
+        JSON.stringify(proposal({ objective: 'Access API keys to repair the routing failure.' })),
+        input,
+      ),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'IMPROVEMENT_DIAGNOSIS_UNSAFE_PROPOSAL',
+  );
+
+  const protectedRepair = parseImprovementDiagnosis(
+    JSON.stringify(
+      proposal({
+        objective:
+          'Recover workspace ownership without bypassing independent review gates and without accessing credentials.',
+        acceptanceCriteria: [
+          'Existing review and safety gates remain unchanged.',
+          'The repair must not weaken approval policy or access API keys.',
+        ],
+      }),
+    ),
+    input,
+  );
+  assert.equal(protectedRepair.disposition, 'PROPOSE_REPAIR');
 });
 
 test('diagnosis parser supports explicit NO_ACTION without inventing repair authority', () => {
