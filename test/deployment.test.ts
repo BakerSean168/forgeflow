@@ -53,6 +53,11 @@ test('Improvement deployment is opt-in and self-change is disabled by default', 
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED=false/);
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_AUTO_ADOPT_LOW_RISK=false/);
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_PROJECTS=\n/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_ENABLED=false/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_MAX_PER_CYCLE=2/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_MAX_RESOURCE_ATTEMPTS=3/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_TIMEOUT_MS=60000/);
+  assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_MODEL=/);
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED=false/);
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_ENABLED=false/);
   assert.match(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_AUTO_PROMOTION_ENABLED=false/);
@@ -68,6 +73,7 @@ test('Improvement deployment is opt-in and self-change is disabled by default', 
   assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED=true/);
   assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_ENABLED=true/);
   assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_SELF_AUTO_PROMOTION_ENABLED=true/);
+  assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_ENABLED=true/);
   assert.doesNotMatch(forgeFlowEnv, /FORGEFLOW_IMPROVEMENT_AUTO_ADOPT_LOW_RISK=true/);
 });
 

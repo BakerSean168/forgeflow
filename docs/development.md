@@ -35,6 +35,12 @@ Changes that affect execution isolation, review provenance, resource selection, 
 
 ForgeFlow is an autonomous software engineering system. UI decoration, game/character state, simulated organizations, and alternate routing authorities do not belong in the core repository. `npm run check:boundary` guards the repository against historical product/runtime namespaces and paths being reintroduced.
 
+## Improvement diagnosis
+
+Cross-Plan AI diagnosis is optional and disabled by default. To enable it, configure a non-empty `FORGEFLOW_IMPROVEMENT_PROJECTS`, keep `FORGEFLOW_EXECUTION_RUNTIME_ENABLED=true` and `FORGEFLOW_RESOURCE_SELECTOR_ENABLED=true`, then set `FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_ENABLED=true`. `FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_MAX_PER_CYCLE` bounds new diagnoses per maintenance cycle, `FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_MAX_RESOURCE_ATTEMPTS` bounds reasoning-route failover, and `FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_TIMEOUT_MS` bounds each provider request. There is intentionally no diagnosis model alias: `DIAGNOSE` uses the same governed `REASONING` resource policy and direct-protocol admission as other bounded reasoning work.
+
+The diagnoser receives only structured controller-owned failure metadata, not repository contents or raw provider/log text. Treat its output as an attestation, not an instruction channel. `POST /api/v1/improvements/:candidateId/diagnose` explicitly runs one diagnosis; the periodic Improvement cycle can do the same automatically when enabled. A safe `PROPOSE_REPAIR` may enrich an ordinary Improvement Plan, while `NO_ACTION`, raised risk, invalid evidence references, or unsafe attempts to weaken gates cannot auto-adopt work.
+
 ## Deployment workflow
 
 Production promotion uses a fast-forward-only approval ref beneath `refs/forgeflow/`. `scripts/release-gcp.sh` builds and tests an exact detached worktree, hashes the emitted `dist/` with the shared `scripts/artifact-digest.sh`, backs up the durable database when present, atomically exchanges the artifact, writes root-owned release provenance as `PENDING`, restarts the service, and requires the boot-bound source SHA/artifact digest to match before promoting that same provenance to `HEALTHY`. A failed restart or identity mismatch leaves no false healthy-release claim.

@@ -9,6 +9,7 @@ export const ROUTING_EXECUTION_PHASES = [
   'IMPLEMENT',
   'IMPLEMENT_FIX',
   'REVIEW',
+  'DIAGNOSE',
   'SUPERVISE',
   'FINALIZE',
 ] as const;
@@ -94,7 +95,13 @@ export function deriveResourceTier(
 
 export function capabilityForPhase(phase: RoutingExecutionPhase): ExecutionCapability | undefined {
   if (phase === 'IMPLEMENT' || phase === 'IMPLEMENT_FIX') return 'IMPLEMENTATION';
-  if (phase === 'ORCHESTRATE' || phase === 'PLAN' || phase === 'REVIEW' || phase === 'SUPERVISE')
+  if (
+    phase === 'ORCHESTRATE' ||
+    phase === 'PLAN' ||
+    phase === 'REVIEW' ||
+    phase === 'DIAGNOSE' ||
+    phase === 'SUPERVISE'
+  )
     return 'REASONING';
   return undefined;
 }
@@ -735,12 +742,14 @@ export function validateNormalizedResourceFailure(failure: NormalizedResourceFai
 export type ResourceStateOverrideSource =
   | 'EXECUTION'
   | 'SUPERVISOR'
+  | 'IMPROVEMENT'
   | 'PROBE'
   | 'OPERATOR'
   | 'EXPIRY_TIMER';
 export const RESOURCE_STATE_OVERRIDE_SOURCES = [
   'EXECUTION',
   'SUPERVISOR',
+  'IMPROVEMENT',
   'PROBE',
   'OPERATOR',
   'EXPIRY_TIMER',

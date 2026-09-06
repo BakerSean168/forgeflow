@@ -16,6 +16,7 @@ import { ProjectScopedWorkspaceAdapter } from './core/adapters/projectScopedWork
 import { LiteLlmExecutionTelemetry } from './core/adapters/liteLlmTelemetry.js';
 import { GitHubCliDeliveryAdapter } from './core/adapters/githubDelivery.js';
 import { MaintenanceCandidateRegistry, type MaintenanceProgram } from './core/adapters/maintenance.js';
+import { ResourceSelectedImprovementDiagnosisClient } from './core/adapters/improvementDiagnosis.js';
 import { ExactShaSelfChangeCanary } from './core/adapters/selfChangeCanary.js';
 import { FileSelfChangePromotionQueue } from './core/adapters/selfChangePromotion.js';
 import {
@@ -1253,6 +1254,21 @@ export async function buildControlPlane(
   const selfPromotionEnabled = env.FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_ENABLED === 'true';
   const selfAutoPromotionEnabled =
     env.FORGEFLOW_IMPROVEMENT_SELF_AUTO_PROMOTION_ENABLED === 'true';
+  const improvementAiDiagnosisEnabled =
+    env.FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_ENABLED === 'true';
+  const improvementProjectKeys = commaList(env.FORGEFLOW_IMPROVEMENT_PROJECTS);
+  if (improvementAiDiagnosisEnabled && improvementProjectKeys.length === 0)
+    throw new ForgeFlowError('IMPROVEMENT_AI_DIAGNOSIS_PROJECTS_REQUIRED');
+  if (
+    improvementAiDiagnosisEnabled &&
+    env.FORGEFLOW_EXECUTION_RUNTIME_ENABLED !== 'true'
+  )
+    throw new ForgeFlowError('IMPROVEMENT_AI_DIAGNOSIS_EXECUTION_RUNTIME_REQUIRED');
+  if (
+    improvementAiDiagnosisEnabled &&
+    env.FORGEFLOW_RESOURCE_SELECTOR_ENABLED !== 'true'
+  )
+    throw new ForgeFlowError('IMPROVEMENT_AI_DIAGNOSIS_RESOURCE_SELECTOR_REQUIRED');
   if (selfPromotionEnabled && !selfChangeEnabled)
     throw new ForgeFlowError('IMPROVEMENT_SELF_PROMOTION_REQUIRES_SELF_CHANGE');
   if (selfAutoPromotionEnabled && !selfPromotionEnabled)
@@ -1339,10 +1355,18 @@ export async function buildControlPlane(
       discoveryEnabled: env.FORGEFLOW_IMPROVEMENT_DISCOVERY_ENABLED === 'true',
       adoptionEnabled: env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true',
       autoAdoptLowRisk: env.FORGEFLOW_IMPROVEMENT_AUTO_ADOPT_LOW_RISK === 'true',
-      allowedProjectKeys: commaList(env.FORGEFLOW_IMPROVEMENT_PROJECTS),
+      allowedProjectKeys: improvementProjectKeys,
       selfChangeEnabled,
       selfPromotionEnabled,
       selfAutoPromotionEnabled,
+      aiDiagnosisEnabled: improvementAiDiagnosisEnabled,
+      aiDiagnosisMaxPerCycle: integerValue(
+        env.FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_MAX_PER_CYCLE,
+        2,
+        1,
+        20,
+        'IMPROVEMENT_DIAGNOSIS_CYCLE_LIMIT_INVALID',
+      ),
       selfProjectKey: env.FORGEFLOW_IMPROVEMENT_SELF_PROJECT_KEY ?? 'forgeflow',
       selfRepositoryPath,
     },
@@ -1509,7 +1533,8 @@ export async function buildControlPlane(
     throw new ForgeFlowError('SUPERVISOR_RESOURCE_SELECTOR_REQUIRED');
   const supervisorDirectAdmission = new SupervisorDirectAdmissionRegistry();
   const supervisorDirectAdmissionEnabled =
-    supervisorRuntimeEnabled && Boolean(automation?.resourceSelectorEnabled);
+    (supervisorRuntimeEnabled || improvementAiDiagnosisEnabled) &&
+    Boolean(automation?.resourceSelectorEnabled);
   if (supervisorDirectAdmissionEnabled)
     supervisorDirectAdmission.restore(repositories.supervisorDirectAdmissions.list());
   const supervisorDirectAdmissionReadyTtlMs = integerValue(
@@ -1571,10 +1596,12 @@ export async function buildControlPlane(
     }
     return [...values.values()];
   };
+  const directReasoningAdmissionHasDemand = (): boolean =>
+    repositories.supervisors.hasNonTerminal() || improvements.hasDiagnosisDemand();
   let supervisorDirectAdmissionCycle: Promise<void> | undefined;
   const reconcileSupervisorDirectAdmission = async (): Promise<void> => {
     if (!supervisorDirectAdmissionEnabled || !supervisorDirectAdmissionProbe) return;
-    if (!repositories.supervisors.hasNonTerminal()) return;
+    if (!directReasoningAdmissionHasDemand()) return;
     if (supervisorDirectAdmissionCycle) return await supervisorDirectAdmissionCycle;
     supervisorDirectAdmissionCycle = (async () => {
       const candidates = supervisorAdmissionCandidates();
@@ -1606,13 +1633,47 @@ export async function buildControlPlane(
       supervisorDirectAdmissionCycle = undefined;
     }
   };
-  const supervisorResourceSelector = supervisorRuntimeEnabled
+  const reasoningResourceSelector = supervisorDirectAdmissionEnabled
     ? new ResourceSelector(
         automation!.resources,
         DEFAULT_AFFINITY_POLICY,
         supervisorDirectAdmission,
       )
     : undefined;
+  const supervisorResourceSelector = supervisorRuntimeEnabled ? reasoningResourceSelector : undefined;
+  if (improvementAiDiagnosisEnabled) {
+    improvements.configureDiagnosisClient(
+      new ResourceSelectedImprovementDiagnosisClient(
+        reasoningResourceSelector!,
+        requiredText(
+          env.FORGEFLOW_LITELLM_BASE_URL,
+          'IMPROVEMENT_DIAGNOSIS_BASE_URL_REQUIRED',
+        ),
+        requiredText(
+          env.FORGEFLOW_LITELLM_API_KEY,
+          'IMPROVEMENT_DIAGNOSIS_KEY_REQUIRED',
+        ),
+        repositories.events,
+        automation!.resourceState,
+        options.fetchImpl ?? fetch,
+        integerValue(
+          env.FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_TIMEOUT_MS,
+          60_000,
+          1_000,
+          300_000,
+          'IMPROVEMENT_DIAGNOSIS_TIMEOUT_INVALID',
+        ),
+        integerValue(
+          env.FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_MAX_RESOURCE_ATTEMPTS,
+          3,
+          1,
+          20,
+          'IMPROVEMENT_DIAGNOSIS_ATTEMPT_LIMIT_INVALID',
+        ),
+        reconcileSupervisorDirectAdmission,
+      ),
+    );
+  }
   const modelClient = supervisorRuntimeEnabled
     ? new ResourceSelectedSupervisorDecisionClient(
         supervisorResourceSelector!,
@@ -1823,7 +1884,7 @@ export async function buildControlPlane(
       directAdmission: {
         enabled: supervisorDirectAdmissionEnabled,
         demandDriven: true,
-        hasDemand: repositories.supervisors.hasNonTerminal(),
+        hasDemand: directReasoningAdmissionHasDemand(),
         ...supervisorDirectAdmission.summary(),
         durableCache: durableSupervisorAdmissionSummary(),
       },
@@ -1913,6 +1974,7 @@ export async function buildControlPlane(
       candidate,
       program: improvementRegistry.getProgram(candidate.programId),
       plan: candidate.planId ? planView(candidate.planId) : null,
+      diagnoses: improvementRegistry.listDiagnoses(candidateId),
       selfChange: improvements.selfChangeProjection(candidateId),
     };
   });
@@ -1924,6 +1986,14 @@ export async function buildControlPlane(
   });
 
   app.post('/api/v1/improvements/cycle', async () => await improvements.runAutonomousCycle());
+
+  app.post('/api/v1/improvements/:candidateId/diagnose', async (request) => {
+    const candidateId = requiredText(
+      (request.params as { candidateId?: string }).candidateId,
+      'CANDIDATE_ID_REQUIRED',
+    );
+    return { diagnosis: await improvements.diagnoseCandidate(candidateId) };
+  });
 
   app.post('/api/v1/improvements/:candidateId/adopt', async (request) => {
     const candidateId = requiredText(
@@ -2767,6 +2837,7 @@ export async function buildControlPlane(
   const improvementRuntimeEnabled =
     env.FORGEFLOW_IMPROVEMENT_DISCOVERY_ENABLED === 'true' ||
     env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true' ||
+    improvementAiDiagnosisEnabled ||
     selfPromotionEnabled;
   let improvementCycleRunning = false;
   const runImprovementCycle = () => {
@@ -2778,6 +2849,9 @@ export async function buildControlPlane(
         if (
           result.programs.length > 0 ||
           result.reconciledCandidateIds.length > 0 ||
+          result.diagnosis.diagnosedCandidateIds.length > 0 ||
+          result.diagnosis.adoptedPlanIds.length > 0 ||
+          result.diagnosis.errors.length > 0 ||
           result.selfPromotion.requestedCandidateIds.length > 0 ||
           result.selfPromotion.errors.length > 0
         )
@@ -2792,6 +2866,7 @@ export async function buildControlPlane(
                 adoptedPlans: program.adoptedPlanIds.length,
                 errors: program.errors,
               })),
+              diagnosis: result.diagnosis,
               selfPromotion: result.selfPromotion,
             },
             'improvement cycle',

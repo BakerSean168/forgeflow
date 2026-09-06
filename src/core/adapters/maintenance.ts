@@ -55,6 +55,53 @@ export interface ImprovementSelfPromotion {
   createdAt: string;
 }
 
+export const IMPROVEMENT_DIAGNOSIS_CLASSIFICATIONS = [
+  'PROCESS_DESIGN',
+  'WORKSPACE_LIFECYCLE',
+  'RESOURCE_ROUTING',
+  'REVIEW_QUALITY',
+  'DELIVERY_PIPELINE',
+  'CONTRACT_TESTING',
+  'RECOVERY_LOGIC',
+  'UNKNOWN',
+] as const;
+export type ImprovementDiagnosisClassification =
+  (typeof IMPROVEMENT_DIAGNOSIS_CLASSIFICATIONS)[number];
+
+export const IMPROVEMENT_DIAGNOSIS_DISPOSITIONS = ['PROPOSE_REPAIR', 'NO_ACTION'] as const;
+export type ImprovementDiagnosisDisposition =
+  (typeof IMPROVEMENT_DIAGNOSIS_DISPOSITIONS)[number];
+
+export const IMPROVEMENT_DIAGNOSIS_CONFIDENCES = ['LOW', 'MEDIUM', 'HIGH'] as const;
+export type ImprovementDiagnosisConfidence = (typeof IMPROVEMENT_DIAGNOSIS_CONFIDENCES)[number];
+
+export interface ImprovementDiagnosisProposal {
+  version: 1;
+  candidateId: string;
+  programId: string;
+  fingerprint: string;
+  disposition: ImprovementDiagnosisDisposition;
+  classification: ImprovementDiagnosisClassification;
+  confidence: ImprovementDiagnosisConfidence;
+  risk: 'LOW' | 'MEDIUM' | 'HIGH';
+  diagnosis: string;
+  objective: string;
+  acceptanceCriteria: string[];
+  evidenceRefs: string[];
+}
+
+export interface ImprovementDiagnosisAttestation extends ImprovementDiagnosisProposal {
+  diagnosisId: string;
+  contextDigest: string;
+  effectiveRisk: 'LOW' | 'MEDIUM' | 'HIGH';
+  resourceId: string;
+  bindingId?: string;
+  modelFamily: string;
+  routeModel: string;
+  protocol: string;
+  createdAt: string;
+}
+
 export interface ImprovementCandidate {
   candidateId: string;
   programId: string;
@@ -87,6 +134,15 @@ interface CandidateRow {
 }
 
 const CANDIDATE_RISKS = new Set<ImprovementCandidate['risk']>(['LOW', 'MEDIUM', 'HIGH']);
+const DIAGNOSIS_CLASSIFICATIONS = new Set<ImprovementDiagnosisClassification>(
+  IMPROVEMENT_DIAGNOSIS_CLASSIFICATIONS,
+);
+const DIAGNOSIS_DISPOSITIONS = new Set<ImprovementDiagnosisDisposition>(
+  IMPROVEMENT_DIAGNOSIS_DISPOSITIONS,
+);
+const DIAGNOSIS_CONFIDENCES = new Set<ImprovementDiagnosisConfidence>(
+  IMPROVEMENT_DIAGNOSIS_CONFIDENCES,
+);
 const CANDIDATE_STATUSES = new Set<ImprovementCandidate['status']>([
   'DISCOVERED',
   'QUEUED',
@@ -225,6 +281,164 @@ function selfPromotionFromEvent(
     'IMPROVEMENT_PROMOTION_TIME_INVALID',
   );
   return promotion;
+}
+
+function diagnosisText(value: string, code: string, maximum: number): string {
+  failClosed(!/[\u0000-\u001f\u007f]/.test(value), code);
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  failClosed(normalized.length > 0 && normalized.length <= maximum, code);
+  return normalized;
+}
+
+function diagnosisStringList(
+  values: string[],
+  code: string,
+  minimum: number,
+  maximumItems: number,
+  maximumText: number,
+): string[] {
+  failClosed(Array.isArray(values), code);
+  const normalized = values.map((item) => diagnosisText(String(item), code, maximumText));
+  failClosed(
+    normalized.length >= minimum &&
+      normalized.length <= maximumItems &&
+      new Set(normalized).size === normalized.length,
+    code,
+  );
+  return normalized;
+}
+
+function assertSafeDiagnosisProposalText(values: readonly string[]): void {
+  const combined = values.join(' ');
+  failClosed(
+    !/(?:disable|skip|bypass|weaken|remove|turn\s+off).{0,50}(?:test|review|safety|gate|approval|policy)/i.test(
+      combined,
+    ),
+    'IMPROVEMENT_DIAGNOSIS_UNSAFE_PROPOSAL',
+  );
+  failClosed(
+    !/(?:password|api[_ -]?key|private[_ -]?key|bearer[_ -]?token|access[_ -]?token|credential|secret)/i.test(
+      combined,
+    ),
+    'IMPROVEMENT_DIAGNOSIS_UNSAFE_PROPOSAL',
+  );
+}
+
+function effectiveDiagnosisRisk(
+  current: ImprovementCandidate['risk'],
+  proposed: ImprovementCandidate['risk'],
+): ImprovementCandidate['risk'] {
+  const rank: Record<ImprovementCandidate['risk'], number> = { LOW: 1, MEDIUM: 2, HIGH: 3 };
+  return rank[proposed] > rank[current] ? proposed : current;
+}
+
+function validateDiagnosisAttestation(attestation: ImprovementDiagnosisAttestation): void {
+  failClosed(attestation.version === 1, 'IMPROVEMENT_DIAGNOSIS_VERSION_INVALID');
+  for (const [value, code, maximum] of [
+    [attestation.diagnosisId, 'IMPROVEMENT_DIAGNOSIS_ID_REQUIRED', 200],
+    [attestation.candidateId, 'CANDIDATE_ID_REQUIRED', 200],
+    [attestation.programId, 'MAINTENANCE_PROGRAM_REQUIRED', 200],
+    [attestation.fingerprint, 'CANDIDATE_FINGERPRINT_KEY_INVALID', 64],
+    [attestation.contextDigest, 'IMPROVEMENT_DIAGNOSIS_CONTEXT_INVALID', 64],
+    [attestation.resourceId, 'IMPROVEMENT_DIAGNOSIS_RESOURCE_REQUIRED', 500],
+    [attestation.modelFamily, 'IMPROVEMENT_DIAGNOSIS_MODEL_REQUIRED', 500],
+    [attestation.routeModel, 'IMPROVEMENT_DIAGNOSIS_ROUTE_REQUIRED', 500],
+    [attestation.protocol, 'IMPROVEMENT_DIAGNOSIS_PROTOCOL_REQUIRED', 200],
+  ] as const)
+    failClosed(
+      value.trim().length > 0 && value.length <= maximum && !/[\u0000-\u001f\u007f]/.test(value),
+      code,
+    );
+  failClosed(/^[0-9a-f]{64}$/.test(attestation.fingerprint), 'CANDIDATE_FINGERPRINT_KEY_INVALID');
+  failClosed(/^[0-9a-f]{64}$/.test(attestation.contextDigest), 'IMPROVEMENT_DIAGNOSIS_CONTEXT_INVALID');
+  if (attestation.bindingId !== undefined)
+    failClosed(
+      attestation.bindingId.trim().length > 0 && attestation.bindingId.length <= 500,
+      'IMPROVEMENT_DIAGNOSIS_BINDING_INVALID',
+    );
+  failClosed(
+    DIAGNOSIS_DISPOSITIONS.has(attestation.disposition),
+    'IMPROVEMENT_DIAGNOSIS_DISPOSITION_INVALID',
+  );
+  failClosed(
+    DIAGNOSIS_CLASSIFICATIONS.has(attestation.classification),
+    'IMPROVEMENT_DIAGNOSIS_CLASSIFICATION_INVALID',
+  );
+  failClosed(
+    DIAGNOSIS_CONFIDENCES.has(attestation.confidence),
+    'IMPROVEMENT_DIAGNOSIS_CONFIDENCE_INVALID',
+  );
+  failClosed(
+    CANDIDATE_RISKS.has(attestation.risk) && CANDIDATE_RISKS.has(attestation.effectiveRisk),
+    'CANDIDATE_RISK_INVALID',
+  );
+  diagnosisText(attestation.diagnosis, 'IMPROVEMENT_DIAGNOSIS_TEXT_INVALID', 1_500);
+  if (attestation.disposition === 'PROPOSE_REPAIR') {
+    diagnosisText(attestation.objective, 'IMPROVEMENT_DIAGNOSIS_OBJECTIVE_INVALID', 2_000);
+    diagnosisStringList(
+      attestation.acceptanceCriteria,
+      'IMPROVEMENT_DIAGNOSIS_ACCEPTANCE_INVALID',
+      2,
+      8,
+      500,
+    );
+    assertSafeDiagnosisProposalText([
+      attestation.diagnosis,
+      attestation.objective,
+      ...attestation.acceptanceCriteria,
+    ]);
+  } else {
+    failClosed(attestation.objective === '', 'IMPROVEMENT_DIAGNOSIS_NO_ACTION_OBJECTIVE');
+    failClosed(
+      attestation.acceptanceCriteria.length === 0,
+      'IMPROVEMENT_DIAGNOSIS_NO_ACTION_ACCEPTANCE',
+    );
+  }
+  diagnosisStringList(
+    attestation.evidenceRefs,
+    'IMPROVEMENT_DIAGNOSIS_EVIDENCE_INVALID',
+    1,
+    12,
+    200,
+  );
+  failClosed(Number.isFinite(Date.parse(attestation.createdAt)), 'IMPROVEMENT_DIAGNOSIS_TIME_INVALID');
+}
+
+function diagnosisFromEvent(
+  event: ReturnType<EventStore['get']> extends infer T ? Exclude<T, undefined> : never,
+): ImprovementDiagnosisAttestation {
+  if (event.type !== 'IMPROVEMENT_AI_DIAGNOSED' || event.aggregateType !== 'MAINTENANCE')
+    throw new ForgeFlowError('CORRUPTED_IMPROVEMENT_DIAGNOSIS_EVENT');
+  const payload = event.payload as Record<string, unknown>;
+  const attestation: ImprovementDiagnosisAttestation = {
+    diagnosisId: event.eventId,
+    version: payload.version as 1,
+    candidateId: event.aggregateId,
+    programId: String(payload.programId ?? ''),
+    fingerprint: String(payload.fingerprint ?? ''),
+    contextDigest: String(payload.contextDigest ?? ''),
+    disposition: payload.disposition as ImprovementDiagnosisDisposition,
+    classification: payload.classification as ImprovementDiagnosisClassification,
+    confidence: payload.confidence as ImprovementDiagnosisConfidence,
+    risk: payload.risk as ImprovementCandidate['risk'],
+    effectiveRisk: payload.effectiveRisk as ImprovementCandidate['risk'],
+    diagnosis: String(payload.diagnosis ?? ''),
+    objective: String(payload.objective ?? ''),
+    acceptanceCriteria: Array.isArray(payload.acceptanceCriteria)
+      ? payload.acceptanceCriteria.map(String)
+      : [],
+    evidenceRefs: Array.isArray(payload.evidenceRefs)
+      ? payload.evidenceRefs.map(String)
+      : [],
+    resourceId: String(payload.resourceId ?? ''),
+    ...(typeof payload.bindingId === 'string' ? { bindingId: payload.bindingId } : {}),
+    modelFamily: String(payload.modelFamily ?? ''),
+    routeModel: String(payload.routeModel ?? ''),
+    protocol: String(payload.protocol ?? ''),
+    createdAt: event.occurredAt,
+  };
+  validateDiagnosisAttestation(attestation);
+  return attestation;
 }
 
 function normalizedStringList(values: string[] | undefined, code: string): string[] {
@@ -670,6 +884,129 @@ export class MaintenanceCandidateRegistry {
       });
       return this.get(candidateId);
     });
+  }
+
+  recordDiagnosis(
+    candidateId: string,
+    input: {
+      contextDigest: string;
+      proposal: ImprovementDiagnosisProposal;
+      resourceId: string;
+      bindingId?: string;
+      modelFamily: string;
+      routeModel: string;
+      protocol: string;
+    },
+  ): ImprovementDiagnosisAttestation {
+    const candidate = this.get(candidateId);
+    failClosed(/^[0-9a-f]{64}$/.test(input.contextDigest), 'IMPROVEMENT_DIAGNOSIS_CONTEXT_INVALID');
+    failClosed(input.proposal.version === 1, 'IMPROVEMENT_DIAGNOSIS_VERSION_INVALID');
+    failClosed(input.proposal.candidateId === candidateId, 'IMPROVEMENT_DIAGNOSIS_CANDIDATE_MISMATCH');
+    failClosed(input.proposal.programId === candidate.programId, 'IMPROVEMENT_DIAGNOSIS_PROGRAM_MISMATCH');
+    failClosed(input.proposal.fingerprint === candidate.fingerprint, 'IMPROVEMENT_DIAGNOSIS_FINGERPRINT_MISMATCH');
+    failClosed(CANDIDATE_RISKS.has(input.proposal.risk), 'CANDIDATE_RISK_INVALID');
+    const effectiveRisk = effectiveDiagnosisRisk(candidate.risk, input.proposal.risk);
+    const diagnosisId =
+      'improvement-diagnosis-' +
+      createHash('sha256').update(candidateId + '|' + input.contextDigest).digest('hex');
+    const existing = this.events.get(diagnosisId);
+    if (existing) return diagnosisFromEvent(existing);
+    const now = new Date().toISOString();
+    const attestation: ImprovementDiagnosisAttestation = {
+      diagnosisId,
+      ...input.proposal,
+      contextDigest: input.contextDigest,
+      effectiveRisk,
+      resourceId: input.resourceId,
+      ...(input.bindingId ? { bindingId: input.bindingId } : {}),
+      modelFamily: input.modelFamily,
+      routeModel: input.routeModel,
+      protocol: input.protocol,
+      createdAt: now,
+    };
+    validateDiagnosisAttestation(attestation);
+    return withTransaction(this.db, () => {
+      const latest = this.get(candidateId);
+      if (latest.fingerprint !== candidate.fingerprint || latest.programId !== candidate.programId)
+        throw new ForgeFlowError('IMPROVEMENT_DIAGNOSIS_CANDIDATE_STALE');
+      const durableRisk = effectiveDiagnosisRisk(latest.risk, input.proposal.risk);
+      if (durableRisk !== latest.risk) {
+        const result = this.db
+          .prepare(
+            'UPDATE improvement_candidates SET risk=?,updated_at=? WHERE candidate_id=? AND risk=?',
+          )
+          .run(durableRisk, now, candidateId, latest.risk);
+        if (Number(result.changes) !== 1)
+          throw new ForgeFlowError('IMPROVEMENT_DIAGNOSIS_RISK_STALE');
+      }
+      const event = this.events.appendInTransaction({
+        eventId: diagnosisId,
+        aggregateId: candidateId,
+        aggregateType: 'MAINTENANCE',
+        type: 'IMPROVEMENT_AI_DIAGNOSED',
+        payload: {
+          version: 1,
+          programId: attestation.programId,
+          fingerprint: attestation.fingerprint,
+          contextDigest: attestation.contextDigest,
+          disposition: attestation.disposition,
+          classification: attestation.classification,
+          confidence: attestation.confidence,
+          risk: attestation.risk,
+          effectiveRisk: durableRisk,
+          diagnosis: diagnosisText(
+            attestation.diagnosis,
+            'IMPROVEMENT_DIAGNOSIS_TEXT_INVALID',
+            1_500,
+          ),
+          objective:
+            attestation.disposition === 'PROPOSE_REPAIR'
+              ? diagnosisText(
+                  attestation.objective,
+                  'IMPROVEMENT_DIAGNOSIS_OBJECTIVE_INVALID',
+                  2_000,
+                )
+              : '',
+          acceptanceCriteria:
+            attestation.disposition === 'PROPOSE_REPAIR'
+              ? diagnosisStringList(
+                  attestation.acceptanceCriteria,
+                  'IMPROVEMENT_DIAGNOSIS_ACCEPTANCE_INVALID',
+                  2,
+                  8,
+                  500,
+                )
+              : [],
+          evidenceRefs: diagnosisStringList(
+            attestation.evidenceRefs,
+            'IMPROVEMENT_DIAGNOSIS_EVIDENCE_INVALID',
+            1,
+            12,
+            200,
+          ),
+          resourceId: attestation.resourceId,
+          ...(attestation.bindingId ? { bindingId: attestation.bindingId } : {}),
+          modelFamily: attestation.modelFamily,
+          routeModel: attestation.routeModel,
+          protocol: attestation.protocol,
+        },
+        occurredAt: now,
+        correlationId: candidate.programId,
+      });
+      return diagnosisFromEvent(event);
+    });
+  }
+
+  listDiagnoses(candidateId: string): ImprovementDiagnosisAttestation[] {
+    this.get(candidateId);
+    return this.events
+      .listByAggregate(candidateId)
+      .filter((event) => event.type === 'IMPROVEMENT_AI_DIAGNOSED')
+      .map(diagnosisFromEvent);
+  }
+
+  latestDiagnosis(candidateId: string): ImprovementDiagnosisAttestation | undefined {
+    return this.listDiagnoses(candidateId).at(-1);
   }
 
   recordCanary(

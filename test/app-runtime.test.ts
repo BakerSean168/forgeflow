@@ -100,6 +100,8 @@ test('ForgeFlow runtime fails closed when execution automation is disabled', asy
     selfChangeEnabled: false,
     selfPromotionEnabled: false,
     selfAutoPromotionEnabled: false,
+    aiDiagnosisEnabled: false,
+    aiDiagnosisMaxPerCycle: 2,
     allowedProjectKeys: [],
   });
   const run = await runtime.app.inject({ method: 'POST', url: '/api/v1/plans/missing/run' });
@@ -221,6 +223,44 @@ test('Supervisor runtime requires the governed Resource Selector', async () => {
       error instanceof Error &&
       'code' in error &&
       error.code === 'SUPERVISOR_RESOURCE_SELECTOR_REQUIRED',
+  );
+});
+
+test('Improvement AI diagnosis requires an explicit project allowlist and governed execution routing', async () => {
+  const reject = async (env: NodeJS.ProcessEnv, code: string) => {
+    await assert.rejects(
+      () =>
+        buildControlPlane({
+          dbFile: ':memory:',
+          environment: 'test',
+          logger: false,
+          env: { NODE_ENV: 'test', ...env },
+        }),
+      (error: unknown) =>
+        error instanceof Error && 'code' in error && error.code === code,
+    );
+  };
+
+  await reject(
+    { FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_ENABLED: 'true' },
+    'IMPROVEMENT_AI_DIAGNOSIS_PROJECTS_REQUIRED',
+  );
+  await reject(
+    {
+      FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_ENABLED: 'true',
+      FORGEFLOW_IMPROVEMENT_PROJECTS: 'project-alpha',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'false',
+    },
+    'IMPROVEMENT_AI_DIAGNOSIS_EXECUTION_RUNTIME_REQUIRED',
+  );
+  await reject(
+    {
+      FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_ENABLED: 'true',
+      FORGEFLOW_IMPROVEMENT_PROJECTS: 'project-alpha',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'true',
+      FORGEFLOW_RESOURCE_SELECTOR_ENABLED: 'false',
+    },
+    'IMPROVEMENT_AI_DIAGNOSIS_RESOURCE_SELECTOR_REQUIRED',
   );
 });
 
@@ -2106,6 +2146,8 @@ test('Improvement API discovers repeated failures and adopts them only as an ord
     selfChangeEnabled: false,
     selfPromotionEnabled: false,
     selfAutoPromotionEnabled: false,
+    aiDiagnosisEnabled: false,
+    aiDiagnosisMaxPerCycle: 2,
     allowedProjectKeys: ['improvement-api'],
   });
 

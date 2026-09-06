@@ -24,7 +24,9 @@ Repeated bounded engineering failures can also enter a separate improvement inta
 ```text
 Repeated verified failure
   -> deterministic Improvement Candidate
-  -> explicit adoption (or separately enabled STANDARD/LOW-risk auto-adoption)
+  -> optional bounded AI Diagnostician over controller-owned evidence only
+  -> typed PROPOSE_REPAIR / NO_ACTION attestation
+  -> explicit adoption (or separately enabled STANDARD/LOW-risk post-diagnosis auto-adoption)
   -> ordinary ForgeFlow Plan
   -> the same implementation / independent review / integration / delivery gates
 ```
@@ -41,9 +43,9 @@ ForgeFlow self-change Plan SUCCEEDED
   -> Improvement Candidate COMPLETED
 ```
 
-Discovery, adoption, low-risk auto-adoption, self-change, self-promotion, and autonomous self-promotion are separate opt-in controls and default off. `CONSERVATIVE` programs remain human-adopted even if the global auto-adopt switch is enabled, and Maintenance never receives a privileged repository writer.
+Discovery, AI diagnosis, adoption, low-risk auto-adoption, self-change, self-promotion, and autonomous self-promotion are separate opt-in controls and default off. `CONSERVATIVE` programs remain human-adopted even if the global auto-adopt switch is enabled, and Maintenance never receives a privileged repository writer.
 
-A bounded AI Supervisor observes durable state and handles exceptional cases such as replanning the remaining graph, changing an execution route, creating a repair/follow-up plan, or escalating a genuine external gate. Deterministic code retains authority over state transitions, leases, workspace ownership, review provenance, and delivery safety.
+ForgeFlow has two deliberately separate bounded-intelligence roles. The **AI Supervisor** handles exceptional decisions inside one active Plan, such as replanning the remaining graph, changing an execution route, creating a repair/follow-up plan, or escalating a genuine external gate. The **Improvement Diagnostician** reflects across repeated failures from multiple Executions and can only produce a typed, evidence-grounded diagnosis attestation. It receives structured controller metadata rather than raw logs/provider bodies, cannot invent evidence IDs, cannot lower risk, and cannot write code, create Executions, merge, deploy, or weaken safety gates. Deterministic code retains authority over state transitions, leases, workspace ownership, review provenance, adoption, and delivery safety.
 
 ## V1 principles
 
@@ -54,10 +56,10 @@ A bounded AI Supervisor observes durable state and handles exceptional cases suc
 - **Evidence over claims** — tests, commits, reviews, CI, merges, releases, and sanitized Supervisor admission diagnostics remain inspectable as durable evidence rather than ephemeral process state.
 - **Exact release identity** — each promoted artifact is bound at process boot to an exact Git source SHA and deterministic artifact digest; release health moves from `PENDING` to `HEALTHY` only after the restarted process proves that same identity.
 - **Resource-aware execution** — models/providers are selected through a governed resource directory rather than hard-coded attempt ladders; transient recovery must pass a protocol-correct health probe before a resource re-enters selection, and both ACP execution admission and paid Supervisor admission are demand-driven with durable bounded-TTL readiness caches rather than probing providers while the control plane is idle or immediately after every restart.
-- **Bounded intelligence** — AI may diagnose and propose typed actions; Supervisor reasoning must pass its own exact direct-protocol admission and cannot bypass deterministic safety gates.
+- **Bounded intelligence** — AI may diagnose and propose typed actions, never execute privileged mutations directly. Supervisor and Improvement diagnosis both use governed `REASONING` resources with direct-protocol admission; malformed diagnosis output is scoped out for that evidence context rather than globally poisoning a healthy resource.
 - **Recoverable execution** — retries, process restarts, provider failures, and interrupted sessions preserve durable lineage; both ACP runtime-admission and Supervisor direct-admission TTLs survive restart. Runtime probes use a stable recovery group plus a unique attempt workspace, planned SIGTERM/SIGINT shutdown aborts new probe work but completes non-cancellable OpenHands cleanup, and recovered probe groups prune crash-residue workspaces only after the remote session is quiescent. Resource recovery wakes parked Supervisors through durable events with a bounded watchdog fallback.
 - **Fail-closed operator cancellation** — cancelling an active root Plan first parks it in `SAFETY_HOLD`, quiesces/cancels live provider sessions, cancels unfinished Reviews/WorkItems, retires the Plan workspace family, and only then releases the project lease or hands it to the next queued Plan. Non-terminal child Plans must be cancelled deepest-first through the same public endpoint; child cancellation never retires the shared root worktree family or releases the root project lease. Cleanup or provider-cancel failure keeps the original lease fenced.
-- **Explicit improvement adoption** — repeated failures become durable Candidates first; adoption creates an ordinary Plan rather than a privileged repair path.
+- **Explicit improvement adoption** — repeated failures become durable Candidates first. When AI diagnosis is enabled, discovery cannot auto-adopt before diagnosis; `NO_ACTION` remains non-adopting, AI may only raise risk, and only a safe grounded `PROPOSE_REPAIR` can feed the normal low-risk adoption policy. Adoption still creates an ordinary Plan rather than a privileged repair path.
 - **Hard-gated self-change** — even an allowlisted `forgeflow` Candidate cannot target ForgeFlow's own repository unless the separate self-change gate is enabled. A successful self-change Plan is not considered completed until an exact-SHA canary produces a deterministic artifact digest, the separate promotion gate authorizes an out-of-process release of exactly that artifact, and the restarted process reports matching `HEALTHY` release provenance. Autonomous promotion is a third, separately disabled gate.
 
 ## Repository layout
@@ -105,7 +107,7 @@ ForgeFlow defaults to its own local interfaces and state:
 - OpenHands execution plane: `127.0.0.1:18420`
 - State: `/var/lib/forgeflow`
 - Configuration: `/etc/forgeflow`
-- API: `/api/v1/*` (including idempotent active-root cancellation plus explicit self-change canary/promotion endpoints under `/api/v1/improvements/:candidateId/*`)
+- API: `/api/v1/*` (including idempotent active-root cancellation plus explicit Improvement diagnosis/self-change canary/promotion endpoints under `/api/v1/improvements/:candidateId/*`)
 - Release approval: `refs/forgeflow/release-approved`
 
 These defaults allow ForgeFlow to coexist with another engineering system during migration or canary deployment without sharing mutable state.
