@@ -883,6 +883,7 @@ export class LocalGitWorkspaceAdapter implements WorkspaceProviderPort {
         // child does not inherit our per-command safe.directory setting. An exact-HEAD
         // bundle preserves the ownership boundary and gives the controller a passive input.
         await this.git(candidate.hostPath, ['bundle', 'create', transferBundle, 'HEAD']);
+        this.handoffIntegrationBundle(transferBundle, repositoryIdentity);
         await this.git(
           repositoryRoot,
           ['fetch', '--no-tags', '--', transferBundle, input.acceptedRevision],
@@ -1553,6 +1554,26 @@ export class LocalGitWorkspaceAdapter implements WorkspaceProviderPort {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  private handoffIntegrationBundle(
+    transferBundle: string,
+    repositoryIdentity: { uid: number; gid: number },
+  ): void {
+    try {
+      // The controller may run with UMask=0077 while canonical Git commands are
+      // intentionally dropped to the repository owner. Make the one-shot bundle
+      // private to that owner rather than relying on ambient process umask.
+      fs.chownSync(transferBundle, repositoryIdentity.uid, repositoryIdentity.gid);
+      fs.chmodSync(transferBundle, 0o600);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+      throw new ForgeFlowError(
+        'WORKSPACE_INTEGRATION_BUNDLE_HANDOFF_FAILED',
+        'Unable to hand the reviewed bundle to the canonical repository owner: ' + code,
+        error,
+      );
     }
   }
 

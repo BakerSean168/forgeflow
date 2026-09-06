@@ -776,6 +776,42 @@ test('LocalGitWorkspace integration rejects stale, dirty and non-descendant cand
   );
 });
 
+test('LocalGitWorkspace integration remains valid under a restrictive controller umask', async () => {
+  const value = fixture();
+  const candidate = await value.adapter.provision({
+    executionId: 'exec-integrate-private-umask',
+    repositoryPath: value.repositoryPath,
+    sourceRevision: value.baseRevision,
+    phase: 'IMPLEMENT',
+  });
+  configureWriter(candidate);
+  write(path.join(candidate.hostPath, 'private-umask.txt'), 'private bundle handoff\n');
+  const acceptedRevision = commit(candidate.hostPath, 'feat: exercise private bundle handoff');
+  const previousUmask = process.umask(0o077);
+  try {
+    const integrated = await value.adapter.integrateAcceptedRevision({
+      repositoryPath: value.repositoryPath,
+      expectedRevision: value.baseRevision,
+      acceptedRevision,
+      candidateWorkspace: candidate,
+    });
+    assert.equal(integrated.headRevision, acceptedRevision);
+    assert.equal(integrated.clean, true);
+    assert.equal(git(value.repositoryPath, ['rev-parse', 'HEAD']), acceptedRevision);
+  } finally {
+    process.umask(previousUmask);
+  }
+  const gitDirectory = path.resolve(
+    value.repositoryPath,
+    git(value.repositoryPath, ['rev-parse', '--git-dir']),
+  );
+  assert.equal(
+    fs.readdirSync(gitDirectory).filter((entry) => entry.startsWith('forgeflow-integration-')).length,
+    0,
+  );
+  fs.rmSync(value.directory, { recursive: true, force: true });
+});
+
 test('LocalGitWorkspace adopts an exact reviewed revision already contained by a later clean canonical head without moving HEAD backwards', async () => {
   const value = fixture();
   const candidate = await value.adapter.provision({
