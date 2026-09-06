@@ -812,7 +812,7 @@ test('single-active-plan API queues later root tasks without supervisor or execu
       url: '/api/v1/plans',
       headers: { 'idempotency-key': key },
       payload: {
-        projectKey: 'bodysense',
+        projectKey: 'project-gamma',
         objective,
         repositoryPath: value.repository,
         baseRevision: value.revision,
@@ -854,7 +854,7 @@ test('single-active-plan API queues later root tasks without supervisor or execu
 
   const queue = await runtime.app.inject({
     method: 'GET',
-    url: '/api/v1/projects/bodysense/plan-queue',
+    url: '/api/v1/projects/project-gamma/plan-queue',
   });
   assert.equal(queue.statusCode, 200);
   assert.equal(queue.json().lease.activeRootPlanId, firstPlanId);
@@ -875,7 +875,7 @@ test('single-active-plan API queues later root tasks without supervisor or execu
 
   const after = await runtime.app.inject({
     method: 'GET',
-    url: '/api/v1/projects/bodysense/plan-queue',
+    url: '/api/v1/projects/project-gamma/plan-queue',
   });
   assert.equal(after.json().lease.activeRootPlanId, secondPlanId);
   assert.equal(after.json().items.length, 0);

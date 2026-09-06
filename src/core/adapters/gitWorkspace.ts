@@ -468,7 +468,7 @@ export class LocalGitWorkspaceAdapter implements WorkspaceProviderPort {
           'remote',
           'set-url',
           'origin',
-          'https://pixel.invalid/source/' + sourceIdentity + '.git',
+          'https://forgeflow.invalid/source/' + sourceIdentity + '.git',
         ]);
       }
       fs.rmSync(sourceBundle, { force: true });

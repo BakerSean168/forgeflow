@@ -12,8 +12,8 @@ import { createRepositories } from '../src/core/persistence/repositories.js';
 function createRoot(
   repositories: ReturnType<typeof createRepositories>,
   planId: string,
-  projectKey = 'bodysense',
-  repositoryPath = '/home/dev/projects/bodysense',
+  projectKey = 'project-gamma',
+  repositoryPath = '/home/dev/projects/project-gamma',
 ) {
   return repositories.plans.createPlan({
     planId,
@@ -55,18 +55,18 @@ test('single-active-plan scheduler keeps later root plans queued and hands off F
   assert.equal(repositories.supervisors.getByPlanId('plan-b'), undefined);
   assert.equal(repositories.supervisors.getByPlanId('plan-c'), undefined);
   assert.deepEqual(
-    repositories.projectPlans.listQueue('bodysense').map((entry) => entry.planId),
+    repositories.projectPlans.listQueue('project-gamma').map((entry) => entry.planId),
     ['plan-b', 'plan-c'],
   );
 
-  const leaseBeforeRestart = repositories.projectPlans.getLease('bodysense')!;
+  const leaseBeforeRestart = repositories.projectPlans.getLease('project-gamma')!;
   assert.equal(leaseBeforeRestart.activeRootPlanId, 'plan-a');
   db.close();
 
   db = openDatabase(dbFile, { environment: 'test' });
   repositories = createRepositories(db);
   runtime = new ProjectPlanQueueRuntime(repositories);
-  assert.equal(repositories.projectPlans.getLease('bodysense')?.activeRootPlanId, 'plan-a');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId, 'plan-a');
 
   const advancedA = repositories.plans.reconcileCurrentRevision(
     'plan-a',
@@ -78,8 +78,8 @@ test('single-active-plan scheduler keeps later root plans queued and hands off F
   finish(repositories, 'plan-a');
   const firstHandoff = await runtime.reconcile();
   assert.equal(firstHandoff[0]?.activatedPlanId, 'plan-b');
-  assert.equal(repositories.projectPlans.getLease('bodysense')?.activeRootPlanId, 'plan-b');
-  assert.equal(repositories.projectPlans.getLease('bodysense')?.committedRevision, 'head-a');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId, 'plan-b');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.committedRevision, 'head-a');
   assert.equal(repositories.plans.getPlan('plan-b').status, 'READY');
   assert.equal(repositories.plans.getPlan('plan-b').baseRevision, 'base-sha');
   assert.equal(repositories.plans.getPlan('plan-b').currentRevision, 'head-a');
@@ -95,8 +95,8 @@ test('single-active-plan scheduler keeps later root plans queued and hands off F
   );
   finish(repositories, 'plan-b');
   await runtime.reconcile();
-  assert.equal(repositories.projectPlans.getLease('bodysense')?.activeRootPlanId, 'plan-c');
-  assert.equal(repositories.projectPlans.getLease('bodysense')?.committedRevision, 'head-b');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId, 'plan-c');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.committedRevision, 'head-b');
   assert.equal(repositories.plans.getPlan('plan-c').status, 'READY');
   assert.equal(repositories.plans.getPlan('plan-c').baseRevision, 'base-sha');
   assert.equal(repositories.plans.getPlan('plan-c').currentRevision, 'head-b');
@@ -104,17 +104,17 @@ test('single-active-plan scheduler keeps later root plans queued and hands off F
 
   finish(repositories, 'plan-c');
   await runtime.reconcile();
-  const emptyLease = repositories.projectPlans.getLease('bodysense')!;
+  const emptyLease = repositories.projectPlans.getLease('project-gamma')!;
   assert.equal(emptyLease.activeRootPlanId, undefined);
   assert.equal(emptyLease.committedRevision, 'head-b');
-  assert.equal(repositories.projectPlans.listQueue('bodysense').length, 0);
+  assert.equal(repositories.projectPlans.listQueue('project-gamma').length, 0);
 
   createRoot(repositories, 'plan-d');
   const resumed = runtime.scheduleRootPlan('plan-d');
   assert.equal(resumed.status, 'ACTIVE');
   assert.equal(repositories.plans.getPlan('plan-d').baseRevision, 'base-sha');
   assert.equal(repositories.plans.getPlan('plan-d').currentRevision, 'head-b');
-  assert.equal(repositories.projectPlans.getLease('bodysense')?.committedRevision, 'head-b');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.committedRevision, 'head-b');
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -129,20 +129,20 @@ test('project lease is version fenced, repository bound and cannot be double acq
 
   const db2 = openDatabase(dbFile, { environment: 'test' });
   const r2 = createRepositories(db2);
-  const first = r1.projectPlans.tryAcquire('bodysense', 'plan-a', 0);
+  const first = r1.projectPlans.tryAcquire('project-gamma', 'plan-a', 0);
   assert.equal(first.status, 'created');
-  const stale = r2.projectPlans.tryAcquire('bodysense', 'plan-b', 0);
+  const stale = r2.projectPlans.tryAcquire('project-gamma', 'plan-b', 0);
   assert.equal(stale.status, 'rejected');
   assert.equal(stale.reason, 'STALE_VERSION');
 
-  const lease = r1.projectPlans.getLease('bodysense')!;
-  const renewed = r1.projectPlans.renew('bodysense', 'plan-a', lease.version);
+  const lease = r1.projectPlans.getLease('project-gamma')!;
+  const renewed = r1.projectPlans.renew('project-gamma', 'plan-a', lease.version);
   assert.equal(renewed.value?.version, lease.version + 1);
-  const staleRenew = r2.projectPlans.renew('bodysense', 'plan-a', lease.version);
+  const staleRenew = r2.projectPlans.renew('project-gamma', 'plan-a', lease.version);
   assert.equal(staleRenew.status, 'rejected');
   assert.equal(staleRenew.reason, 'STALE_VERSION');
 
-  createRoot(r1, 'wrong-repo', 'bodysense', '/home/dev/projects/other-bodysense');
+  createRoot(r1, 'wrong-repo', 'project-gamma', '/home/dev/projects/other-project-gamma');
   assert.throws(
     () => r1.projectPlans.scheduleRootPlan('wrong-repo'),
     (error: unknown) =>
@@ -167,14 +167,14 @@ test('queued plan reprioritization is deterministic and cancellation provisions 
 
   repositories.projectPlans.reprioritize('plan-c', 10);
   assert.deepEqual(
-    repositories.projectPlans.listQueue('bodysense').map((entry) => entry.planId),
+    repositories.projectPlans.listQueue('project-gamma').map((entry) => entry.planId),
     ['plan-c', 'plan-b'],
   );
   runtime.cancelQueued('plan-c');
   assert.equal(repositories.plans.getPlan('plan-c').status, 'CANCELLED');
   assert.equal(repositories.supervisors.getByPlanId('plan-c'), undefined);
   assert.deepEqual(
-    repositories.projectPlans.listQueue('bodysense').map((entry) => entry.planId),
+    repositories.projectPlans.listQueue('project-gamma').map((entry) => entry.planId),
     ['plan-b'],
   );
   db.close();
@@ -205,9 +205,9 @@ test('schema v11 migrates the active logical project head into the durable lease
       ?.schema_version,
     SCHEMA_VERSION,
   );
-  assert.equal(repositories.projectPlans.getLease('bodysense')?.activeRootPlanId, 'plan-a');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId, 'plan-a');
   assert.equal(
-    repositories.projectPlans.getLease('bodysense')?.committedRevision,
+    repositories.projectPlans.getLease('project-gamma')?.committedRevision,
     'head-before-v12',
   );
   assert.equal(repositories.plans.getPlan('plan-a').currentRevision, 'head-before-v12');
@@ -264,7 +264,7 @@ test('terminal Plan cleanup must succeed before the project lease can hand off',
 
   const blocked = await runtime.reconcile();
   assert.equal(blocked[0]?.code, 'WORKTREE_CLEANUP_BLOCKED');
-  assert.equal(repositories.projectPlans.getLease('bodysense')?.activeRootPlanId, 'plan-a');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId, 'plan-a');
   assert.equal(repositories.plans.getPlan('plan-b').status, 'QUEUED');
   assert.equal(repositories.supervisors.getByPlanId('plan-b'), undefined);
 
@@ -272,6 +272,6 @@ test('terminal Plan cleanup must succeed before the project lease can hand off',
   const result = await runtime.reconcile();
   assert.equal(result[0]?.activatedPlanId, 'plan-b');
   assert.deepEqual(calls, ['retire:plan-a', 'retire:plan-a', 'activate:plan-b']);
-  assert.equal(repositories.projectPlans.getLease('bodysense')?.activeRootPlanId, 'plan-b');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId, 'plan-b');
   db.close();
 });

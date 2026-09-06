@@ -17,6 +17,7 @@ const retired = [
   ['pixel', 'v4'].join('-'),
   ['pixel', 'agents'].join('-'),
   ['pixel', 'agent'].join(' '),
+  ['pixel', 'invalid'].join('.'),
   ['virtual', 'office'].join(' '),
   ['pixel', 'art'].join('-'),
 ];

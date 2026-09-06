@@ -45,7 +45,7 @@ GO_TOOLCHAIN_VERSION="${OPENHANDS_GO_TOOLCHAIN_VERSION:-1.26.0}"
 GO_TOOLCHAIN_ROOT="${OPENHANDS_GO_TOOLCHAIN_ROOT:-/openhands-state/toolchains/go-${GO_TOOLCHAIN_VERSION}}"
 GO_TOOLCHAIN_IMAGE="${OPENHANDS_GO_TOOLCHAIN_IMAGE:-golang:${GO_TOOLCHAIN_VERSION}-bookworm}"
 
-# Persist the exact Go toolchain needed by BodySense inside the existing
+# Persist the exact Go toolchain available to execution projects inside the existing
 # OpenHands state volume instead of mutating the upstream-pinned Agent image.
 # The source image is version-pinned and the installed binary self-reports the
 # expected version before the installer succeeds.

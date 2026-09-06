@@ -45,9 +45,13 @@ test('installer provisions only ForgeFlow state and refuses unconfigured autonom
   assert.match(installer, /\/etc\/forgeflow/);
   assert.match(installer, /\/var\/lib\/forgeflow\/workspaces\/forgeflow\/executions/);
   assert.match(installer, /configure FORGEFLOW_AUTOMATION_PROJECTS first/);
+  assert.match(installer, /configure FORGEFLOW_REPOSITORY_WRITE_PATHS first/);
   assert.match(installer, /configure FORGEFLOW_OPENHANDS_TOKEN first/);
   assert.match(installer, /configure FORGEFLOW_LITELLM_BASE_URL first/);
   assert.match(installer, /configure FORGEFLOW_LITELLM_API_KEY first/);
+  assert.match(installer, /apparmor_parser -r \/etc\/apparmor\.d\/forgeflow-openhands-codex/);
+  assert.match(installer, /FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands/);
+  assert.match(installer, /ReadWritePaths=%s/);
   assert.match(installer, /systemctl enable --now forgeflow\.service forgeflow-host-cache\.timer/);
 });
 

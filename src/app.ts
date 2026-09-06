@@ -980,7 +980,7 @@ async function buildExecutionAutomation(
     maxParallelWorkItems: 1,
   };
   const antigravityProjectKeys = new Set(
-    commaList(env.FORGEFLOW_ANTIGRAVITY_PROJECTS ?? 'digital-biome'),
+    commaList(env.FORGEFLOW_ANTIGRAVITY_PROJECTS),
   );
   const literalProjectSet = new Set(literalWorktreeProjectKeys);
   const policyOverrides = Object.fromEntries(

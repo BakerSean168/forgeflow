@@ -13,7 +13,7 @@ const distModule = (relativePath) =>
 const [
   { LiteralWorktreeWorkspaceAdapter },
   { PlanWorktreeManager },
-  { openV4Database },
+  { openDatabase },
   { createRepositories },
 ] = await Promise.all([
   import(distModule('core/adapters/literalWorktreeWorkspace.js')),
@@ -25,7 +25,7 @@ const [
 if (process.getuid?.() !== 0) throw new Error('LITERAL_WORKTREE_SMOKE_REQUIRES_ROOT');
 
 const repositoryPath =
-  process.env.FORGEFLOW_WORKTREE_SMOKE_REPOSITORY ?? '/home/dev/projects/bodysense';
+  process.env.FORGEFLOW_WORKTREE_SMOKE_REPOSITORY ?? '/home/dev/projects/forgeflow-smoke';
 const managedHostRoot =
   process.env.FORGEFLOW_WORKSPACE_HOST_ROOT ?? '/var/lib/forgeflow/workspaces';
 const executionRoot = process.env.FORGEFLOW_WORKSPACE_EXECUTION_ROOT ?? '/workspace';
@@ -176,7 +176,7 @@ function forceRemoveRegisteredWorktrees() {
 
 try {
   const baseRevision = canonicalHeadBefore;
-  db = openV4Database(dbFile, { environment: 'test' });
+  db = openDatabase(dbFile, { environment: 'test' });
   repositories = createRepositories(db);
   const plan = repositories.plans.createPlan({
     planId,

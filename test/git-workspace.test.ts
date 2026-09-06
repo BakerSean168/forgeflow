@@ -225,7 +225,7 @@ test('LocalGitWorkspace preserves only a non-secret source repository identity f
     'remote',
     'add',
     'origin',
-    'https://oauth-user:super-secret@example.invalid/owner/memoflow.git?token=also-secret',
+    'https://oauth-user:super-secret@example.invalid/owner/project-beta.git?token=also-secret',
   ]);
   const workspace = await value.adapter.provision({
     executionId: 'exec-source-identity',
@@ -235,7 +235,7 @@ test('LocalGitWorkspace preserves only a non-secret source repository identity f
   });
   assert.equal(
     git(workspace.hostPath, ['remote', 'get-url', 'origin']),
-    'https://pixel.invalid/source/memoflow.git',
+    'https://forgeflow.invalid/source/project-beta.git',
   );
   const config = fs.readFileSync(path.join(workspace.hostPath, '.git', 'config'), 'utf8');
   assert.equal(config.includes('super-secret'), false);

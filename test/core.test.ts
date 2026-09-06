@@ -621,7 +621,7 @@ test('supervisor HTTP model client bounds requests and rejects provider failures
 });
 
 test('adapters deduplicate candidates, invalidate force-pushed PRs and gate resources', () => {
-  const program = { programId: 'program', projectKey: 'digital-biome', implementationRoutes: ['antigravity'], reviewRoutes: ['antigravity'], autonomousScope: 'CONSERVATIVE' as const, autoMerge: false, enabled: true };
+  const program = { programId: 'program', projectKey: 'project-alpha', implementationRoutes: ['antigravity'], reviewRoutes: ['antigravity'], autonomousScope: 'CONSERVATIVE' as const, autoMerge: false, enabled: true };
   const registry = new MaintenanceCandidateRegistry();
   const first = registry.create(program, { title: 'Improve check', evidence: ['metric:1'], risk: 'LOW' });
   const second = registry.create(program, { title: 'Improve check', evidence: ['metric:1'], risk: 'LOW' });

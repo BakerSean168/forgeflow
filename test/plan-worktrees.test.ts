@@ -17,7 +17,7 @@ function git(cwd: string, args: string[]): string {
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-plan-worktrees-'));
   const repositoriesRoot = path.join(root, 'repositories');
-  const repository = path.join(repositoriesRoot, 'bodysense');
+  const repository = path.join(repositoriesRoot, 'project-gamma');
   const managed = path.join(root, 'managed');
   fs.mkdirSync(repository, { recursive: true });
   fs.mkdirSync(managed, { recursive: true });
@@ -33,7 +33,7 @@ function fixture() {
   const plan = repositories.plans.createPlan({
     planId: 'plan-a',
     idempotencyKey: 'worktree-plan-a',
-    projectKey: 'bodysense',
+    projectKey: 'project-gamma',
     objective: 'exercise literal worktrees',
     repositoryPath: repository,
     baseRevision: revision,
@@ -107,13 +107,13 @@ test('PlanWorktreeManager creates one literal shared-common-dir worktree per rol
   const value = fixture();
   const canonicalHead = git(value.repository, ['rev-parse', 'HEAD']);
   const integration = await value.manager.ensureIntegration({
-    projectKey: 'bodysense',
+    projectKey: 'project-gamma',
     rootPlanId: value.plan.planId,
     repositoryPath: value.repository,
     baseRevision: value.revision,
   });
   const item = await value.manager.ensureWorkItem({
-    projectKey: 'bodysense',
+    projectKey: 'project-gamma',
     rootPlanId: value.plan.planId,
     workItemId: value.itemA.workItemId,
     repositoryPath: value.repository,
@@ -146,7 +146,7 @@ test('PlanWorktreeManager creates one literal shared-common-dir worktree per rol
 test('WorkItem worktree survives provider retries and enforces one durable writer at a time', async () => {
   const value = fixture();
   let worktree = await value.manager.ensureWorkItem({
-    projectKey: 'bodysense',
+    projectKey: 'project-gamma',
     rootPlanId: value.plan.planId,
     workItemId: value.itemA.workItemId,
     repositoryPath: value.repository,
@@ -184,7 +184,7 @@ test('WorkItem worktree survives provider retries and enforces one durable write
   assert.equal(worktree.ownerExecutionId, undefined);
 
   const reused = await value.manager.ensureWorkItem({
-    projectKey: 'bodysense',
+    projectKey: 'project-gamma',
     rootPlanId: value.plan.planId,
     workItemId: value.itemA.workItemId,
     repositoryPath: value.repository,
@@ -206,7 +206,7 @@ test('WorkItem worktree survives provider retries and enforces one durable write
 test('review worktree is detached at exact SHA and restart reconcile re-adopts registered worktrees without cloning', async () => {
   const value = fixture();
   const item = await value.manager.ensureWorkItem({
-    projectKey: 'bodysense',
+    projectKey: 'project-gamma',
     rootPlanId: value.plan.planId,
     workItemId: value.itemA.workItemId,
     repositoryPath: value.repository,
@@ -227,7 +227,7 @@ test('review worktree is detached at exact SHA and restart reconcile re-adopts r
   await value.manager.releaseWriter(item.worktreeId, 'exec-review-source');
 
   const review = await value.manager.createReview({
-    projectKey: 'bodysense',
+    projectKey: 'project-gamma',
     rootPlanId: value.plan.planId,
     reviewId: 'review-1',
     repositoryPath: value.repository,
@@ -264,7 +264,7 @@ test('review worktree is detached at exact SHA and restart reconcile re-adopts r
 
 test('unknown worktree path residue is never silently adopted', async () => {
   const value = fixture();
-  const project = worktreeRefComponent('bodysense');
+  const project = worktreeRefComponent('project-gamma');
   const plan = worktreeRefComponent(value.plan.planId);
   const item = worktreeRefComponent(value.itemB.workItemId);
   const roguePath = path.join(value.managed, 'forgeflow', 'plans', project, plan, 'items', item, 'repo');
@@ -272,7 +272,7 @@ test('unknown worktree path residue is never silently adopted', async () => {
   await assert.rejects(
     () =>
       value.manager.ensureWorkItem({
-        projectKey: 'bodysense',
+        projectKey: 'project-gamma',
         rootPlanId: value.plan.planId,
         workItemId: value.itemB.workItemId,
         repositoryPath: value.repository,
@@ -318,7 +318,7 @@ test('schema v7 migrates additively to the durable worktree registry', () => {
 test('failed implementation retry reuses the same WorkItem worktree and resets only unverified state', async () => {
   const value = fixture();
   let worktree = await value.manager.ensureWorkItem({
-    projectKey: 'bodysense',
+    projectKey: 'project-gamma',
     rootPlanId: value.plan.planId,
     workItemId: value.itemA.workItemId,
     repositoryPath: value.repository,
@@ -386,7 +386,7 @@ test('reviewed integration reuses the durable activation base after a queued Pla
   value.repositories.plans.compareAndSetStatus(value.plan.planId, 'READY', 'RUNNING');
 
   const integration = await value.manager.ensureIntegration({
-    projectKey: 'bodysense',
+    projectKey: 'project-gamma',
     rootPlanId: value.plan.planId,
     repositoryPath: value.repository,
     baseRevision: inheritedHead,
@@ -396,7 +396,7 @@ test('reviewed integration reuses the durable activation base after a queued Pla
   assert.equal(value.repositories.plans.getPlan(value.plan.planId).currentRevision, inheritedHead);
 
   const worktree = await value.manager.ensureWorkItem({
-    projectKey: 'bodysense',
+    projectKey: 'project-gamma',
     rootPlanId: value.plan.planId,
     workItemId: value.itemA.workItemId,
     repositoryPath: value.repository,
@@ -448,7 +448,7 @@ test('parallel reviewed candidates integrate serially in the Plan integration wo
 
   const createCandidate = async (workItemId: string, executionId: string, file: string) => {
     const worktree = await value.manager.ensureWorkItem({
-      projectKey: 'bodysense',
+      projectKey: 'project-gamma',
       rootPlanId: value.plan.planId,
       workItemId,
       repositoryPath: value.repository,

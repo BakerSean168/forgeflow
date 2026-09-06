@@ -117,7 +117,7 @@ function input(
   return {
     executionId: 'exec-ant',
     planId: 'plan-ant',
-    projectKey: 'digital-biome',
+    projectKey: 'project-alpha',
     workItemId: 'work-ant',
     phase,
     objective: 'Complete the bounded objective.',
@@ -184,7 +184,7 @@ test('Antigravity implementation requires a clean committed workspace and writes
   const recovered = await provider.recover({
     executionId: 'exec-ant',
     createdAt: new Date().toISOString(),
-    projectKey: 'digital-biome',
+    projectKey: 'project-alpha',
     phase: 'IMPLEMENT',
     expectedWorkspacePath: '/workspace/forgeflow/executions/exec-ant/repo',
   });

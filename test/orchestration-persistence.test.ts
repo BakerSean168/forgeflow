@@ -1213,8 +1213,8 @@ test('review binding requires a distinct reviewer execution for the same plan an
 test('Jules correlation preserves immutable session lineage and validates remote refresh provenance', () => {
   const db = openDatabase(':memory:', { environment: 'test', env: { NODE_ENV: 'test' } });
   const request = {
-    idempotencyKey: 'jules-digital-biome-1',
-    repository: 'owner/digital-biome',
+    idempotencyKey: 'jules-project-alpha-1',
+    repository: 'owner/project-alpha',
     baseRevision: 'base-sha',
     objective: 'Refactor the rendering boundary',
   };
@@ -1264,7 +1264,7 @@ test('Jules correlation preserves immutable session lineage and validates remote
   assert.equal(adapter.getResult('jules-session-1').status, 'SUCCEEDED');
   assert.equal(getCalls, 1, 'terminal durable results must not be refreshed or replaced');
 
-  const secondRequest = { ...request, idempotencyKey: 'jules-digital-biome-2' };
+  const secondRequest = { ...request, idempotencyKey: 'jules-project-alpha-2' };
   let mismatched = {
     sessionId: 'jules-session-3',
     repository: 'attacker/repo',
@@ -1291,14 +1291,14 @@ test('maintenance candidate decoding fails closed on corrupted durable evidence'
   const repositories = createRepositories(db);
   const plan = repositories.plans.createPlan({
     idempotencyKey: 'candidate-corruption-plan',
-    projectKey: 'digital-biome',
+    projectKey: 'project-alpha',
     objective: 'repair a candidate',
-    repositoryPath: '/srv/repos/digital-biome',
+    repositoryPath: '/srv/repos/project-alpha',
     baseRevision: 'base-sha',
   }).value!;
   const program = {
-    programId: 'digital-biome-program',
-    projectKey: 'digital-biome',
+    programId: 'project-alpha-program',
+    projectKey: 'project-alpha',
     implementationRoutes: ['jules'],
     reviewRoutes: ['sol-review'],
     autonomousScope: 'CONSERVATIVE' as const,

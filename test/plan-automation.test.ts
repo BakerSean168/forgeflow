@@ -1464,7 +1464,7 @@ test('plan automation project allowlist prevents stale plans from becoming write
       reviewRoutes: ['gpt-5.6-sol'],
     },
     {},
-    ['memoflow', 'digital-biome', 'bodysense'],
+    ['project-beta', 'project-alpha', 'project-gamma'],
   );
   const automation = new PlanAutomationRuntime(seeded.repositories, runner, workspace, resolver);
   const result = await automation.runPlan(seeded.plan.planId);
