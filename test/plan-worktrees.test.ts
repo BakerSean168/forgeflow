@@ -164,6 +164,7 @@ test('literal Plan parents remain controller-owned and traversable under product
     path.join(value.managed, 'forgeflow', 'plans'),
     path.join(value.managed, 'forgeflow', 'plans', value.plan.projectKey),
     path.join(value.managed, 'forgeflow', 'plans', value.plan.projectKey, value.plan.planId),
+    path.join(value.managed, 'forgeflow', 'plans', value.plan.projectKey, value.plan.planId, 'items'),
   ];
   for (const directory of directories) {
     const stat = fs.statSync(directory);

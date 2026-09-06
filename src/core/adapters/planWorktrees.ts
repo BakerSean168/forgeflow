@@ -1027,12 +1027,21 @@ export class PlanWorktreeManager {
     const managerGid = process.getgid?.();
     const project = worktreeRefComponent(record.projectKey);
     const plan = worktreeRefComponent(record.rootPlanId);
+    const planRoot = path.join(this.managedHostRoot, 'forgeflow', 'plans', project, plan);
+    const roleRoot = path.dirname(record.hostPath);
+    failClosed(roleRoot === planRoot || inside(roleRoot, planRoot), 'WORKTREE_PARENT_UNSAFE');
     const directories = [
       path.join(this.managedHostRoot, 'forgeflow'),
       path.join(this.managedHostRoot, 'forgeflow', 'plans'),
       path.join(this.managedHostRoot, 'forgeflow', 'plans', project),
-      path.join(this.managedHostRoot, 'forgeflow', 'plans', project, plan),
+      planRoot,
     ];
+    const roleNamespace = path.relative(planRoot, roleRoot).split(path.sep).filter(Boolean);
+    let namespaceParent = planRoot;
+    for (const component of roleNamespace.slice(0, -1)) {
+      namespaceParent = path.join(namespaceParent, component);
+      directories.push(namespaceParent);
+    }
     for (const directory of directories) {
       failClosed(inside(directory, this.managedHostRoot), 'WORKTREE_PARENT_UNSAFE');
       fs.mkdirSync(directory, { recursive: true, mode: 0o711 });
