@@ -22,6 +22,8 @@ const headless = read('openhands_tools/headless_review_acp.mjs');
 const launcher = read('openhands_tools/harness_agent_launcher.sh');
 const forgeFlowEnv = read('deploy/forgeflow.env.example');
 const planWorktrees = read('src/core/adapters/planWorktrees.ts');
+const appSource = read('src/app.ts');
+const literalSmoke = read('scripts/smoke-literal-worktree.mjs');
 
 test('ForgeFlow service is standalone, headless, and fail-closed around host writes', () => {
   assert.match(service, /Description=ForgeFlow Autonomous Software Engineering Control Plane/);
@@ -103,6 +105,11 @@ test('installer provisions only ForgeFlow state and refuses unconfigured autonom
   assert.match(installer, /-m 0711 \/var\/lib\/forgeflow/);
   assert.match(installer, /apparmor_parser -r \/etc\/apparmor\.d\/forgeflow-openhands-codex/);
   assert.match(installer, /FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands FORGEFLOW_DSH_SEED_DIR=/);
+  assert.match(installer, /FORGEFLOW_LITERAL_WORKTREE_REPOSITORIES/);
+  assert.match(installer, /git -C \"\$canonical\" rev-parse --git-common-dir/);
+  assert.match(installer, /literal worktree repository is not an authorized write path/);
+  assert.match(installer, /openhands-literal-worktrees\.override\.yml/);
+  assert.match(installer, /compose_args\+=\(-f \"\$literal_override\"\)/);
   assert.match(installer, /ReadWritePaths=%s/);
   assert.match(installer, /forgeflow-self-promote\.service/);
   assert.match(installer, /forgeflow-self-promote\.path/);
@@ -170,6 +177,16 @@ test('self-promotion runs outside the control-plane cgroup and is exact-canary g
   assert.match(selfPromoteScript, /release-gcp\.sh/);
   assert.match(selfPromoteScript, /rm -f -- \"\$request_file\"/);
   assert.match(artifactDigest, /find \. -type f -print0 \| sort -z \| xargs -0 sha256sum/);
+});
+
+test('literal worktree deployment is project-mounted, runtime-verified, and smokeable in the live container', () => {
+  assert.match(forgeFlowEnv, /FORGEFLOW_LITERAL_WORKTREE_REPOSITORIES=\n/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands/);
+  assert.match(appSource, /WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED/);
+  assert.match(appSource, /docker'[\s\S]*inspect'[\s\S]*\{\{json \.Mounts\}\}/);
+  assert.match(appSource, /mount\.Source === common && mount\.Destination === common && mount\.RW === true/);
+  assert.match(literalSmoke, /FORGEFLOW_WORKTREE_SMOKE_USE_RUNNING_CONTAINER/);
+  assert.match(literalSmoke, /useRunningContainer[\s\S]*'exec'/);
 });
 
 test('literal worktree Git object access is read-minimized and revoked after Plan cleanup', () => {

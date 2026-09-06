@@ -20,7 +20,7 @@ The runtime advances dependency-ready work through implementation, review, repai
 
 ### Workspace isolation
 
-ForgeFlow supports isolated execution workspaces and shared-common-dir literal Git worktrees. The controller owns workspace topology and provenance; a model receives only the workspace and Git capabilities required for its phase. Independent review is detached at the exact candidate revision and cannot become an implementation writer.
+ForgeFlow supports isolated execution workspaces and shared-common-dir literal Git worktrees. The controller owns workspace topology and provenance; a model receives only the workspace and Git capabilities required for its phase. Independent review is detached at the exact candidate revision and cannot become an implementation writer. Literal worktrees are enabled only for explicit project keys and explicit canonical repositories. Deployment mounts each authorized repository's Git common directory into OpenHands at the identical absolute path; Plan activation independently verifies that the running container has that exact read-write bind mount before any worktree is handed to a model. The worker receives read access to existing loose and packed Git objects, write/default ACLs only on object directories needed to create new objects, and write access only to its Plan-scoped ref/admin namespace. Plan retirement removes those worker ACLs before the project lease may be released.
 
 ### Resource selector
 

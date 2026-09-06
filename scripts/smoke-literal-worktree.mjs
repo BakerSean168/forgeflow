@@ -32,6 +32,7 @@ const executionRoot = process.env.FORGEFLOW_WORKSPACE_EXECUTION_ROOT ?? '/worksp
 const agentUid = Number(process.env.FORGEFLOW_WORKSPACE_UID ?? '10001');
 const agentGid = Number(process.env.FORGEFLOW_WORKSPACE_GID ?? '10001');
 const container = process.env.FORGEFLOW_OPENHANDS_CONTAINER ?? 'forgeflow-openhands';
+const useRunningContainer = process.env.FORGEFLOW_WORKTREE_SMOKE_USE_RUNNING_CONTAINER === 'true';
 const projectKey = 'literal-worktree-smoke';
 const stamp = `${Date.now()}-${process.pid}`;
 const planId = `plan-smoke-${stamp}`;
@@ -83,63 +84,58 @@ let archiveRef;
 function containerRun(workspace, executionId, script) {
   const parent = path.posix.dirname(workspace.executionPath);
   const harness = path.posix.join(parent, '.executions', executionId, '.agent-harness');
-  return execFileSync(
-    'docker',
-    [
-      'run',
-      '--rm',
-      '--network',
-      'none',
-      '--user',
-      `${agentUid}:${agentGid}`,
-      '--entrypoint',
-      '/bin/bash',
-      '-e',
-      `HOME=${path.posix.join(harness, 'home')}`,
-      '-e',
-      `XDG_CONFIG_HOME=${path.posix.join(harness, 'xdg')}`,
-      '-e',
-      'GIT_CONFIG_NOSYSTEM=1',
-      '-e',
-      'GIT_AUTHOR_NAME=ForgeFlow Agent',
-      '-e',
-      'GIT_AUTHOR_EMAIL=forgeflow@localhost',
-      '-e',
-      'GIT_COMMITTER_NAME=ForgeFlow Agent',
-      '-e',
-      'GIT_COMMITTER_EMAIL=forgeflow@localhost',
-      '-e',
-      'GIT_OPTIONAL_LOCKS=0',
-      '-e',
-      'GIT_CONFIG_COUNT=4',
-      '-e',
-      'GIT_CONFIG_KEY_0=safe.directory',
-      '-e',
-      `GIT_CONFIG_VALUE_0=${workspace.executionPath}`,
-      '-e',
-      'GIT_CONFIG_KEY_1=safe.directory',
-      '-e',
-      `GIT_CONFIG_VALUE_1=${workspace.hostPath}`,
-      '-e',
-      'GIT_CONFIG_KEY_2=gc.auto',
-      '-e',
-      'GIT_CONFIG_VALUE_2=0',
-      '-e',
-      'GIT_CONFIG_KEY_3=maintenance.auto',
-      '-e',
-      'GIT_CONFIG_VALUE_3=false',
-      '-v',
-      `${managedHostRoot}:${executionRoot}:rw`,
-      '-v',
-      `${managedHostRoot}:${managedHostRoot}:rw`,
-      '-v',
-      `${commonDir}:${commonDir}:rw`,
-      image,
-      '-lc',
-      script,
-    ],
-    { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
-  ).trim();
+  const environment = [
+    `HOME=${path.posix.join(harness, 'home')}`,
+    `XDG_CONFIG_HOME=${path.posix.join(harness, 'xdg')}`,
+    'GIT_CONFIG_NOSYSTEM=1',
+    'GIT_AUTHOR_NAME=ForgeFlow Agent',
+    'GIT_AUTHOR_EMAIL=forgeflow@localhost',
+    'GIT_COMMITTER_NAME=ForgeFlow Agent',
+    'GIT_COMMITTER_EMAIL=forgeflow@localhost',
+    'GIT_OPTIONAL_LOCKS=0',
+    'GIT_CONFIG_COUNT=4',
+    'GIT_CONFIG_KEY_0=safe.directory',
+    `GIT_CONFIG_VALUE_0=${workspace.executionPath}`,
+    'GIT_CONFIG_KEY_1=safe.directory',
+    `GIT_CONFIG_VALUE_1=${workspace.hostPath}`,
+    'GIT_CONFIG_KEY_2=gc.auto',
+    'GIT_CONFIG_VALUE_2=0',
+    'GIT_CONFIG_KEY_3=maintenance.auto',
+    'GIT_CONFIG_VALUE_3=false',
+  ];
+  const environmentArgs = environment.flatMap((value) => ['-e', value]);
+  const args = useRunningContainer
+    ? [
+        'exec',
+        '--user',
+        `${agentUid}:${agentGid}`,
+        ...environmentArgs,
+        container,
+        '/bin/bash',
+        '-lc',
+        script,
+      ]
+    : [
+        'run',
+        '--rm',
+        '--network',
+        'none',
+        '--user',
+        `${agentUid}:${agentGid}`,
+        '--entrypoint',
+        '/bin/bash',
+        ...environmentArgs,
+        '-v',
+        `${managedHostRoot}:${executionRoot}:rw`,
+        '-v',
+        `${managedHostRoot}:${managedHostRoot}:rw`,
+        '-v',
+        `${commonDir}:${commonDir}:rw`,
+        image,
+        '-lc',
+        script,
+      ];
+  return execFileSync('docker', args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 }).trim();
 }
 
 function sourceGit(args, allowFailure = false) {

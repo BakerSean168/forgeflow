@@ -51,7 +51,7 @@ ForgeFlow has two deliberately separate bounded-intelligence roles. The **AI Sup
 
 - **Headless by default** — the product surface is plans, executions, reviews, repairs, resources, incidents, and deliveries.
 - **Durable before conversational** — the database, not chat history, is the source of truth.
-- **Single-writer safety** — one mutable writer owns a worktree at a time.
+- **Single-writer safety** — one mutable writer owns a worktree at a time; literal worktree projects additionally require an explicit canonical-repository Git mount that the running OpenHands container must prove before Plan activation.
 - **Exact-revision review** — implementation and review are separate phases with immutable Git provenance.
 - **Evidence over claims** — tests, commits, reviews, CI, merges, releases, and sanitized Supervisor admission diagnostics remain inspectable as durable evidence rather than ephemeral process state.
 - **Exact release identity** — each promoted artifact is bound at process boot to an exact Git source SHA and deterministic artifact digest; release health moves from `PENDING` to `HEALTHY` only after the restarted process proves that same identity.

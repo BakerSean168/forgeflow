@@ -7,7 +7,7 @@ openhands_env="${FORGEFLOW_OPENHANDS_ENV_FILE:-/etc/forgeflow/openhands.env}"
 image="${OPENHANDS_SOURCE_IMAGE:-forgeflow-openhands-agent-server:1.39.1-source}"
 [[ $EUID -eq 0 ]] || exec sudo -n "$0" "$@"
 
-for tool in node npm docker systemctl curl setfacl realpath apparmor_parser; do
+for tool in node npm git docker systemctl curl setfacl realpath apparmor_parser; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 
@@ -59,20 +59,24 @@ for item in "${allowed_roots[@]}"; do
   [[ "$item" = /* ]] || { echo "allowed repository root must be absolute" >&2; exit 2; }
   canonical_allowed+=("$(realpath -e -- "$item")")
 done
+canonical_writes=()
+for item in "${write_paths[@]}"; do
+  [[ "$item" = /* ]] || { echo "repository write path must be absolute" >&2; exit 2; }
+  canonical="$(realpath -e -- "$item")"
+  [[ -d "$canonical/.git" || -f "$canonical/.git" ]] || { echo "repository write path is not a Git repository: $canonical" >&2; exit 2; }
+  admitted=false
+  for root in "${canonical_allowed[@]}"; do
+    if [[ "$canonical" == "$root"/* ]]; then admitted=true; break; fi
+  done
+  [[ "$admitted" == true ]] || { echo "repository write path is outside allowed roots: $canonical" >&2; exit 2; }
+  canonical_writes+=("$canonical")
+done
 
 install -d -o root -g root -m 0755 /etc/systemd/system/forgeflow.service.d
 repo_dropin=/etc/systemd/system/forgeflow.service.d/repositories.conf
 {
   echo '[Service]'
-  for item in "${write_paths[@]}"; do
-    [[ "$item" = /* ]] || { echo "repository write path must be absolute" >&2; exit 2; }
-    canonical="$(realpath -e -- "$item")"
-    [[ -d "$canonical/.git" || -f "$canonical/.git" ]] || { echo "repository write path is not a Git repository: $canonical" >&2; exit 2; }
-    admitted=false
-    for root in "${canonical_allowed[@]}"; do
-      if [[ "$canonical" == "$root"/* ]]; then admitted=true; break; fi
-    done
-    [[ "$admitted" == true ]] || { echo "repository write path is outside allowed roots: $canonical" >&2; exit 2; }
+  for canonical in "${canonical_writes[@]}"; do
     printf 'ReadWritePaths=%s\n' "$canonical"
   done
 } >"$repo_dropin.tmp"
@@ -97,10 +101,60 @@ systemctl daemon-reload
 if ! docker image inspect "$image" >/dev/null 2>&1; then
   OPENHANDS_SOURCE_IMAGE="$image" "$repo_root/scripts/build-openhands-source.sh"
 fi
+
+literal_enabled="$(awk -F= '$1=="FORGEFLOW_LITERAL_WORKTREES_ENABLED"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
+literal_projects="$(awk -F= '$1=="FORGEFLOW_LITERAL_WORKTREE_PROJECTS"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
+literal_repositories="$(awk -F= '$1=="FORGEFLOW_LITERAL_WORKTREE_REPOSITORIES"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
+literal_override=/etc/forgeflow/openhands-literal-worktrees.override.yml
+compose_args=(-f "$repo_root/deploy/openhands/docker-compose.yml")
+if [[ "$literal_enabled" == true ]]; then
+  [[ -n "$literal_projects" ]] || { echo 'literal worktrees require FORGEFLOW_LITERAL_WORKTREE_PROJECTS' >&2; exit 2; }
+  [[ -n "$literal_repositories" ]] || { echo 'literal worktrees require FORGEFLOW_LITERAL_WORKTREE_REPOSITORIES' >&2; exit 2; }
+  IFS=',' read -r -a literal_repo_items <<<"$literal_repositories"
+  common_dirs=()
+  for item in "${literal_repo_items[@]}"; do
+    [[ "$item" = /* ]] || { echo 'literal worktree repository must be absolute' >&2; exit 2; }
+    canonical="$(realpath -e -- "$item")"
+    admitted=false
+    for writable in "${canonical_writes[@]}"; do
+      if [[ "$canonical" == "$writable" ]]; then admitted=true; break; fi
+    done
+    [[ "$admitted" == true ]] || { echo "literal worktree repository is not an authorized write path: $canonical" >&2; exit 2; }
+    toplevel="$(git -C "$canonical" rev-parse --show-toplevel)"
+    [[ "$(realpath -e -- "$toplevel")" == "$canonical" ]] || { echo "literal worktree repository is not a canonical Git root: $canonical" >&2; exit 2; }
+    common_raw="$(git -C "$canonical" rev-parse --git-common-dir)"
+    if [[ "$common_raw" = /* ]]; then
+      common="$(realpath -e -- "$common_raw")"
+    else
+      common="$(realpath -e -- "$canonical/$common_raw")"
+    fi
+    [[ -d "$common" && "$(basename -- "$common")" == .git ]] || { echo "literal worktree Git common directory is unsafe: $common" >&2; exit 2; }
+    [[ "$common" != *:* && "$common" != *"'"* && "$common" != *$'\n'* && "$common" != *$'\r'* ]] || { echo "literal worktree Git common directory contains unsupported characters" >&2; exit 2; }
+    duplicate=false
+    for existing in "${common_dirs[@]:-}"; do
+      if [[ "$existing" == "$common" ]]; then duplicate=true; break; fi
+    done
+    [[ "$duplicate" == true ]] || common_dirs+=("$common")
+  done
+  {
+    echo 'services:'
+    echo '  agent-server:'
+    echo '    volumes:'
+    for common in "${common_dirs[@]}"; do
+      printf "      - '%s:%s:rw'\n" "$common" "$common"
+    done
+  } >"$literal_override.tmp"
+  install -o root -g root -m 0644 "$literal_override.tmp" "$literal_override"
+  rm -f "$literal_override.tmp"
+  compose_args+=(-f "$literal_override")
+else
+  rm -f "$literal_override" "$literal_override.tmp"
+fi
+
 OPENHANDS_SOURCE_IMAGE="$image" \
 FORGEFLOW_OPENHANDS_ENV_FILE="$openhands_env" \
 FORGEFLOW_OPENHANDS_TOOLS_DIR="$repo_root/openhands_tools" \
-  docker compose -f "$repo_root/deploy/openhands/docker-compose.yml" up -d --remove-orphans --wait --wait-timeout 120
+  docker compose "${compose_args[@]}" up -d --remove-orphans --wait --wait-timeout 120
 dsh_seed="$(awk -F= '$1=="FORGEFLOW_DSH_SEED_DIR"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
 FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands FORGEFLOW_DSH_SEED_DIR="$dsh_seed" \
   "$repo_root/scripts/install-openhands-tooling.sh"

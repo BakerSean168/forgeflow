@@ -280,6 +280,62 @@ function commaList(value: string | undefined): string[] {
   ];
 }
 
+function assertOpenHandsGitCommonDirMounted(
+  repositoryPath: string,
+  container: string,
+  commandTimeoutMs: number,
+  maxBufferBytes: number,
+): void {
+  try {
+    const rawCommon = execFileSync(
+      '/usr/bin/git',
+      ['-C', repositoryPath, 'rev-parse', '--git-common-dir'],
+      {
+        encoding: 'utf8',
+        timeout: commandTimeoutMs,
+        maxBuffer: maxBufferBytes,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    ).trim();
+    const common = fs.realpathSync(
+      path.isAbsolute(rawCommon) ? rawCommon : path.resolve(repositoryPath, rawCommon),
+    );
+    const rawMounts = execFileSync(
+      '/usr/bin/docker',
+      ['inspect', container, '--format', '{{json .Mounts}}'],
+      {
+        encoding: 'utf8',
+        timeout: commandTimeoutMs,
+        maxBuffer: maxBufferBytes,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    ).trim();
+    const mounts = JSON.parse(rawMounts) as Array<{
+      Source?: unknown;
+      Destination?: unknown;
+      RW?: unknown;
+    }>;
+    if (
+      !Array.isArray(mounts) ||
+      !mounts.some(
+        (mount) =>
+          mount.Source === common && mount.Destination === common && mount.RW === true,
+      )
+    )
+      throw new ForgeFlowError(
+        'WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED',
+        'Literal worktrees require the canonical Git common directory mounted read-write at the same path inside OpenHands.',
+      );
+  } catch (error) {
+    if (error instanceof ForgeFlowError) throw error;
+    throw new ForgeFlowError(
+      'WORKTREE_OPENHANDS_MOUNT_CHECK_FAILED',
+      'Unable to verify the OpenHands Git common-directory mount.',
+      error,
+    );
+  }
+}
+
 function integerValue(
   value: string | undefined,
   fallback: number,
@@ -763,6 +819,13 @@ async function buildExecutionAutomation(
                 error,
               );
             }
+            if (env.NODE_ENV !== 'test')
+              assertOpenHandsGitCommonDirMounted(
+                repositoryPath,
+                env.FORGEFLOW_OPENHANDS_CONTAINER ?? 'forgeflow-openhands',
+                gitTimeoutMs,
+                gitMaxBufferBytes,
+              );
           },
         })
       : undefined;
