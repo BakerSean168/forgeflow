@@ -760,3 +760,55 @@ test('v5 databases migrate routing additively through the current schema and mal
   );
   raw.close();
 });
+
+test('runtime admission invalidation is scoped to the changed binding/resource and retain removes vanished routes', () => {
+  const resources = [
+    resource({
+      resourceId: 'admission-a',
+      resourceTier: 'FREE',
+      resourceSequence: 1,
+      bindings: [binding('admission-a-binding', 'deepseek-v4-flash')],
+    }),
+    resource({
+      resourceId: 'admission-b',
+      resourceTier: 'FREE',
+      resourceSequence: 2,
+      bindings: [binding('admission-b-binding', 'deepseek-v4-flash')],
+    }),
+  ];
+  const first = selectExecutableProfile(resources, { phase: 'IMPLEMENT' });
+  assert.equal(first.status, 'SELECTED');
+  if (first.status !== 'SELECTED') return;
+  const second = selectExecutableProfile(resources, {
+    phase: 'IMPLEMENT',
+    priorAttempts: [{
+      resourceId: first.profile.resourceId,
+      bindingId: first.profile.bindingId,
+      modelFamily: first.profile.modelFamily,
+    }],
+  });
+  assert.equal(second.status, 'SELECTED');
+  if (second.status !== 'SELECTED') return;
+
+  const registry = new RuntimeAdmissionRegistry();
+  registry.record(first.candidate, { ready: true, checkedAt: NOW });
+  registry.record(second.candidate, { ready: true, checkedAt: NOW });
+  assert.equal(registry.summary().checked, 2);
+
+  assert.equal(
+    registry.invalidateBinding(first.profile.resourceId, first.profile.bindingId!),
+    1,
+  );
+  assert.equal(registry.get(first.candidate), undefined);
+  assert.equal(registry.get(second.candidate)?.ready, true);
+
+  registry.record(first.candidate, { ready: true, checkedAt: NOW });
+  assert.equal(registry.invalidateResource(second.profile.resourceId), 1);
+  assert.equal(registry.get(second.candidate), undefined);
+  assert.equal(registry.get(first.candidate)?.ready, true);
+
+  registry.record(second.candidate, { ready: true, checkedAt: NOW });
+  assert.equal(registry.retain([first.candidate]), 1);
+  assert.equal(registry.get(first.candidate)?.ready, true);
+  assert.equal(registry.get(second.candidate), undefined);
+});

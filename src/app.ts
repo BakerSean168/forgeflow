@@ -922,11 +922,14 @@ async function buildExecutionAutomation(
 
   let runtimeAdmissionCycle: Promise<void> | undefined;
   const reconcileRuntimeAdmission = async (): Promise<void> => {
-    if (!runtimeAdmissionEnabled || !runtimeAdmissionHasDemand()) return;
+    if (!runtimeAdmissionEnabled) return;
+    const candidates = admissionCandidates();
+    runtimeAdmission.retain(candidates);
+    if (!runtimeAdmissionHasDemand()) return;
     if (runtimeAdmissionCycle) return await runtimeAdmissionCycle;
     runtimeAdmissionCycle = (async () => {
       const now = Date.now();
-      const queue = admissionCandidates().filter((candidate) =>
+      const queue = candidates.filter((candidate) =>
         runtimeAdmission.isStale(
           candidate,
           now,
@@ -1880,6 +1883,8 @@ export async function buildControlPlane(
     if (result.status === 'rejected') throw new ForgeFlowError(result.reason ?? 'STALE_RESOURCE_STATE');
     repositories.supervisorDirectAdmissions.invalidateResource(resourceId);
     supervisorDirectAdmission.invalidateResource(resourceId);
+    runtime.runtimeAdmission.invalidateResource(resourceId);
+    await runtime.reconcileRuntimeAdmission();
     const resourceWake = await reconcileSupervisorReadiness();
     const projected = runtime.resources
       .listResources()
@@ -1913,6 +1918,8 @@ export async function buildControlPlane(
     await runtime.liteLlmResources.refresh();
     repositories.supervisorDirectAdmissions.invalidateResource(resourceId);
     supervisorDirectAdmission.invalidateResource(resourceId);
+    runtime.runtimeAdmission.invalidateBinding(resourceId, bindingId);
+    await runtime.reconcileRuntimeAdmission();
     const resourceWake = await reconcileSupervisorReadiness();
     const projected = runtime.resources
       .listResources()

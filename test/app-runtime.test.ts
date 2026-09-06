@@ -578,6 +578,22 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
   assert.deepEqual(selectorHealth.json().executionRuntime.compatibilityImplementationRoutes, []);
   assert.deepEqual(selectorHealth.json().executionRuntime.compatibilityReviewRoutes, []);
 
+  const runtimeAdmissionInvalidations: Array<{ type: 'resource' | 'binding'; resourceId: string; bindingId?: string }> = [];
+  const originalInvalidateResource = runtime.automation!.runtimeAdmission.invalidateResource.bind(
+    runtime.automation!.runtimeAdmission,
+  );
+  const originalInvalidateBinding = runtime.automation!.runtimeAdmission.invalidateBinding.bind(
+    runtime.automation!.runtimeAdmission,
+  );
+  runtime.automation!.runtimeAdmission.invalidateResource = (resourceId: string) => {
+    runtimeAdmissionInvalidations.push({ type: 'resource', resourceId });
+    return originalInvalidateResource(resourceId);
+  };
+  runtime.automation!.runtimeAdmission.invalidateBinding = (resourceId: string, bindingId: string) => {
+    runtimeAdmissionInvalidations.push({ type: 'binding', resourceId, bindingId });
+    return originalInvalidateBinding(resourceId, bindingId);
+  };
+
   const resources = await runtime.app.inject({ method: 'GET', url: '/api/v1/resources' });
   assert.equal(resources.statusCode, 200);
   assert.equal(resources.json().count, 3);
@@ -631,6 +647,11 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
   });
   assert.equal(bindingDisabled.statusCode, 200);
   assert.equal(bindingDisabled.json().resource.modelBindings[0].enabled, false);
+  assert.deepEqual(runtimeAdmissionInvalidations.at(-1), {
+    type: 'binding',
+    resourceId: 'free-provider',
+    bindingId: 'deployment-free-deepseek',
+  });
   const bindingEnabled = await runtime.app.inject({
     method: 'POST',
     url: '/api/v1/resources/free-provider/bindings/deployment-free-deepseek/state',
@@ -638,6 +659,11 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
   });
   assert.equal(bindingEnabled.statusCode, 200);
   assert.equal(bindingEnabled.json().resource.modelBindings[0].enabled, true);
+  assert.deepEqual(runtimeAdmissionInvalidations.at(-1), {
+    type: 'binding',
+    resourceId: 'free-provider',
+    bindingId: 'deployment-free-deepseek',
+  });
 
   const disabled = await runtime.app.inject({
     method: 'POST',
@@ -646,6 +672,10 @@ test('ForgeFlow resource selector creates immutable execution provenance and res
   });
   assert.equal(disabled.statusCode, 200);
   assert.equal(disabled.json().resource.state, 'DISABLED');
+  assert.deepEqual(runtimeAdmissionInvalidations.at(-1), {
+    type: 'resource',
+    resourceId: 'free-provider',
+  });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(statePatchCalls, 3);
   assert.equal(deploymentBlocked, true);

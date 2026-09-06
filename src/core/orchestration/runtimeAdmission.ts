@@ -90,6 +90,37 @@ export class RuntimeAdmissionRegistry implements ResourceCandidateReadinessPort 
     return nowMs - checkedAt >= effectiveTtl;
   }
 
+  invalidateResource(resourceId: string): number {
+    let removed = 0;
+    for (const [key, status] of this.statuses) {
+      if (status.resourceId !== resourceId) continue;
+      this.statuses.delete(key);
+      removed += 1;
+    }
+    return removed;
+  }
+
+  invalidateBinding(resourceId: string, bindingId: string): number {
+    let removed = 0;
+    for (const [key, status] of this.statuses) {
+      if (status.resourceId !== resourceId || status.bindingId !== bindingId) continue;
+      this.statuses.delete(key);
+      removed += 1;
+    }
+    return removed;
+  }
+
+  retain(candidates: readonly ResourceSelectionCandidate[]): number {
+    const active = new Set(candidates.map(runtimeAdmissionKey));
+    let removed = 0;
+    for (const key of this.statuses.keys()) {
+      if (active.has(key)) continue;
+      this.statuses.delete(key);
+      removed += 1;
+    }
+    return removed;
+  }
+
   list(): RuntimeAdmissionStatus[] {
     return [...this.statuses.values()].sort((a, b) => a.key.localeCompare(b.key));
   }
