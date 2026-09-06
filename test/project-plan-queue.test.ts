@@ -275,3 +275,244 @@ test('terminal Plan cleanup must succeed before the project lease can hand off',
   assert.equal(repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId, 'plan-b');
   db.close();
 });
+
+test('operator cancellation retires an active root Plan and hands off only after cleanup', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const calls: string[] = [];
+  const runtime = new ProjectPlanQueueRuntime(repositories, {
+    activate: async (planId) => calls.push('activate:' + planId),
+    retire: async (planId) => calls.push('retire:' + planId),
+  });
+  createRoot(repositories, 'plan-cancel-a');
+  createRoot(repositories, 'plan-cancel-b');
+  const graph = repositories.plans.createGraphVersion({
+    planId: 'plan-cancel-a',
+    reason: 'operator cancel fixture',
+  }).value!;
+  const item = repositories.plans.appendGraphWorkItem({
+    graphVersionId: graph.graphVersionId,
+    itemKey: 'cancel-item',
+    title: 'Cancel item',
+    objective: 'remain harmless until cancellation',
+    acceptanceCriteria: ['never execute after cancellation'],
+    dependencies: [],
+  }).value!;
+  runtime.scheduleRootPlan('plan-cancel-a');
+  runtime.scheduleRootPlan('plan-cancel-b');
+
+  const result = await runtime.cancelActive(
+    'plan-cancel-a',
+    'operator-cancel-plan-a',
+    'smoke validation complete',
+  );
+
+  assert.equal(result.code, 'PROJECT_PLAN_CANCELLED_HANDOFF');
+  assert.equal(result.releasedPlanId, 'plan-cancel-a');
+  assert.equal(result.activatedPlanId, 'plan-cancel-b');
+  assert.deepEqual(result.cancelledExecutionIds, []);
+  assert.deepEqual(result.cancelledWorkItemIds, [item.workItemId]);
+  assert.deepEqual(calls, ['retire:plan-cancel-a', 'activate:plan-cancel-b']);
+  assert.equal(repositories.plans.getPlan('plan-cancel-a').status, 'CANCELLED');
+  assert.equal(repositories.plans.getWorkItem(item.workItemId).status, 'CANCELLED');
+  assert.equal(repositories.supervisors.getByPlanId('plan-cancel-a')?.status, 'CANCELLED');
+  assert.equal(repositories.plans.getPlan('plan-cancel-b').status, 'READY');
+  assert.equal(repositories.supervisors.getByPlanId('plan-cancel-b')?.status, 'ACTIVE');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-cancel-b',
+  );
+  const repeated = await runtime.cancelActive(
+    'plan-cancel-a',
+    'operator-cancel-plan-a',
+    'smoke validation complete',
+  );
+  assert.equal(repeated.code, 'PROJECT_PLAN_ALREADY_CANCELLED');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-cancel-b',
+  );
+  db.close();
+});
+
+test('operator cancellation holds the Plan and lease when an execution cannot be quiesced, then retries safely', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const calls: string[] = [];
+  let allowCancel = false;
+  const runtime = new ProjectPlanQueueRuntime(repositories, {
+    activate: async (planId) => calls.push('activate:' + planId),
+    retire: async (planId) => calls.push('retire:' + planId),
+  });
+  runtime.setExecutionCancellation({
+    cancelExecution: async (executionId) => {
+      if (!allowCancel) return { status: 'WAITING', code: 'PROVIDER_CANCEL_NOT_QUIESCED' };
+      repositories.executions.updateStatus(executionId, 'CANCELLED');
+      return { status: 'SUCCEEDED', code: 'EXECUTION_OPERATOR_CANCELLED' };
+    },
+  });
+  createRoot(repositories, 'plan-cancel-live');
+  createRoot(repositories, 'plan-cancel-next');
+  const graph = repositories.plans.createGraphVersion({
+    planId: 'plan-cancel-live',
+    reason: 'operator cancel live fixture',
+  }).value!;
+  const item = repositories.plans.appendGraphWorkItem({
+    graphVersionId: graph.graphVersionId,
+    itemKey: 'live-item',
+    title: 'Live item',
+    objective: 'exercise fail-closed cancellation',
+    acceptanceCriteria: ['lease never releases while execution is live'],
+    dependencies: [],
+  }).value!;
+  runtime.scheduleRootPlan('plan-cancel-live');
+  runtime.scheduleRootPlan('plan-cancel-next');
+  repositories.plans.updateWorkItemStatus(item.workItemId, 'RUNNING');
+  const execution = repositories.executions.create({
+    idempotencyKey: 'plan-cancel-live-execution',
+    identity: {
+      executionId: 'plan-cancel-live-execution',
+      planId: 'plan-cancel-live',
+      workItemId: item.workItemId,
+      phase: 'IMPLEMENT',
+      attempt: 1,
+      route: 'implementation',
+      sourceRevision: 'base-sha',
+    },
+    objective: 'live cancellation fixture',
+  }).value!;
+
+  await assert.rejects(
+    runtime.cancelActive(
+      'plan-cancel-live',
+      'operator-cancel-live',
+      'operator requested cancellation',
+    ),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'PROVIDER_CANCEL_NOT_QUIESCED',
+  );
+  assert.equal(repositories.plans.getPlan('plan-cancel-live').status, 'SAFETY_HOLD');
+  assert.equal(repositories.supervisors.getByPlanId('plan-cancel-live')?.status, 'CANCELLED');
+  assert.equal(repositories.executions.get(execution.identity.executionId).status, 'QUEUED');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-cancel-live',
+  );
+  assert.equal(repositories.plans.getPlan('plan-cancel-next').status, 'QUEUED');
+  assert.deepEqual(calls, []);
+
+  allowCancel = true;
+  const recovered = await runtime.cancelActive(
+    'plan-cancel-live',
+    'operator-cancel-live',
+    'operator requested cancellation',
+  );
+  assert.equal(recovered.code, 'PROJECT_PLAN_CANCELLED_HANDOFF');
+  assert.deepEqual(recovered.cancelledExecutionIds, [execution.identity.executionId]);
+  assert.equal(repositories.plans.getPlan('plan-cancel-live').status, 'CANCELLED');
+  assert.equal(repositories.plans.getWorkItem(item.workItemId).status, 'CANCELLED');
+  assert.equal(repositories.plans.getPlan('plan-cancel-next').status, 'READY');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-cancel-next',
+  );
+  assert.deepEqual(calls, ['retire:plan-cancel-live', 'activate:plan-cancel-next']);
+  db.close();
+});
+
+test('operator root cancellation refuses to orphan a non-terminal child Plan', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const runtime = new ProjectPlanQueueRuntime(repositories);
+  createRoot(repositories, 'plan-cancel-parent');
+  runtime.scheduleRootPlan('plan-cancel-parent');
+  repositories.plans.createChildPlan({
+    parentPlanId: 'plan-cancel-parent',
+    childPlanId: 'plan-cancel-child',
+    repositoryPath: '/home/dev/projects/project-gamma',
+    objective: 'active child',
+    relation: 'FOLLOW_UP',
+  });
+
+  await assert.rejects(
+    runtime.cancelActive(
+      'plan-cancel-parent',
+      'operator-cancel-parent',
+      'must not orphan child work',
+    ),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'PROJECT_PLAN_CANCEL_DESCENDANT_ACTIVE',
+  );
+  assert.equal(repositories.plans.getPlan('plan-cancel-parent').status, 'READY');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-cancel-parent',
+  );
+  db.close();
+});
+
+test('operator cancellation keeps the project lease when worktree retirement fails and resumes cleanup idempotently', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const calls: string[] = [];
+  let failRetire = true;
+  const runtime = new ProjectPlanQueueRuntime(repositories, {
+    activate: async (planId) => calls.push('activate:' + planId),
+    retire: async (planId) => {
+      calls.push('retire:' + planId);
+      if (failRetire) throw new ForgeFlowError('WORKTREE_CLEANUP_BLOCKED');
+    },
+  });
+  createRoot(repositories, 'plan-cancel-cleanup');
+  createRoot(repositories, 'plan-cancel-after-cleanup');
+  const graph = repositories.plans.createGraphVersion({
+    planId: 'plan-cancel-cleanup',
+    reason: 'cleanup failure cancellation fixture',
+  }).value!;
+  repositories.plans.appendGraphWorkItem({
+    graphVersionId: graph.graphVersionId,
+    itemKey: 'cleanup-item',
+    title: 'Cleanup item',
+    objective: 'prove lease fencing through cleanup failure',
+    acceptanceCriteria: ['lease remains fenced'],
+    dependencies: [],
+  });
+  runtime.scheduleRootPlan('plan-cancel-cleanup');
+  runtime.scheduleRootPlan('plan-cancel-after-cleanup');
+
+  await assert.rejects(
+    runtime.cancelActive(
+      'plan-cancel-cleanup',
+      'operator-cancel-cleanup',
+      'cancel despite cleanup needing retry',
+    ),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKTREE_CLEANUP_BLOCKED',
+  );
+  assert.equal(repositories.plans.getPlan('plan-cancel-cleanup').status, 'CANCELLED');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-cancel-cleanup',
+  );
+  assert.equal(repositories.plans.getPlan('plan-cancel-after-cleanup').status, 'QUEUED');
+  assert.equal(repositories.supervisors.getByPlanId('plan-cancel-cleanup')?.status, 'CANCELLED');
+
+  failRetire = false;
+  const resumed = await runtime.cancelActive(
+    'plan-cancel-cleanup',
+    'operator-cancel-cleanup',
+    'cancel despite cleanup needing retry',
+  );
+  assert.equal(resumed.code, 'PROJECT_PLAN_CANCELLED_HANDOFF');
+  assert.equal(resumed.activatedPlanId, 'plan-cancel-after-cleanup');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-cancel-after-cleanup',
+  );
+  assert.deepEqual(calls, [
+    'retire:plan-cancel-cleanup',
+    'retire:plan-cancel-cleanup',
+    'activate:plan-cancel-after-cleanup',
+  ]);
+  db.close();
+});

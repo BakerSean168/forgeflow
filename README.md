@@ -43,6 +43,7 @@ A bounded AI Supervisor observes durable state and handles exceptional cases suc
 - **Resource-aware execution** — models/providers are selected through a governed resource directory rather than hard-coded attempt ladders; transient recovery must pass a protocol-correct health probe before a resource re-enters selection, and paid Supervisor admission probes run only while non-terminal Supervisor demand exists.
 - **Bounded intelligence** — AI may diagnose and propose typed actions; Supervisor reasoning must pass its own exact direct-protocol admission and cannot bypass deterministic safety gates.
 - **Recoverable execution** — retries, process restarts, provider failures, and interrupted sessions preserve durable lineage; Supervisor direct-admission TTLs survive restart, and resource recovery wakes parked Supervisors through durable events with a bounded watchdog fallback.
+- **Fail-closed operator cancellation** — cancelling an active root Plan first parks it in `SAFETY_HOLD`, quiesces/cancels live provider sessions, cancels unfinished WorkItems, retires the Plan workspace family, and only then releases the project lease or hands it to the next queued Plan. Cleanup or provider-cancel failure keeps the original lease fenced.
 - **Explicit improvement adoption** — repeated failures become durable Candidates first; adoption creates an ordinary Plan rather than a privileged repair path.
 - **Hard-gated self-change** — even an allowlisted `forgeflow` Candidate cannot target ForgeFlow's own repository unless the separate self-change gate is explicitly enabled; all resulting changes still pass implementation, independent review, tests, and release gates.
 
@@ -91,7 +92,7 @@ ForgeFlow defaults to its own local interfaces and state:
 - OpenHands execution plane: `127.0.0.1:18420`
 - State: `/var/lib/forgeflow`
 - Configuration: `/etc/forgeflow`
-- API: `/api/v1/*`
+- API: `/api/v1/*` (including `POST /api/v1/plans/:planId/cancel` for idempotent active-root cancellation)
 - Release approval: `refs/forgeflow/release-approved`
 
 These defaults allow ForgeFlow to coexist with another engineering system during migration or canary deployment without sharing mutable state.

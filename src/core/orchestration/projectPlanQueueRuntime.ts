@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { isTerminalPlanStatus } from '../domain/plan.js';
 import { ForgeFlowError } from '../domain/errors.js';
 import type {
@@ -11,6 +13,21 @@ export interface ProjectPlanLifecyclePort {
   retire(rootPlanId: string): Promise<void>;
 }
 
+export interface ProjectPlanExecutionCancellationPort {
+  cancelExecution(
+    executionId: string,
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<{ status: string; code: string }>;
+}
+
+export interface ActiveProjectPlanCancellationResult extends ProjectPlanQueueRuntimeResult {
+  planId: string;
+  cancelledExecutionIds: string[];
+  cancelledWorkItemIds: string[];
+  activationErrorCode?: string;
+}
+
 export interface ProjectPlanQueueRuntimeResult {
   projectKey: string;
   releasedPlanId?: string;
@@ -20,6 +37,7 @@ export interface ProjectPlanQueueRuntimeResult {
 
 export class ProjectPlanQueueRuntime {
   private lifecycle?: ProjectPlanLifecyclePort;
+  private executionCancellation?: ProjectPlanExecutionCancellationPort;
 
   constructor(
     readonly repositories: ForgeFlowRepositories,
@@ -30,6 +48,10 @@ export class ProjectPlanQueueRuntime {
 
   setLifecycle(lifecycle: ProjectPlanLifecyclePort | undefined): void {
     this.lifecycle = lifecycle;
+  }
+
+  setExecutionCancellation(cancellation: ProjectPlanExecutionCancellationPort | undefined): void {
+    this.executionCancellation = cancellation;
   }
 
   bootstrapExistingRootPlans(): void {
@@ -101,6 +123,7 @@ export class ProjectPlanQueueRuntime {
         const plan = this.repositories.plans.getPlan(activePlanId);
         if (!isTerminalPlanStatus(plan.status)) {
           if (this.lifecycle) await this.lifecycle.activate(activePlanId);
+          this.ensureSupervisorActive(activePlanId);
           continue;
         }
         if (this.lifecycle) await this.lifecycle.retire(activePlanId);
@@ -129,6 +152,179 @@ export class ProjectPlanQueueRuntime {
     const result = this.repositories.projectPlans.cancelQueued(planId);
     if (result.status === 'rejected')
       throw new ForgeFlowError(result.reason ?? 'PROJECT_PLAN_QUEUE_CANCEL_FAILED');
+  }
+
+  async cancelActive(
+    planId: string,
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<ActiveProjectPlanCancellationResult> {
+    if (!idempotencyKey.trim() || idempotencyKey.length > 1_000)
+      throw new ForgeFlowError('PROJECT_PLAN_CANCEL_IDEMPOTENCY_REQUIRED');
+    if (!reason.trim() || reason.length > 2_000)
+      throw new ForgeFlowError('PROJECT_PLAN_CANCEL_REASON_INVALID');
+
+    let plan = this.repositories.plans.getPlan(planId);
+    if (plan.parentPlanId) throw new ForgeFlowError('PROJECT_PLAN_ROOT_REQUIRED');
+    const lease = this.repositories.projectPlans.getLease(plan.projectKey);
+    if (plan.status === 'CANCELLED' && (!lease || lease.activeRootPlanId !== planId)) {
+      return {
+        projectKey: plan.projectKey,
+        planId,
+        code: 'PROJECT_PLAN_ALREADY_CANCELLED',
+        cancelledExecutionIds: this.repositories.executions
+          .listByPlan(planId)
+          .filter((execution) => execution.status === 'CANCELLED')
+          .map((execution) => execution.identity.executionId)
+          .sort(),
+        cancelledWorkItemIds: this.repositories.plans
+          .listWorkItems(planId)
+          .filter((item) => item.status === 'CANCELLED')
+          .map((item) => item.workItemId)
+          .sort(),
+      };
+    }
+    if (!lease) throw new ForgeFlowError('PROJECT_PLAN_LEASE_NOT_FOUND');
+    if (lease.activeRootPlanId !== planId)
+      throw new ForgeFlowError('PROJECT_PLAN_LEASE_OWNER_MISMATCH');
+
+    const activeDescendant = this.firstNonTerminalDescendant(planId);
+    if (activeDescendant)
+      throw new ForgeFlowError(
+        'PROJECT_PLAN_CANCEL_DESCENDANT_ACTIVE',
+        'Cancel descendant Plan first: ' + activeDescendant,
+      );
+
+    if (plan.status !== 'CANCELLED') {
+      if (isTerminalPlanStatus(plan.status))
+        throw new ForgeFlowError('PROJECT_PLAN_CANCEL_TERMINAL');
+      if (plan.status !== 'SAFETY_HOLD') {
+        const held = this.repositories.plans.compareAndSetStatus(
+          plan.planId,
+          plan.status,
+          'SAFETY_HOLD',
+        );
+        if (held.status === 'rejected')
+          throw new ForgeFlowError(held.reason ?? 'PROJECT_PLAN_CANCEL_STALE');
+        this.repositories.events.appendNew({
+          aggregateId: plan.planId,
+          aggregateType: 'PLAN',
+          type: 'PROJECT_PLAN_CANCEL_REQUESTED',
+          payload: {
+            reason: reason.trim(),
+            idempotencyDigest: createHash('sha256').update(idempotencyKey.trim()).digest('hex'),
+          },
+          occurredAt: new Date().toISOString(),
+          correlationId: plan.planId,
+        });
+        plan = this.repositories.plans.getPlan(plan.planId);
+      }
+    }
+
+    this.retireSupervisor(planId);
+
+    const cancellationDigest = createHash('sha256')
+      .update(idempotencyKey.trim())
+      .digest('hex')
+      .slice(0, 32);
+    const cancelledExecutionIds = new Set<string>();
+    for (let round = 0; round < 3; round += 1) {
+      const pending = this.repositories.executions
+        .listByPlan(planId)
+        .filter((execution) => execution.status !== 'SUCCEEDED' && execution.status !== 'CANCELLED');
+      if (pending.length === 0) break;
+      if (!this.executionCancellation)
+        throw new ForgeFlowError('PROJECT_PLAN_CANCEL_EXECUTION_RUNTIME_REQUIRED');
+      for (const execution of pending) {
+        const result = await this.executionCancellation.cancelExecution(
+          execution.identity.executionId,
+          'plan-cancel:' + cancellationDigest + ':' + execution.identity.executionId,
+          reason.trim(),
+        );
+        const durable = this.repositories.executions.get(execution.identity.executionId);
+        if (durable.status === 'CANCELLED') {
+          cancelledExecutionIds.add(durable.identity.executionId);
+          continue;
+        }
+        if (durable.status === 'SUCCEEDED') continue;
+        throw new ForgeFlowError(result.code || 'PROJECT_PLAN_CANCEL_EXECUTION_FAILED');
+      }
+    }
+    const stillActive = this.repositories.executions
+      .listByPlan(planId)
+      .filter((execution) => execution.status !== 'SUCCEEDED' && execution.status !== 'CANCELLED');
+    if (stillActive.length > 0)
+      throw new ForgeFlowError('PROJECT_PLAN_CANCEL_EXECUTIONS_ACTIVE');
+
+    const cancelledWorkItemIds: string[] = [];
+    for (const item of this.repositories.plans.listWorkItems(planId)) {
+      if (item.status === 'SUCCEEDED' || item.status === 'CANCELLED' || item.status === 'SUPERSEDED')
+        continue;
+      this.repositories.plans.updateWorkItemStatus(item.workItemId, 'CANCELLED');
+      cancelledWorkItemIds.push(item.workItemId);
+    }
+
+    plan = this.repositories.plans.getPlan(planId);
+    if (plan.status !== 'CANCELLED') {
+      if (plan.status !== 'SAFETY_HOLD') throw new ForgeFlowError('PROJECT_PLAN_CANCEL_STALE');
+      const cancelled = this.repositories.plans.compareAndSetStatus(
+        plan.planId,
+        'SAFETY_HOLD',
+        'CANCELLED',
+      );
+      if (cancelled.status === 'rejected')
+        throw new ForgeFlowError(cancelled.reason ?? 'PROJECT_PLAN_CANCEL_STALE');
+    }
+
+    if (this.lifecycle) await this.lifecycle.retire(planId);
+
+    const currentLease = this.repositories.projectPlans.getLease(plan.projectKey);
+    if (!currentLease) throw new ForgeFlowError('PROJECT_PLAN_LEASE_NOT_FOUND');
+    if (currentLease.activeRootPlanId !== planId)
+      throw new ForgeFlowError('PROJECT_PLAN_LEASE_OWNER_MISMATCH');
+    const handoff = this.repositories.projectPlans.releaseAndActivateNext(
+      plan.projectKey,
+      planId,
+      currentLease.version,
+    );
+
+    let activationErrorCode: string | undefined;
+    if (handoff.activatedPlanId) {
+      try {
+        if (this.lifecycle) await this.lifecycle.activate(handoff.activatedPlanId);
+        this.ensureSupervisorActive(handoff.activatedPlanId);
+      } catch (error) {
+        activationErrorCode =
+          error instanceof ForgeFlowError ? error.code : 'PROJECT_PLAN_ACTIVATION_FAILED';
+      }
+    }
+
+    return {
+      ...this.handoffResult(plan.projectKey, handoff),
+      planId,
+      cancelledExecutionIds: [...cancelledExecutionIds].sort(),
+      cancelledWorkItemIds: cancelledWorkItemIds.sort(),
+      ...(activationErrorCode
+        ? {
+            activationErrorCode,
+            code: 'PROJECT_PLAN_CANCELLED_NEXT_ACTIVATION_DEFERRED',
+          }
+        : { code: handoff.activatedPlanId ? 'PROJECT_PLAN_CANCELLED_HANDOFF' : 'PROJECT_PLAN_CANCELLED' }),
+    };
+  }
+
+  private firstNonTerminalDescendant(planId: string): string | undefined {
+    const stack = [...this.repositories.relationships.getChildren(planId)];
+    const seen = new Set<string>();
+    while (stack.length > 0) {
+      const childPlanId = stack.shift()!;
+      if (seen.has(childPlanId)) continue;
+      seen.add(childPlanId);
+      const child = this.repositories.plans.getPlan(childPlanId);
+      if (!isTerminalPlanStatus(child.status)) return childPlanId;
+      stack.push(...this.repositories.relationships.getChildren(childPlanId));
+    }
+    return undefined;
   }
 
   private handoffResult(

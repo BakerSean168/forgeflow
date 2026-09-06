@@ -29,7 +29,7 @@ Prefer small commits that preserve a green durable baseline. For behavior change
 5. Run `npm run check`.
 6. Review the exact commit, not a mutable working tree.
 
-Changes that affect execution isolation, review provenance, resource selection, recovery, or delivery should include a failure-path test in addition to the success path.
+Changes that affect execution isolation, review provenance, resource selection, recovery, cancellation, or delivery should include a failure-path test in addition to the success path. Active Plan cancellation tests must prove that provider/worktree cleanup failure preserves the current project lease and prevents the next queued Plan from activating.
 
 ## Product boundary
 

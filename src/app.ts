@@ -1173,6 +1173,12 @@ export async function buildControlPlane(
     },
   );
   const automation = await buildExecutionAutomation(env, repositories, options.fetchImpl ?? fetch);
+  if (projectPlanQueue && automation) {
+    projectPlanQueue.setExecutionCancellation({
+      cancelExecution: async (executionId, idempotencyKey, reason) =>
+        await automation.worker.cancelExecution(executionId, idempotencyKey, reason),
+    });
+  }
   if (projectPlanQueue) {
     projectPlanQueue.bootstrapExistingRootPlans();
     if (automation?.planWorktreeManager) {
@@ -1983,6 +1989,23 @@ export async function buildControlPlane(
     return {
       plan: repositories.plans.getPlan(planId),
       queueEntry: repositories.projectPlans.getQueueEntry(planId) ?? null,
+    };
+  });
+
+  app.post('/api/v1/plans/:planId/cancel', async (request) => {
+    const runtime = requireProjectPlanQueue();
+    const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
+    const body = request.body === undefined ? {} : bodyRecord(request.body);
+    const idempotencyKey = requiredText(
+      request.headers['idempotency-key'] ?? body.idempotencyKey,
+      'PROJECT_PLAN_CANCEL_IDEMPOTENCY_REQUIRED',
+    );
+    const reason = requiredText(body.reason, 'PROJECT_PLAN_CANCEL_REASON_INVALID');
+    const result = await runtime.cancelActive(planId, idempotencyKey, reason);
+    return {
+      ...result,
+      plan: repositories.plans.getPlan(planId),
+      lease: repositories.projectPlans.getLease(repositories.plans.getPlan(planId).projectKey) ?? null,
     };
   });
 

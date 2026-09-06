@@ -181,6 +181,7 @@ class FakeProvider implements ExecutionProviderPort {
   inspectCalls = 0;
   continueCalls = 0;
   interruptCalls = 0;
+  cancelCalls = 0;
   continueObservedOffset = 50;
   replaceCalls = 0;
   launchSnapshot: ProviderSessionSnapshot = {
@@ -207,6 +208,12 @@ class FakeProvider implements ExecutionProviderPort {
     providerSessionId: 'provider-session-1',
     status: 'PAUSED',
     observedAt: now(25),
+  };
+  cancelSnapshot: ProviderSessionSnapshot = {
+    provider: this.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'PAUSED',
+    observedAt: now(26),
   };
   replaceSnapshot: ProviderSessionSnapshot = {
     provider: this.provider,
@@ -251,6 +258,15 @@ class FakeProvider implements ExecutionProviderPort {
   async interrupt(_providerSessionId: string): Promise<ProviderSessionSnapshot> {
     this.interruptCalls += 1;
     return { ...this.interruptSnapshot, observedAt: now(500 + this.interruptCalls) };
+  }
+
+  async cancel(providerSessionId: string): Promise<ProviderSessionSnapshot> {
+    this.cancelCalls += 1;
+    return {
+      ...this.cancelSnapshot,
+      providerSessionId,
+      observedAt: now(600 + this.cancelCalls),
+    };
   }
 
   async replace(input: ProviderSessionReplacementInput): Promise<ProviderSessionSnapshot> {
@@ -2088,6 +2104,127 @@ test('execution worker refuses non-independent review routes and releases a held
     reviewer.identity.executionId,
     'after-worker',
     lease.value.leaseToken,
+  );
+  seeded.db.close();
+});
+
+
+test('execution worker operator cancel quiesces a running provider before durable cancellation', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-operator-cancel-running',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const provider = new FakeProvider();
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-operator-cancel-running' },
+  );
+  await worker.runExecution(execution.identity.executionId);
+
+  const cancelled = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-running-1',
+    'operator cancelled the active root plan',
+  );
+  assert.equal(cancelled.status, 'SUCCEEDED');
+  assert.equal(cancelled.code, 'EXECUTION_OPERATOR_CANCELLED');
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(
+    seeded.repositories.executions.get(execution.identity.executionId).status,
+    'CANCELLED',
+  );
+  assert.equal(
+    seeded.repositories.sessions.get(execution.identity.executionId).providerStatus,
+    'CANCELLED',
+  );
+  const evidence = seeded.repositories.evidence.listByExecution(execution.identity.executionId);
+  assert.ok(
+    evidence.some(
+      (item) =>
+        item.kind === 'RECOVERY' &&
+        item.payload.mode === 'operator-execution-cancel' &&
+        item.payload.remoteProviderStatus === 'PAUSED',
+    ),
+  );
+  seeded.db.close();
+});
+
+test('execution worker operator cancel fails closed when provider does not quiesce', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-operator-cancel-live',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'RUNNING',
+    observedAt: now(26),
+  };
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-operator-cancel-live' },
+  );
+  await worker.runExecution(execution.identity.executionId);
+
+  const refused = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-live-1',
+    'must not release while provider is still running',
+  );
+  assert.equal(refused.status, 'WAITING');
+  assert.equal(refused.code, 'PROVIDER_CANCEL_NOT_QUIESCED');
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(
+    seeded.repositories.executions.get(execution.identity.executionId).status,
+    'RUNNING',
+  );
+  assert.equal(
+    seeded.repositories.evidence
+      .listByExecution(execution.identity.executionId)
+      .some((item) => item.payload.mode === 'operator-execution-cancel'),
+    false,
+  );
+  seeded.db.close();
+});
+
+test('execution worker operator cancel handles queued work without launching a provider', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-operator-cancel-queued',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const provider = new FakeProvider();
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-operator-cancel-queued' },
+  );
+
+  const cancelled = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-queued-1',
+    'cancel before launch',
+  );
+  assert.equal(cancelled.status, 'SUCCEEDED');
+  assert.equal(provider.launchCalls, 0);
+  assert.equal(provider.cancelCalls, 0);
+  assert.equal(
+    seeded.repositories.executions.get(execution.identity.executionId).status,
+    'CANCELLED',
   );
   seeded.db.close();
 });

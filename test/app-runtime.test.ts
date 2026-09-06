@@ -1754,3 +1754,90 @@ test('literal worktree canary is project-scoped and keeps legacy projects on iso
   await runtime.app.close();
   fs.rmSync(value.root, { recursive: true, force: true });
 });
+
+test('active Plan operator cancel is public, idempotent, and hands off the project lease', async () => {
+  const value = fixture();
+  const runtime = await buildControlPlane({
+    dbFile: path.join(value.root, 'operator-cancel.sqlite'),
+    environment: 'test',
+    logger: false,
+    env: {
+      NODE_ENV: 'test',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'false',
+      FORGEFLOW_SINGLE_ACTIVE_PLAN_ENABLED: 'true',
+    },
+  });
+  const create = async (key: string, objective: string) => {
+    const response = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans',
+      headers: { 'idempotency-key': key },
+      payload: {
+        projectKey: 'operator-cancel-project',
+        objective,
+        repositoryPath: value.repository,
+        baseRevision: value.revision,
+        workItems: [
+          {
+            itemKey: 'only',
+            title: 'Only item',
+            objective,
+            dependencies: [],
+            acceptanceCriteria: ['remain bounded'],
+          },
+        ],
+      },
+    });
+    assert.equal(response.statusCode, 201);
+    return response.json().plan.planId as string;
+  };
+
+  try {
+    const activePlanId = await create('operator-cancel-active', 'active cancellation target');
+    const queuedPlanId = await create('operator-cancel-queued', 'next queued target');
+    const before = await runtime.app.inject({
+      method: 'GET',
+      url: '/api/v1/projects/operator-cancel-project/plan-queue',
+    });
+    assert.equal(before.statusCode, 200);
+    assert.equal(before.json().lease.activeRootPlanId, activePlanId);
+    assert.equal(before.json().items[0].planId, queuedPlanId);
+
+    const cancelled = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans/' + encodeURIComponent(activePlanId) + '/cancel',
+      headers: { 'idempotency-key': 'operator-cancel-request-1' },
+      payload: { reason: 'smoke validation finished' },
+    });
+    assert.equal(cancelled.statusCode, 200);
+    assert.equal(cancelled.json().code, 'PROJECT_PLAN_CANCELLED_HANDOFF');
+    assert.equal(cancelled.json().plan.status, 'CANCELLED');
+    assert.equal(cancelled.json().activatedPlanId, queuedPlanId);
+    assert.equal(cancelled.json().lease.activeRootPlanId, queuedPlanId);
+    const activeView = await runtime.app.inject({
+      method: 'GET',
+      url: '/api/v1/plans/' + encodeURIComponent(activePlanId),
+    });
+    assert.equal(activeView.json().workItems[0].status, 'CANCELLED');
+    assert.equal(activeView.json().supervisor.status, 'CANCELLED');
+    const queuedView = await runtime.app.inject({
+      method: 'GET',
+      url: '/api/v1/plans/' + encodeURIComponent(queuedPlanId),
+    });
+    assert.equal(queuedView.json().plan.status, 'READY');
+    assert.equal(queuedView.json().supervisor.status, 'ACTIVE');
+
+    const repeated = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans/' + encodeURIComponent(activePlanId) + '/cancel',
+      headers: { 'idempotency-key': 'operator-cancel-request-1' },
+      payload: { reason: 'smoke validation finished' },
+    });
+    assert.equal(repeated.statusCode, 200);
+    assert.equal(repeated.json().code, 'PROJECT_PLAN_ALREADY_CANCELLED');
+    assert.equal(repeated.json().lease.activeRootPlanId, queuedPlanId);
+  } finally {
+    await runtime.app.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
+});
