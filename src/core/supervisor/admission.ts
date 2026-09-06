@@ -1,21 +1,15 @@
 import { failClosed } from '../domain/errors.js';
+import {
+  validateSupervisorDirectAdmissionRecord,
+  type SupervisorDirectAdmissionRecord,
+} from '../domain/supervisor.js';
 import type {
   ResourceCandidateReadinessPort,
   ResourceSelectionCandidate,
 } from '../orchestration/resourceSelector.js';
 import type { SupervisorDecisionInput } from './runtime.js';
 
-export interface SupervisorDirectAdmissionStatus {
-  key: string;
-  resourceId: string;
-  bindingId: string;
-  modelFamily: string;
-  routeModel: string;
-  protocol: string;
-  ready: boolean;
-  checkedAt: string;
-  errorCode?: string;
-}
+export type SupervisorDirectAdmissionStatus = SupervisorDirectAdmissionRecord;
 
 export interface SupervisorDirectAdmissionProbeResult {
   ready: boolean;
@@ -36,6 +30,32 @@ export function supervisorDirectAdmissionKey(candidate: ResourceSelectionCandida
   ].join('|');
 }
 
+export function createSupervisorDirectAdmissionStatus(
+  candidate: ResourceSelectionCandidate,
+  input: { ready: boolean; checkedAt?: string; errorCode?: string },
+): SupervisorDirectAdmissionStatus {
+  const routeModel = candidate.profile.routeModel;
+  failClosed(Boolean(routeModel), 'SUPERVISOR_DIRECT_ADMISSION_ROUTE_REQUIRED');
+  const protocol = candidate.profile.protocol ?? 'openai-chat-completions';
+  failClosed(
+    protocol === 'openai-chat-completions' || protocol === 'openai-responses',
+    'SUPERVISOR_ADMISSION_PROTOCOL_INVALID',
+  );
+  const status: SupervisorDirectAdmissionStatus = {
+    admissionKey: supervisorDirectAdmissionKey(candidate),
+    resourceId: candidate.profile.resourceId,
+    bindingId: candidate.profile.bindingId ?? candidate.binding.bindingId,
+    modelFamily: candidate.profile.modelFamily,
+    routeModel: routeModel!,
+    protocol,
+    ready: input.ready,
+    checkedAt: input.checkedAt ?? new Date().toISOString(),
+    ...(input.errorCode ? { errorCode: input.errorCode.slice(0, 500) } : {}),
+  };
+  validateSupervisorDirectAdmissionRecord(status);
+  return status;
+}
+
 export class SupervisorDirectAdmissionRegistry implements ResourceCandidateReadinessPort {
   private readonly statuses = new Map<string, SupervisorDirectAdmissionStatus>();
 
@@ -51,21 +71,16 @@ export class SupervisorDirectAdmissionRegistry implements ResourceCandidateReadi
     candidate: ResourceSelectionCandidate,
     input: { ready: boolean; checkedAt?: string; errorCode?: string },
   ): SupervisorDirectAdmissionStatus {
-    const routeModel = candidate.profile.routeModel;
-    failClosed(Boolean(routeModel), 'SUPERVISOR_DIRECT_ADMISSION_ROUTE_REQUIRED');
-    const status: SupervisorDirectAdmissionStatus = {
-      key: supervisorDirectAdmissionKey(candidate),
-      resourceId: candidate.profile.resourceId,
-      bindingId: candidate.profile.bindingId ?? candidate.binding.bindingId,
-      modelFamily: candidate.profile.modelFamily,
-      routeModel: routeModel!,
-      protocol: candidate.profile.protocol ?? 'openai-chat-completions',
-      ready: input.ready,
-      checkedAt: input.checkedAt ?? new Date().toISOString(),
-      ...(input.errorCode ? { errorCode: input.errorCode.slice(0, 500) } : {}),
-    };
-    this.statuses.set(status.key, status);
+    const status = createSupervisorDirectAdmissionStatus(candidate, input);
+    this.restore([status]);
     return status;
+  }
+
+  restore(records: readonly SupervisorDirectAdmissionStatus[]): void {
+    for (const record of records) {
+      validateSupervisorDirectAdmissionRecord(record);
+      this.statuses.set(record.admissionKey, record);
+    }
   }
 
   isStale(
@@ -92,7 +107,7 @@ export class SupervisorDirectAdmissionRegistry implements ResourceCandidateReadi
   }
 
   list(): SupervisorDirectAdmissionStatus[] {
-    return [...this.statuses.values()].sort((a, b) => a.key.localeCompare(b.key));
+    return [...this.statuses.values()].sort((a, b) => a.admissionKey.localeCompare(b.admissionKey));
   }
 
   summary(): { checked: number; ready: number; unready: number } {

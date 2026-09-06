@@ -68,9 +68,11 @@ import {
 import {
   transitionSupervisor,
   validateSupervisor,
+  validateSupervisorDirectAdmissionRecord,
   SUPERVISOR_STATUSES,
   type Supervisor,
   type SupervisorDecision,
+  type SupervisorDirectAdmissionRecord,
   type SupervisorStatus,
   type SupervisorWakeReason,
 } from '../domain/supervisor.js';
@@ -3283,6 +3285,151 @@ function sameOverrideInput(
   );
 }
 
+interface SupervisorDirectAdmissionRow {
+  admission_key: string;
+  resource_id: string;
+  binding_id: string;
+  model_family: string;
+  route_model: string;
+  protocol: string;
+  ready: number;
+  error_code: string | null;
+  checked_at: string;
+}
+
+function supervisorDirectAdmissionFrom(row: SupervisorDirectAdmissionRow): SupervisorDirectAdmissionRecord {
+  const record: SupervisorDirectAdmissionRecord = {
+    admissionKey: row.admission_key,
+    resourceId: row.resource_id,
+    bindingId: row.binding_id,
+    modelFamily: row.model_family,
+    routeModel: row.route_model,
+    protocol: row.protocol as SupervisorDirectAdmissionRecord['protocol'],
+    ready: Boolean(row.ready),
+    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    checkedAt: row.checked_at,
+  };
+  validateSupervisorDirectAdmissionRecord(record);
+  return record;
+}
+
+export class SupervisorDirectAdmissionRepository {
+  constructor(
+    readonly db: DatabaseSync,
+    readonly events = new EventStore(db),
+  ) {
+    assertCurrentSchema(db);
+  }
+
+  get(admissionKey: string): SupervisorDirectAdmissionRecord | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM supervisor_direct_admissions WHERE admission_key=?')
+      .get(admissionKey) as SupervisorDirectAdmissionRow | undefined;
+    return row ? supervisorDirectAdmissionFrom(row) : undefined;
+  }
+
+  list(): SupervisorDirectAdmissionRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM supervisor_direct_admissions ORDER BY admission_key')
+      .all() as unknown as SupervisorDirectAdmissionRow[];
+    return rows.map(supervisorDirectAdmissionFrom);
+  }
+
+  record(input: SupervisorDirectAdmissionRecord): MutationResult<SupervisorDirectAdmissionRecord> {
+    validateSupervisorDirectAdmissionRecord(input);
+    assertSafeEventPayload(input);
+    return withTransaction(this.db, () => {
+      const current = this.get(input.admissionKey);
+      if (
+        current &&
+        (current.resourceId !== input.resourceId ||
+          current.bindingId !== input.bindingId ||
+          current.modelFamily !== input.modelFamily ||
+          current.routeModel !== input.routeModel ||
+          current.protocol !== input.protocol)
+      )
+        throw new ForgeFlowError('SUPERVISOR_ADMISSION_IDENTITY_CONFLICT');
+      const changedState =
+        !current || current.ready !== input.ready || current.errorCode !== input.errorCode;
+      const result = current
+        ? this.db
+            .prepare(
+              `UPDATE supervisor_direct_admissions
+               SET ready=?,error_code=?,checked_at=? WHERE admission_key=?`,
+            )
+            .run(Number(input.ready), input.errorCode ?? null, input.checkedAt, input.admissionKey)
+        : this.db
+            .prepare(
+              `INSERT INTO supervisor_direct_admissions(
+                 admission_key,resource_id,binding_id,model_family,route_model,protocol,ready,error_code,checked_at
+               ) VALUES(?,?,?,?,?,?,?,?,?)`,
+            )
+            .run(
+              input.admissionKey,
+              input.resourceId,
+              input.bindingId,
+              input.modelFamily,
+              input.routeModel,
+              input.protocol,
+              Number(input.ready),
+              input.errorCode ?? null,
+              input.checkedAt,
+            );
+      if (Number(result.changes) !== 1)
+        return { status: 'rejected', value: this.get(input.admissionKey), reason: 'SUPERVISOR_ADMISSION_STALE' };
+      if (changedState)
+        this.events.appendInTransaction(
+          makeEvent(input.admissionKey, 'RESOURCE', 'SUPERVISOR_DIRECT_ADMISSION_CHANGED', {
+            resourceId: input.resourceId,
+            bindingId: input.bindingId,
+            modelFamily: input.modelFamily,
+            routeModel: input.routeModel,
+            protocol: input.protocol,
+            ready: input.ready,
+            errorCode: input.errorCode ?? null,
+            checkedAt: input.checkedAt,
+          }),
+        );
+      return { status: current ? 'updated' : 'created', value: this.get(input.admissionKey)! };
+    });
+  }
+
+  invalidateResource(resourceId: string): number {
+    failClosed(resourceId.trim().length > 0, 'SUPERVISOR_ADMISSION_RESOURCE_REQUIRED');
+    return withTransaction(this.db, () => {
+      const count = Number(
+        (
+          this.db
+            .prepare('SELECT COUNT(*) AS count FROM supervisor_direct_admissions WHERE resource_id=?')
+            .get(resourceId) as { count: number }
+        ).count,
+      );
+      if (count === 0) return 0;
+      this.db.prepare('DELETE FROM supervisor_direct_admissions WHERE resource_id=?').run(resourceId);
+      this.events.appendInTransaction(
+        makeEvent(resourceId, 'RESOURCE', 'SUPERVISOR_DIRECT_ADMISSION_INVALIDATED', {
+          resourceId,
+          count,
+        }),
+      );
+      return count;
+    });
+  }
+
+  retain(admissionKeys: readonly string[]): number {
+    const keep = new Set(admissionKeys);
+    const rows = this.list();
+    const remove = rows.filter((row) => !keep.has(row.admissionKey));
+    if (remove.length === 0) return 0;
+    return withTransaction(this.db, () => {
+      let changed = 0;
+      const statement = this.db.prepare('DELETE FROM supervisor_direct_admissions WHERE admission_key=?');
+      for (const row of remove) changed += Number(statement.run(row.admissionKey).changes);
+      return changed;
+    });
+  }
+}
+
 export class ResourceStateOverrideRepository {
   constructor(
     readonly db: DatabaseSync,
@@ -4044,6 +4191,7 @@ export interface ForgeFlowRepositories {
   resourceSelections: ExecutionResourceSelectionRepository;
   executionResourceSelections: ExecutionResourceSelectionRepository;
   resourceStateOverrides: ResourceStateOverrideRepository;
+  supervisorDirectAdmissions: SupervisorDirectAdmissionRepository;
   projectPlans: ProjectPlanSchedulerRepository;
   planWorktrees: PlanWorktreeRepository;
   events: EventStore;
@@ -4067,6 +4215,7 @@ export function createRepositories(db: DatabaseSync): ForgeFlowRepositories {
     resourceSelections,
     executionResourceSelections: resourceSelections,
     resourceStateOverrides,
+    supervisorDirectAdmissions: new SupervisorDirectAdmissionRepository(db, events),
     projectPlans: new ProjectPlanSchedulerRepository(db, events),
     planWorktrees: new PlanWorktreeRepository(db, events),
     events,

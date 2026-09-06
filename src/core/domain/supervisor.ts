@@ -24,6 +24,42 @@ export interface Supervisor {
   updatedAt: string;
 }
 
+export interface SupervisorDirectAdmissionRecord {
+  admissionKey: string;
+  resourceId: string;
+  bindingId: string;
+  modelFamily: string;
+  routeModel: string;
+  protocol: 'openai-chat-completions' | 'openai-responses';
+  ready: boolean;
+  errorCode?: string;
+  checkedAt: string;
+}
+
+export function validateSupervisorDirectAdmissionRecord(
+  record: SupervisorDirectAdmissionRecord,
+): void {
+  for (const [value, code] of [
+    [record.admissionKey, 'SUPERVISOR_ADMISSION_KEY_REQUIRED'],
+    [record.resourceId, 'SUPERVISOR_ADMISSION_RESOURCE_REQUIRED'],
+    [record.bindingId, 'SUPERVISOR_ADMISSION_BINDING_REQUIRED'],
+    [record.modelFamily, 'SUPERVISOR_ADMISSION_MODEL_REQUIRED'],
+    [record.routeModel, 'SUPERVISOR_ADMISSION_ROUTE_REQUIRED'],
+  ] as const)
+    failClosed(value.trim().length > 0 && value.length <= 2_000, code);
+  failClosed(
+    record.protocol === 'openai-chat-completions' || record.protocol === 'openai-responses',
+    'SUPERVISOR_ADMISSION_PROTOCOL_INVALID',
+  );
+  failClosed(Number.isFinite(Date.parse(record.checkedAt)), 'SUPERVISOR_ADMISSION_TIME_INVALID');
+  failClosed(
+    !record.errorCode ||
+      (record.errorCode.length <= 500 && /^[A-Z0-9_.:-]+$/.test(record.errorCode)),
+    'SUPERVISOR_ADMISSION_ERROR_CODE_INVALID',
+  );
+  failClosed(!record.ready || !record.errorCode, 'SUPERVISOR_ADMISSION_READY_WITH_ERROR');
+}
+
 export interface ActionValidationResult {
   accepted: boolean;
   code: string;

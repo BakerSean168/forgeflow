@@ -85,6 +85,7 @@ import { ResourceSelectedSupervisorDecisionClient } from './core/supervisor/reso
 import { SupervisorDirectAdmissionProbe } from './core/adapters/supervisorDirectAdmission.js';
 import {
   SupervisorDirectAdmissionRegistry,
+  createSupervisorDirectAdmissionStatus,
   supervisorDirectAdmissionKey,
 } from './core/supervisor/admission.js';
 import { SupervisorRuntime } from './core/supervisor/runtime.js';
@@ -1324,6 +1325,8 @@ export async function buildControlPlane(
   const supervisorDirectAdmission = new SupervisorDirectAdmissionRegistry();
   const supervisorDirectAdmissionEnabled =
     supervisorRuntimeEnabled && Boolean(automation?.resourceSelectorEnabled);
+  if (supervisorDirectAdmissionEnabled)
+    supervisorDirectAdmission.restore(repositories.supervisorDirectAdmissions.list());
   const supervisorDirectAdmissionReadyTtlMs = integerValue(
     env.FORGEFLOW_SUPERVISOR_ADMISSION_TTL_MS,
     15 * 60_000,
@@ -1389,6 +1392,8 @@ export async function buildControlPlane(
     if (supervisorDirectAdmissionCycle) return await supervisorDirectAdmissionCycle;
     supervisorDirectAdmissionCycle = (async () => {
       const candidates = supervisorAdmissionCandidates();
+      const admissionKeys = candidates.map(supervisorDirectAdmissionKey);
+      repositories.supervisorDirectAdmissions.retain(admissionKeys);
       supervisorDirectAdmission.retain(candidates);
       const now = Date.now();
       for (const candidate of candidates) {
@@ -1402,7 +1407,11 @@ export async function buildControlPlane(
         )
           continue;
         const result = await supervisorDirectAdmissionProbe.probe(candidate);
-        supervisorDirectAdmission.record(candidate, result);
+        const status = createSupervisorDirectAdmissionStatus(candidate, result);
+        const persisted = repositories.supervisorDirectAdmissions.record(status);
+        if (!persisted.value || persisted.status === 'rejected')
+          throw new ForgeFlowError(persisted.reason ?? 'SUPERVISOR_ADMISSION_PERSIST_FAILED');
+        supervisorDirectAdmission.restore([persisted.value]);
       }
     })();
     try {
@@ -1815,6 +1824,7 @@ export async function buildControlPlane(
       ...(expectedVersion === undefined ? {} : { expectedVersion }),
     });
     if (result.status === 'rejected') throw new ForgeFlowError(result.reason ?? 'STALE_RESOURCE_STATE');
+    repositories.supervisorDirectAdmissions.invalidateResource(resourceId);
     supervisorDirectAdmission.invalidateResource(resourceId);
     const resourceWake = await reconcileSupervisorReadiness();
     const projected = runtime.resources
@@ -1847,6 +1857,7 @@ export async function buildControlPlane(
       throw new ForgeFlowError('RESOURCE_BINDING_STATE_UNSUPPORTED');
     await runtime.resourceStateEffect.applyBinding(resource, binding, state);
     await runtime.liteLlmResources.refresh();
+    repositories.supervisorDirectAdmissions.invalidateResource(resourceId);
     supervisorDirectAdmission.invalidateResource(resourceId);
     const resourceWake = await reconcileSupervisorReadiness();
     const projected = runtime.resources

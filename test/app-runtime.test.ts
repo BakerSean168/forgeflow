@@ -925,6 +925,128 @@ test('startup reconciles a recovered reasoning resource for a durable waiting Su
   }
 });
 
+test('Supervisor direct admission failure TTL survives control-plane restart without another paid probe', async () => {
+  const value = fixture();
+  const dbFile = path.join(value.root, 'supervisor-admission-restart.sqlite');
+  const adminEnv = path.join(value.root, 'litellm-supervisor-admission-restart.env');
+  fs.writeFileSync(adminEnv, 'LITELLM_MASTER_KEY=test-master-key\n');
+  let admissionCalls = 0;
+  const fakeFetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const url = String(input);
+    if (url.endsWith('/model/info'))
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              model_name: 'route-durable-admission-sol',
+              litellm_params: { litellm_credential_name: 'durable-admission-provider' },
+              model_info: {
+                id: 'deployment-durable-admission-sol',
+                blocked: false,
+                metadata: {
+                  automatic_core: true,
+                  resource_id: 'durable-admission-provider',
+                  resource_sequence: 401,
+                  model_family: 'gpt-5.6-sol',
+                  route_model: 'route-durable-admission-sol',
+                  protocol: 'openai-responses',
+                  commercial_type: 'METERED',
+                  supply_origin: 'COMMERCIAL_RELAY',
+                  resource_lifecycle: 'RECURRING',
+                },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    let body: any;
+    try {
+      body = JSON.parse(String(init.body));
+    } catch {
+      body = undefined;
+    }
+    if (
+      url.endsWith('/responses') &&
+      typeof body?.instructions === 'string' &&
+      body.instructions.includes('Return exactly one JSON object')
+    ) {
+      admissionCalls += 1;
+      return new Response('upstream unavailable with private diagnostic', { status: 502 });
+    }
+    throw new Error('unexpected durable-admission fetch: ' + url);
+  }) as typeof fetch;
+  const env = {
+    NODE_ENV: 'test',
+    FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'true',
+    FORGEFLOW_AUTOMATION_RUNTIME_ENABLED: 'false',
+    FORGEFLOW_RESOURCE_SELECTOR_ENABLED: 'true',
+    FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED: 'true',
+    FORGEFLOW_SUPERVISOR_POLL_MS: '300000',
+    FORGEFLOW_SUPERVISOR_ADMISSION_FAILURE_TTL_MS: '300000',
+    FORGEFLOW_BUSINESS_RESOURCE_ENABLED: 'false',
+    FORGEFLOW_OPENHANDS_URL: 'http://openhands.test',
+    FORGEFLOW_OPENHANDS_TOKEN: 'test-session-key',
+    FORGEFLOW_LITELLM_API_KEY: 'test-litellm-key',
+    FORGEFLOW_LITELLM_BASE_URL: 'http://litellm.test/v1',
+    FORGEFLOW_LITELLM_ADMIN_BASE_URL: 'http://litellm.test',
+    FORGEFLOW_LITELLM_ADMIN_ENV_FILE: adminEnv,
+    FORGEFLOW_ALLOWED_REPOSITORY_ROOTS: value.allowed,
+    FORGEFLOW_WORKSPACE_HOST_ROOT: value.managed,
+    FORGEFLOW_WORKSPACE_EXECUTION_ROOT: '/workspace',
+    FORGEFLOW_AUTOMATION_PROJECTS: 'durable-admission-project',
+    FORGEFLOW_WORKSPACE_UID: String(process.getuid?.() ?? 0),
+    FORGEFLOW_WORKSPACE_GID: String(process.getgid?.() ?? 0),
+  };
+
+  const first = await buildControlPlane({
+    dbFile,
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env,
+  });
+  try {
+    await first.supervisor.reconcileReadiness();
+    assert.equal(admissionCalls, 1);
+    assert.deepEqual(first.supervisor.directAdmission.summary(), {
+      checked: 1,
+      ready: 0,
+      unready: 1,
+    });
+    const durable = first.repositories.supervisorDirectAdmissions.list();
+    assert.equal(durable.length, 1);
+    assert.equal(durable[0]?.errorCode, 'SUPERVISOR_DIRECT_ADMISSION_HTTP_502');
+  } finally {
+    await first.app.close();
+  }
+
+  const second = await buildControlPlane({
+    dbFile,
+    environment: 'test',
+    logger: false,
+    fetchImpl: fakeFetch,
+    env,
+  });
+  try {
+    assert.deepEqual(second.supervisor.directAdmission.summary(), {
+      checked: 1,
+      ready: 0,
+      unready: 1,
+    });
+    await second.supervisor.reconcileReadiness();
+    assert.equal(admissionCalls, 1);
+    const endpoint = await second.app.inject({ method: 'GET', url: '/api/v1/supervisor-admission' });
+    assert.equal(endpoint.statusCode, 200);
+    assert.equal(endpoint.json().items[0].errorCode, 'SUPERVISOR_DIRECT_ADMISSION_HTTP_502');
+    assert.equal(JSON.stringify(endpoint.json()).includes('private diagnostic'), false);
+    assert.equal(JSON.stringify(endpoint.json()).includes('test-litellm-key'), false);
+  } finally {
+    await second.app.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test('selector-off rollback preserves durable selector provenance in the same durable database', async () => {
   const value = fixture();
   const dbFile = path.join(value.root, 'rollback.sqlite');

@@ -349,6 +349,50 @@ test('resource availability creates one durable RESOURCE_TRANSITION wake for eac
   db.close();
 });
 
+test('Supervisor direct admission cache survives restart, updates TTL without event spam, and invalidates durably', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-supervisor-admission-'));
+  const file = path.join(directory, 'control-plane.sqlite');
+  const admissionKey = 'provider|binding|gpt-5.6-sol|route-sol|openai-responses';
+  const firstCheckedAt = '2026-09-06T00:00:00.000Z';
+  const secondCheckedAt = '2026-09-06T00:01:00.000Z';
+  let db = openDatabase(file, { environment: 'test', env: { NODE_ENV: 'test' } });
+  let repositories = createRepositories(db);
+  const created = repositories.supervisorDirectAdmissions.record({
+    admissionKey,
+    resourceId: 'provider',
+    bindingId: 'binding',
+    modelFamily: 'gpt-5.6-sol',
+    routeModel: 'route-sol',
+    protocol: 'openai-responses',
+    ready: false,
+    errorCode: 'SUPERVISOR_DIRECT_ADMISSION_HTTP_502',
+    checkedAt: firstCheckedAt,
+  });
+  assert.equal(created.status, 'created');
+  assert.equal(repositories.events.listByAggregate(admissionKey).length, 1);
+  const refreshed = repositories.supervisorDirectAdmissions.record({
+    ...created.value!,
+    checkedAt: secondCheckedAt,
+  });
+  assert.equal(refreshed.status, 'updated');
+  assert.equal(refreshed.value?.checkedAt, secondCheckedAt);
+  assert.equal(repositories.events.listByAggregate(admissionKey).length, 1);
+  db.close();
+
+  db = openDatabase(file, { environment: 'test', env: { NODE_ENV: 'test' } });
+  repositories = createRepositories(db);
+  const recovered = repositories.supervisorDirectAdmissions.get(admissionKey);
+  assert.equal(recovered?.ready, false);
+  assert.equal(recovered?.errorCode, 'SUPERVISOR_DIRECT_ADMISSION_HTTP_502');
+  assert.equal(recovered?.checkedAt, secondCheckedAt);
+  assert.equal(repositories.supervisorDirectAdmissions.invalidateResource('provider'), 1);
+  assert.equal(repositories.supervisorDirectAdmissions.get(admissionKey), undefined);
+  const invalidationEvents = repositories.events.listByAggregate('provider');
+  assert.equal(invalidationEvents.at(-1)?.type, 'SUPERVISOR_DIRECT_ADMISSION_INVALIDATED');
+  assert.deepEqual(invalidationEvents.at(-1)?.payload, { resourceId: 'provider', count: 1 });
+  db.close();
+});
+
 test('maintenance candidates survive database restart with immutable plan binding', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-maintenance-'));
   const file = path.join(dir, 'control-plane.sqlite');
