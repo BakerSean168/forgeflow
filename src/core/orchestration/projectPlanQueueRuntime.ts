@@ -21,10 +21,12 @@ export interface ProjectPlanExecutionCancellationPort {
   ): Promise<{ status: string; code: string }>;
 }
 
-export interface ActiveProjectPlanCancellationResult extends ProjectPlanQueueRuntimeResult {
+export interface ProjectPlanCancellationResult extends ProjectPlanQueueRuntimeResult {
   planId: string;
   cancelledExecutionIds: string[];
+  rootPlanId: string;
   cancelledWorkItemIds: string[];
+  cancelledReviewIds: string[];
   activationErrorCode?: string;
 }
 
@@ -154,16 +156,23 @@ export class ProjectPlanQueueRuntime {
       throw new ForgeFlowError(result.reason ?? 'PROJECT_PLAN_QUEUE_CANCEL_FAILED');
   }
 
+  async cancelPlan(
+    planId: string,
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<ProjectPlanCancellationResult> {
+    const plan = this.repositories.plans.getPlan(planId);
+    return plan.parentPlanId
+      ? await this.cancelChild(planId, idempotencyKey, reason)
+      : await this.cancelActive(planId, idempotencyKey, reason);
+  }
+
   async cancelActive(
     planId: string,
     idempotencyKey: string,
     reason: string,
-  ): Promise<ActiveProjectPlanCancellationResult> {
-    if (!idempotencyKey.trim() || idempotencyKey.length > 1_000)
-      throw new ForgeFlowError('PROJECT_PLAN_CANCEL_IDEMPOTENCY_REQUIRED');
-    if (!reason.trim() || reason.length > 2_000)
-      throw new ForgeFlowError('PROJECT_PLAN_CANCEL_REASON_INVALID');
-
+  ): Promise<ProjectPlanCancellationResult> {
+    this.validateCancellationInput(idempotencyKey, reason);
     let plan = this.repositories.plans.getPlan(planId);
     if (plan.parentPlanId) throw new ForgeFlowError('PROJECT_PLAN_ROOT_REQUIRED');
     const lease = this.repositories.projectPlans.getLease(plan.projectKey);
@@ -171,17 +180,9 @@ export class ProjectPlanQueueRuntime {
       return {
         projectKey: plan.projectKey,
         planId,
+        rootPlanId: planId,
         code: 'PROJECT_PLAN_ALREADY_CANCELLED',
-        cancelledExecutionIds: this.repositories.executions
-          .listByPlan(planId)
-          .filter((execution) => execution.status === 'CANCELLED')
-          .map((execution) => execution.identity.executionId)
-          .sort(),
-        cancelledWorkItemIds: this.repositories.plans
-          .listWorkItems(planId)
-          .filter((item) => item.status === 'CANCELLED')
-          .map((item) => item.workItemId)
-          .sort(),
+        ...this.cancelledState(planId),
       };
     }
     if (!lease) throw new ForgeFlowError('PROJECT_PLAN_LEASE_NOT_FOUND');
@@ -195,89 +196,8 @@ export class ProjectPlanQueueRuntime {
         'Cancel descendant Plan first: ' + activeDescendant,
       );
 
-    if (plan.status !== 'CANCELLED') {
-      if (isTerminalPlanStatus(plan.status))
-        throw new ForgeFlowError('PROJECT_PLAN_CANCEL_TERMINAL');
-      if (plan.status !== 'SAFETY_HOLD') {
-        const held = this.repositories.plans.compareAndSetStatus(
-          plan.planId,
-          plan.status,
-          'SAFETY_HOLD',
-        );
-        if (held.status === 'rejected')
-          throw new ForgeFlowError(held.reason ?? 'PROJECT_PLAN_CANCEL_STALE');
-        this.repositories.events.appendNew({
-          aggregateId: plan.planId,
-          aggregateType: 'PLAN',
-          type: 'PROJECT_PLAN_CANCEL_REQUESTED',
-          payload: {
-            reason: reason.trim(),
-            idempotencyDigest: createHash('sha256').update(idempotencyKey.trim()).digest('hex'),
-          },
-          occurredAt: new Date().toISOString(),
-          correlationId: plan.planId,
-        });
-        plan = this.repositories.plans.getPlan(plan.planId);
-      }
-    }
-
-    this.retireSupervisor(planId);
-
-    const cancellationDigest = createHash('sha256')
-      .update(idempotencyKey.trim())
-      .digest('hex')
-      .slice(0, 32);
-    const cancelledExecutionIds = new Set<string>();
-    for (let round = 0; round < 3; round += 1) {
-      const pending = this.repositories.executions
-        .listByPlan(planId)
-        .filter((execution) => execution.status !== 'SUCCEEDED' && execution.status !== 'CANCELLED');
-      if (pending.length === 0) break;
-      if (!this.executionCancellation)
-        throw new ForgeFlowError('PROJECT_PLAN_CANCEL_EXECUTION_RUNTIME_REQUIRED');
-      for (const execution of pending) {
-        const result = await this.executionCancellation.cancelExecution(
-          execution.identity.executionId,
-          'plan-cancel:' + cancellationDigest + ':' + execution.identity.executionId,
-          reason.trim(),
-        );
-        const durable = this.repositories.executions.get(execution.identity.executionId);
-        if (durable.status === 'CANCELLED') {
-          if (result.status !== 'SUCCEEDED')
-            throw new ForgeFlowError(result.code || 'PROJECT_PLAN_CANCEL_EXECUTION_CLEANUP_FAILED');
-          cancelledExecutionIds.add(durable.identity.executionId);
-          continue;
-        }
-        if (durable.status === 'SUCCEEDED') continue;
-        throw new ForgeFlowError(result.code || 'PROJECT_PLAN_CANCEL_EXECUTION_FAILED');
-      }
-    }
-    const stillActive = this.repositories.executions
-      .listByPlan(planId)
-      .filter((execution) => execution.status !== 'SUCCEEDED' && execution.status !== 'CANCELLED');
-    if (stillActive.length > 0)
-      throw new ForgeFlowError('PROJECT_PLAN_CANCEL_EXECUTIONS_ACTIVE');
-
-    const cancelledWorkItemIds: string[] = [];
-    for (const item of this.repositories.plans.listWorkItems(planId)) {
-      if (item.status === 'SUCCEEDED' || item.status === 'CANCELLED' || item.status === 'SUPERSEDED')
-        continue;
-      this.repositories.plans.updateWorkItemStatus(item.workItemId, 'CANCELLED');
-      cancelledWorkItemIds.push(item.workItemId);
-    }
-
+    const quiesced = await this.quiescePlanContents(planId, idempotencyKey, reason);
     plan = this.repositories.plans.getPlan(planId);
-    if (plan.status !== 'CANCELLED') {
-      if (plan.status !== 'SAFETY_HOLD') throw new ForgeFlowError('PROJECT_PLAN_CANCEL_STALE');
-      const cancelled = this.repositories.plans.compareAndSetStatus(
-        plan.planId,
-        'SAFETY_HOLD',
-        'CANCELLED',
-      );
-      if (cancelled.status === 'rejected')
-        throw new ForgeFlowError(cancelled.reason ?? 'PROJECT_PLAN_CANCEL_STALE');
-    }
-
     if (this.lifecycle) await this.lifecycle.retire(planId);
 
     const currentLease = this.repositories.projectPlans.getLease(plan.projectKey);
@@ -304,8 +224,8 @@ export class ProjectPlanQueueRuntime {
     return {
       ...this.handoffResult(plan.projectKey, handoff),
       planId,
-      cancelledExecutionIds: [...cancelledExecutionIds].sort(),
-      cancelledWorkItemIds: cancelledWorkItemIds.sort(),
+      rootPlanId: planId,
+      ...quiesced,
       ...(activationErrorCode
         ? {
             activationErrorCode,
@@ -313,6 +233,208 @@ export class ProjectPlanQueueRuntime {
           }
         : { code: handoff.activatedPlanId ? 'PROJECT_PLAN_CANCELLED_HANDOFF' : 'PROJECT_PLAN_CANCELLED' }),
     };
+  }
+
+  async cancelChild(
+    planId: string,
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<ProjectPlanCancellationResult> {
+    this.validateCancellationInput(idempotencyKey, reason);
+    const plan = this.repositories.plans.getPlan(planId);
+    if (!plan.parentPlanId) throw new ForgeFlowError('CHILD_PLAN_REQUIRED');
+    const rootPlanId = this.rootPlanIdFor(planId);
+    const root = this.repositories.plans.getPlan(rootPlanId);
+    if (root.projectKey !== plan.projectKey || root.repositoryPath !== plan.repositoryPath)
+      throw new ForgeFlowError('CHILD_PLAN_SCOPE_MISMATCH');
+    const lease = this.repositories.projectPlans.getLease(root.projectKey);
+    if (!lease || lease.activeRootPlanId !== rootPlanId)
+      throw new ForgeFlowError('CHILD_PLAN_ROOT_LEASE_REQUIRED');
+    if (plan.status === 'CANCELLED') {
+      return {
+        projectKey: plan.projectKey,
+        planId,
+        rootPlanId,
+        code: 'CHILD_PLAN_ALREADY_CANCELLED',
+        ...this.cancelledState(planId),
+      };
+    }
+    const activeDescendant = this.firstNonTerminalDescendant(planId);
+    if (activeDescendant)
+      throw new ForgeFlowError(
+        'PROJECT_PLAN_CANCEL_DESCENDANT_ACTIVE',
+        'Cancel descendant Plan first: ' + activeDescendant,
+      );
+    const quiesced = await this.quiescePlanContents(planId, idempotencyKey, reason);
+    return {
+      projectKey: plan.projectKey,
+      planId,
+      rootPlanId,
+      code: 'CHILD_PLAN_CANCELLED',
+      ...quiesced,
+    };
+  }
+
+  private validateCancellationInput(idempotencyKey: string, reason: string): void {
+    if (!idempotencyKey.trim() || idempotencyKey.length > 1_000)
+      throw new ForgeFlowError('PROJECT_PLAN_CANCEL_IDEMPOTENCY_REQUIRED');
+    if (!reason.trim() || reason.length > 2_000)
+      throw new ForgeFlowError('PROJECT_PLAN_CANCEL_REASON_INVALID');
+  }
+
+  private cancelledState(planId: string): {
+    cancelledExecutionIds: string[];
+    cancelledWorkItemIds: string[];
+    cancelledReviewIds: string[];
+  } {
+    return {
+      cancelledExecutionIds: this.repositories.executions
+        .listByPlan(planId)
+        .filter((execution) => execution.status === 'CANCELLED')
+        .map((execution) => execution.identity.executionId)
+        .sort(),
+      cancelledWorkItemIds: this.repositories.plans
+        .listWorkItems(planId)
+        .filter((item) => item.status === 'CANCELLED')
+        .map((item) => item.workItemId)
+        .sort(),
+      cancelledReviewIds: this.repositories.reviews
+        .listByPlan(planId)
+        .filter((review) => review.status === 'CANCELLED')
+        .map((review) => review.reviewId)
+        .sort(),
+    };
+  }
+
+  private async quiescePlanContents(
+    planId: string,
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<{
+    cancelledExecutionIds: string[];
+    cancelledWorkItemIds: string[];
+    cancelledReviewIds: string[];
+  }> {
+    let plan = this.repositories.plans.getPlan(planId);
+    const rootPlanId = this.rootPlanIdFor(planId);
+    if (plan.status !== 'CANCELLED') {
+      if (isTerminalPlanStatus(plan.status))
+        throw new ForgeFlowError('PROJECT_PLAN_CANCEL_TERMINAL');
+      if (plan.status !== 'SAFETY_HOLD') {
+        const held = this.repositories.plans.compareAndSetStatus(
+          plan.planId,
+          plan.status,
+          'SAFETY_HOLD',
+        );
+        if (held.status === 'rejected')
+          throw new ForgeFlowError(held.reason ?? 'PROJECT_PLAN_CANCEL_STALE');
+        this.repositories.events.appendNew({
+          aggregateId: plan.planId,
+          aggregateType: 'PLAN',
+          type: 'PROJECT_PLAN_CANCEL_REQUESTED',
+          payload: {
+            reason: reason.trim(),
+            scope: plan.planId === rootPlanId ? 'ROOT' : 'CHILD',
+            rootPlanId,
+            idempotencyDigest: createHash('sha256').update(idempotencyKey.trim()).digest('hex'),
+          },
+          occurredAt: new Date().toISOString(),
+          correlationId: plan.planId,
+        });
+        plan = this.repositories.plans.getPlan(plan.planId);
+      }
+    }
+
+    this.retireSupervisor(planId);
+    const cancellationDigest = createHash('sha256')
+      .update(idempotencyKey.trim())
+      .digest('hex')
+      .slice(0, 32);
+    const settledExecutions = new Set<string>();
+    const cancelledExecutionIds = new Set<string>();
+    for (let round = 0; round < 3; round += 1) {
+      const pending = this.repositories.executions
+        .listByPlan(planId)
+        .filter(
+          (execution) =>
+            execution.status !== 'SUCCEEDED' &&
+            !settledExecutions.has(execution.identity.executionId),
+        );
+      if (pending.length === 0) break;
+      if (!this.executionCancellation)
+        throw new ForgeFlowError('PROJECT_PLAN_CANCEL_EXECUTION_RUNTIME_REQUIRED');
+      for (const execution of pending) {
+        const result = await this.executionCancellation.cancelExecution(
+          execution.identity.executionId,
+          'plan-cancel:' + cancellationDigest + ':' + execution.identity.executionId,
+          reason.trim(),
+        );
+        const durable = this.repositories.executions.get(execution.identity.executionId);
+        if (durable.status === 'CANCELLED') {
+          if (result.status !== 'SUCCEEDED')
+            throw new ForgeFlowError(result.code || 'PROJECT_PLAN_CANCEL_EXECUTION_CLEANUP_FAILED');
+          settledExecutions.add(durable.identity.executionId);
+          cancelledExecutionIds.add(durable.identity.executionId);
+          continue;
+        }
+        if (durable.status === 'SUCCEEDED') {
+          settledExecutions.add(durable.identity.executionId);
+          continue;
+        }
+        throw new ForgeFlowError(result.code || 'PROJECT_PLAN_CANCEL_EXECUTION_FAILED');
+      }
+    }
+    const unsettled = this.repositories.executions
+      .listByPlan(planId)
+      .filter(
+        (execution) =>
+          execution.status !== 'SUCCEEDED' &&
+          !settledExecutions.has(execution.identity.executionId),
+      );
+    if (unsettled.length > 0) throw new ForgeFlowError('PROJECT_PLAN_CANCEL_EXECUTIONS_ACTIVE');
+
+    const cancelledReviewIds: string[] = [];
+    for (const review of this.repositories.reviews.listByPlan(planId)) {
+      if (review.status === 'PASSED' || review.status === 'CANCELLED') continue;
+      this.repositories.reviews.updateStatus(review.reviewId, 'CANCELLED');
+      cancelledReviewIds.push(review.reviewId);
+    }
+
+    const cancelledWorkItemIds: string[] = [];
+    for (const item of this.repositories.plans.listWorkItems(planId)) {
+      if (item.status === 'SUCCEEDED' || item.status === 'CANCELLED' || item.status === 'SUPERSEDED')
+        continue;
+      this.repositories.plans.updateWorkItemStatus(item.workItemId, 'CANCELLED');
+      cancelledWorkItemIds.push(item.workItemId);
+    }
+
+    plan = this.repositories.plans.getPlan(planId);
+    if (plan.status !== 'CANCELLED') {
+      if (plan.status !== 'SAFETY_HOLD') throw new ForgeFlowError('PROJECT_PLAN_CANCEL_STALE');
+      const cancelled = this.repositories.plans.compareAndSetStatus(
+        plan.planId,
+        'SAFETY_HOLD',
+        'CANCELLED',
+      );
+      if (cancelled.status === 'rejected')
+        throw new ForgeFlowError(cancelled.reason ?? 'PROJECT_PLAN_CANCEL_STALE');
+    }
+    return {
+      cancelledExecutionIds: [...cancelledExecutionIds].sort(),
+      cancelledWorkItemIds: cancelledWorkItemIds.sort(),
+      cancelledReviewIds: cancelledReviewIds.sort(),
+    };
+  }
+
+  private rootPlanIdFor(planId: string): string {
+    let current = this.repositories.plans.getPlan(planId);
+    const seen = new Set<string>();
+    while (current.parentPlanId) {
+      if (seen.has(current.planId)) throw new ForgeFlowError('CHILD_PLAN_CYCLE_DETECTED');
+      seen.add(current.planId);
+      current = this.repositories.plans.getPlan(current.parentPlanId);
+    }
+    return current.planId;
   }
 
   private firstNonTerminalDescendant(planId: string): string | undefined {

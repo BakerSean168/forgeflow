@@ -2021,7 +2021,7 @@ export async function buildControlPlane(
       'PROJECT_PLAN_CANCEL_IDEMPOTENCY_REQUIRED',
     );
     const reason = requiredText(body.reason, 'PROJECT_PLAN_CANCEL_REASON_INVALID');
-    const result = await runtime.cancelActive(planId, idempotencyKey, reason);
+    const result = await runtime.cancelPlan(planId, idempotencyKey, reason);
     return {
       ...result,
       plan: repositories.plans.getPlan(planId),

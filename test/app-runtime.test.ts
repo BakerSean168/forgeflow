@@ -1906,3 +1906,103 @@ test('active Plan operator cancel is public, idempotent, and hands off the proje
     fs.rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+test('public Plan cancel supports child-first cancellation without releasing the root lease early', async () => {
+  const value = fixture();
+  const runtime = await buildControlPlane({
+    dbFile: path.join(value.root, 'operator-child-cancel.sqlite'),
+    environment: 'test',
+    logger: false,
+    env: {
+      NODE_ENV: 'test',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'false',
+      FORGEFLOW_SINGLE_ACTIVE_PLAN_ENABLED: 'true',
+    },
+  });
+  try {
+    const rootResponse = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans',
+      headers: { 'idempotency-key': 'operator-child-root' },
+      payload: {
+        projectKey: 'operator-child-project',
+        objective: 'root cancellation fixture',
+        repositoryPath: value.repository,
+        baseRevision: value.revision,
+        workItems: [
+          {
+            itemKey: 'root',
+            title: 'Root item',
+            objective: 'remain cancellable',
+            dependencies: [],
+            acceptanceCriteria: ['cancel safely'],
+          },
+        ],
+      },
+    });
+    assert.equal(rootResponse.statusCode, 201);
+    const rootPlanId = rootResponse.json().plan.planId as string;
+
+    const childResponse = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans/' + encodeURIComponent(rootPlanId) + '/children',
+      payload: {
+        childPlanId: 'operator-child-plan',
+        relation: 'FOLLOW_UP',
+        objective: 'child cancellation fixture',
+        workItems: [
+          {
+            itemKey: 'child',
+            title: 'Child item',
+            objective: 'cancel before the root',
+            dependencies: [],
+            acceptanceCriteria: ['preserve root lease'],
+          },
+        ],
+      },
+    });
+    assert.equal(childResponse.statusCode, 201);
+    const childPlanId = childResponse.json().plan.planId as string;
+
+    const blockedRoot = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans/' + encodeURIComponent(rootPlanId) + '/cancel',
+      headers: { 'idempotency-key': 'cancel-root-before-child' },
+      payload: { reason: 'must cancel child first' },
+    });
+    assert.equal(blockedRoot.statusCode, 409);
+    assert.equal(blockedRoot.json().error, 'PROJECT_PLAN_CANCEL_DESCENDANT_ACTIVE');
+
+    const childCancelled = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans/' + encodeURIComponent(childPlanId) + '/cancel',
+      headers: { 'idempotency-key': 'cancel-child-first' },
+      payload: { reason: 'operator cancels child before root' },
+    });
+    assert.equal(childCancelled.statusCode, 200);
+    assert.equal(childCancelled.json().code, 'CHILD_PLAN_CANCELLED');
+    assert.equal(childCancelled.json().rootPlanId, rootPlanId);
+    assert.equal(childCancelled.json().plan.status, 'CANCELLED');
+    assert.equal(childCancelled.json().lease.activeRootPlanId, rootPlanId);
+    const childView = await runtime.app.inject({
+      method: 'GET',
+      url: '/api/v1/plans/' + encodeURIComponent(childPlanId),
+    });
+    assert.equal(childView.json().supervisor.status, 'CANCELLED');
+    assert.equal(childView.json().workItems[0].status, 'CANCELLED');
+
+    const rootCancelled = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans/' + encodeURIComponent(rootPlanId) + '/cancel',
+      headers: { 'idempotency-key': 'cancel-root-after-child' },
+      payload: { reason: 'child is terminal, retire root' },
+    });
+    assert.equal(rootCancelled.statusCode, 200);
+    assert.equal(rootCancelled.json().code, 'PROJECT_PLAN_CANCELLED');
+    assert.equal(rootCancelled.json().plan.status, 'CANCELLED');
+    assert.equal(rootCancelled.json().lease.activeRootPlanId, undefined);
+  } finally {
+    await runtime.app.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
+});
