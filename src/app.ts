@@ -124,6 +124,7 @@ export interface ExecutionAutomationRuntime {
   resourceLifecycle: ResourceLifecycleManager;
   runtimeAdmissionEnabled: boolean;
   runtimeAdmission: RuntimeAdmissionRegistry;
+  runtimeAdmissionHasDemand: () => boolean;
   reconcileRuntimeAdmission: () => Promise<void>;
 }
 
@@ -551,6 +552,12 @@ async function buildExecutionAutomation(
     'RUNTIME_ADMISSION_TRANSIENT_FAILURE_TTL_INVALID',
   );
   const runtimeAdmission = new RuntimeAdmissionRegistry();
+  const runtimeAdmissionHasDemand = (): boolean => {
+    if (repositories.executions.listByStatuses(['QUEUED', 'RUNNING'], 1).length > 0) return true;
+    return (['READY', 'RUNNING', 'WAITING_FOR_RESOURCE'] as const).some(
+      (status) => repositories.plans.listPlans({ status, limit: 1 }).length > 0,
+    );
+  };
   const resourceStateEffect = new LiteLlmResourceStateEffect({
     baseUrl: liteLlmAdminBaseUrl,
     envFile: env.FORGEFLOW_LITELLM_ADMIN_ENV_FILE ?? '/etc/forgeflow/litellm.env',
@@ -915,7 +922,7 @@ async function buildExecutionAutomation(
 
   let runtimeAdmissionCycle: Promise<void> | undefined;
   const reconcileRuntimeAdmission = async (): Promise<void> => {
-    if (!runtimeAdmissionEnabled) return;
+    if (!runtimeAdmissionEnabled || !runtimeAdmissionHasDemand()) return;
     if (runtimeAdmissionCycle) return await runtimeAdmissionCycle;
     runtimeAdmissionCycle = (async () => {
       const now = Date.now();
@@ -1106,6 +1113,7 @@ async function buildExecutionAutomation(
     resourceLifecycle,
     runtimeAdmissionEnabled,
     runtimeAdmission,
+    runtimeAdmissionHasDemand,
     reconcileRuntimeAdmission,
   };
 }
@@ -1214,6 +1222,7 @@ export async function buildControlPlane(
   const supervisorKernel: SupervisorKernelPort = {
     createExecution: async (payload, planId) => {
       const runtime = requireAutomation();
+      await runtime.reconcileRuntimeAdmission();
       const item = repositories.plans.getWorkItem(payload.workItemId);
       if (item.planId !== planId) throw new ForgeFlowError('EXECUTION_WORK_ITEM_MISMATCH');
       const result = await runtime.plans.runPlan(planId);
@@ -1658,10 +1667,14 @@ export async function buildControlPlane(
       runtimeAdmission: automation
         ? {
             enabled: automation.runtimeAdmissionEnabled,
+            demandDriven: true,
+            hasDemand: automation.runtimeAdmissionHasDemand(),
             ...automation.runtimeAdmission.summary(),
           }
         : {
             enabled: false,
+            demandDriven: true,
+            hasDemand: false,
             checked: 0,
             ready: 0,
             unready: 0,
@@ -2209,7 +2222,9 @@ export async function buildControlPlane(
 
   app.post('/api/v1/plans/:planId/run', async (request) => {
     const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
-    return await requireAutomation().plans.runPlan(planId);
+    const runtime = requireAutomation();
+    await runtime.reconcileRuntimeAdmission();
+    return await runtime.plans.runPlan(planId);
   });
 
   app.post('/api/v1/plans/:planId/reconcile', async (request, reply) => {
@@ -2217,7 +2232,9 @@ export async function buildControlPlane(
     const body = request.body === undefined ? {} : bodyRecord(request.body);
     const mode =
       body.mode === undefined ? 'auto' : requiredText(body.mode, 'PLAN_RECONCILE_MODE_INVALID');
-    const result = await requireAutomation().plans.reconcilePlan(planId, mode);
+    const runtime = requireAutomation();
+    await runtime.reconcileRuntimeAdmission();
+    const result = await runtime.plans.reconcilePlan(planId, mode);
     reply.code(202);
     return { ...result, statusUrl: '/api/v1/plans/' + encodeURIComponent(planId) };
   });
@@ -2575,6 +2592,7 @@ export async function buildControlPlane(
             void runWorkspaceStorageMaintenance()
               .then(async () => {
                 if (projectPlanQueue) await projectPlanQueue.reconcile();
+                await automation.reconcileRuntimeAdmission();
                 return await automation.plans.runOnce();
               })
               .then((results) => {

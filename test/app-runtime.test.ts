@@ -240,6 +240,8 @@ test('ForgeFlow creates a durable first execution through the public plan runtim
     resourceCount: 2,
     runtimeAdmission: {
       enabled: false,
+      demandDriven: true,
+      hasDemand: false,
       checked: 0,
       ready: 0,
       unready: 0,
@@ -1280,7 +1282,7 @@ test('selector-off rollback preserves durable selector provenance in the same du
   }
 });
 
-test('runtime admission warms in background, single-flights probes, and uses execution-shaped Harness workspaces', async () => {
+test('runtime admission is demand-driven, single-flights probes, and uses execution-shaped Harness workspaces', async () => {
   const value = fixture();
   const adminEnv = path.join(value.root, 'litellm.env');
   fs.writeFileSync(adminEnv, 'LITELLM_MASTER_KEY=test-master-key\n');
@@ -1375,17 +1377,50 @@ test('runtime admission warms in background, single-flights probes, and uses exe
   const health = await runtime.app.inject({ method: 'GET', url: '/api/health' });
   assert.equal(health.statusCode, 200);
   assert.equal(health.json().executionRuntime.runtimeAdmission.enabled, true);
+  assert.equal(health.json().executionRuntime.runtimeAdmission.demandDriven, true);
+  assert.equal(health.json().executionRuntime.runtimeAdmission.hasDemand, false);
   assert.equal(health.json().executionRuntime.runtimeAdmission.checked, 0);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(providerRequests, 1);
+  assert.equal(providerRequests, 0);
+  await runtime.automation!.reconcileRuntimeAdmission();
+  assert.equal(providerRequests, 0);
+
+  const created = await runtime.app.inject({
+    method: 'POST',
+    url: '/api/v1/plans',
+    headers: { 'idempotency-key': 'runtime-admission-demand-plan' },
+    payload: {
+      projectKey: 'app-runtime-project',
+      objective: 'create ACP runtime admission demand',
+      repositoryPath: value.repository,
+      baseRevision: value.revision,
+      workItems: [
+        {
+          itemKey: 'probe',
+          title: 'Probe admission',
+          objective: 'exercise demand-driven admission',
+          dependencies: [],
+          acceptanceCriteria: ['probe only when demanded'],
+        },
+      ],
+    },
+  });
+  assert.equal(created.statusCode, 201);
+  assert.equal(runtime.automation!.runtimeAdmissionHasDemand(), true);
 
   const first = runtime.automation!.reconcileRuntimeAdmission();
   const second = runtime.automation!.reconcileRuntimeAdmission();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(providerRequests, 1);
   releaseProbe();
   await Promise.all([first, second]);
   assert.equal(providerRequests, 1);
   assert.equal(runtime.automation!.runtimeAdmission.summary().checked, 1);
   assert.equal(runtime.automation!.runtimeAdmission.summary().unready, 1);
+  runtime.repositories.plans.updateStatus(created.json().plan.planId, 'CANCELLED');
+  assert.equal(runtime.automation!.runtimeAdmissionHasDemand(), false);
+  await runtime.automation!.reconcileRuntimeAdmission();
+  assert.equal(providerRequests, 1);
   await runtime.app.close();
 });
 
