@@ -229,16 +229,7 @@ function selectedResourceId(selector: ResourceSelector): string {
   return selected.profile.resourceId;
 }
 
-test('LiteLLM resource probe honors Chat Completions and Responses binding protocols', async () => {
-  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
-  const probe = new LiteLlmResourceProbe({
-    baseUrl: 'http://litellm.test/v1',
-    bearerToken: 'test-probe-key',
-    fetchImpl: (async (input: string | URL | Request, init: RequestInit = {}) => {
-      calls.push({ url: String(input), body: JSON.parse(String(init.body)) as Record<string, unknown> });
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }) as typeof fetch,
-  });
+test('LiteLLM resource probe honors protocol paths for root and /v1 base URLs', async () => {
   const base: Omit<ExecutionResource, 'resourceId' | 'bindings'> = {
     resourceTier: 'METERED',
     resourceSequence: 200,
@@ -248,52 +239,66 @@ test('LiteLLM resource probe honors Chat Completions and Responses binding proto
     supplyOrigin: 'COMMERCIAL_RELAY',
     resourceLifecycle: 'RECURRING',
   };
-  assert.equal(
-    await probe.probe({
-      ...base,
-      resourceId: 'responses-provider',
-      bindings: [
-        {
-          bindingId: 'responses-binding',
-          modelFamily: 'gpt-5.6-sol',
-          transport: 'LITELLM_MANAGED',
-          enabled: true,
-          ready: true,
-          routeModel: 'route-responses-sol',
-          protocol: 'openai-responses',
-        },
-      ],
-    }),
-    true,
-  );
-  assert.equal(
-    await probe.probe({
-      ...base,
-      resourceId: 'chat-provider',
-      bindings: [
-        {
-          bindingId: 'chat-binding',
-          modelFamily: 'deepseek-v4-flash',
-          transport: 'LITELLM_MANAGED',
-          enabled: true,
-          ready: true,
-          routeModel: 'route-chat-deepseek',
-          protocol: 'openai-chat-completions',
-        },
-      ],
-    }),
-    true,
-  );
-  assert.deepEqual(
-    calls.map((call) => call.url),
-    ['http://litellm.test/v1/responses', 'http://litellm.test/v1/chat/completions'],
-  );
-  assert.equal(calls[0]?.body.model, 'route-responses-sol');
-  assert.equal(calls[0]?.body.max_output_tokens, 1);
-  assert.equal('messages' in (calls[0]?.body ?? {}), false);
-  assert.equal(calls[1]?.body.model, 'route-chat-deepseek');
-  assert.equal(calls[1]?.body.max_tokens, 1);
-  assert.equal(Array.isArray(calls[1]?.body.messages), true);
+  const responsesResource: ExecutionResource = {
+    ...base,
+    resourceId: 'responses-provider',
+    bindings: [
+      {
+        bindingId: 'responses-binding',
+        modelFamily: 'gpt-5.6-sol',
+        transport: 'LITELLM_MANAGED',
+        enabled: true,
+        ready: true,
+        routeModel: 'route-responses-sol',
+        protocol: 'openai-responses',
+      },
+    ],
+  };
+  const chatResource: ExecutionResource = {
+    ...base,
+    resourceId: 'chat-provider',
+    bindings: [
+      {
+        bindingId: 'chat-binding',
+        modelFamily: 'deepseek-v4-flash',
+        transport: 'LITELLM_MANAGED',
+        enabled: true,
+        ready: true,
+        routeModel: 'route-chat-deepseek',
+        protocol: 'openai-chat-completions',
+      },
+    ],
+  };
+
+  for (const [baseUrl, expectedPrefix] of [
+    ['http://litellm.test', 'http://litellm.test/v1'],
+    ['http://litellm.test/v1', 'http://litellm.test/v1'],
+  ] as const) {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const probe = new LiteLlmResourceProbe({
+      baseUrl,
+      bearerToken: 'test-probe-key',
+      fetchImpl: (async (input: string | URL | Request, init: RequestInit = {}) => {
+        calls.push({
+          url: String(input),
+          body: JSON.parse(String(init.body)) as Record<string, unknown>,
+        });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }) as typeof fetch,
+    });
+    assert.equal(await probe.probe(responsesResource), true);
+    assert.equal(await probe.probe(chatResource), true);
+    assert.deepEqual(
+      calls.map((call) => call.url),
+      [`${expectedPrefix}/responses`, `${expectedPrefix}/chat/completions`],
+    );
+    assert.equal(calls[0]?.body.model, 'route-responses-sol');
+    assert.equal(calls[0]?.body.max_output_tokens, 1);
+    assert.equal('messages' in (calls[0]?.body ?? {}), false);
+    assert.equal(calls[1]?.body.model, 'route-chat-deepseek');
+    assert.equal(calls[1]?.body.max_tokens, 1);
+    assert.equal(Array.isArray(calls[1]?.body.messages), true);
+  }
 });
 
 test('paid transient suspension probes before reactivation and re-suspends after a failed probe', async () => {
@@ -330,6 +335,7 @@ test('paid transient suspension probes before reactivation and re-suspends after
   });
   let healthy = false;
   let probes = 0;
+  const remoteEffects: Array<{ resourceId: string; state: string }> = [];
   const lifecycle = new ResourceLifecycleManager(
     new StaticResourceDirectory([resource]),
     repositories.resourceStateOverrides,
@@ -337,6 +343,11 @@ test('paid transient suspension probes before reactivation and re-suspends after
       probe: async () => {
         probes += 1;
         return healthy;
+      },
+    },
+    {
+      apply: async (observed, state) => {
+        remoteEffects.push({ resourceId: observed.resourceId, state });
       },
     },
   );
@@ -353,11 +364,45 @@ test('paid transient suspension probes before reactivation and re-suspends after
   );
   assert.equal(await lifecycle.reconcileOnce(new Date(firstAt.getTime() + 1_000)), 0);
   assert.equal(probes, 1);
+  assert.deepEqual(remoteEffects, []);
 
   healthy = true;
   assert.equal(await lifecycle.reconcileOnce(new Date(afterFailure.suspendedUntil!)), 1);
   assert.equal(probes, 2);
   assert.equal(repositories.resourceStateOverrides.get(resource.resourceId)?.state, 'ACTIVE');
+  assert.deepEqual(remoteEffects, []);
+  db.close();
+});
+
+test('automatic resource success restores only the durable override and preserves remote binding blocks', async () => {
+  const db = openDatabase(':memory:', { environment: 'test', env: { NODE_ENV: 'test' } });
+  const repositories = createRepositories(db);
+  const resource = freeResource();
+  repositories.resourceStateOverrides.create({
+    resourceId: resource.resourceId,
+    state: 'SUSPENDED',
+    suspendedUntil: '2099-01-01T00:00:00.000Z',
+    reasonClass: 'RATE_LIMITED',
+    sanitizedReason: 'RATE_LIMITED',
+    source: 'EXECUTION',
+  });
+  const remoteEffects: Array<{ resourceId: string; state: string }> = [];
+  const service = new ResourceStateService(
+    new StaticResourceDirectory([resource]),
+    repositories.resourceStateOverrides,
+    3,
+    {
+      apply: async (observed, state) => {
+        remoteEffects.push({ resourceId: observed.resourceId, state });
+      },
+    },
+  );
+  service.success(selection());
+  await new Promise((resolve) => setImmediate(resolve));
+  const override = repositories.resourceStateOverrides.get(resource.resourceId);
+  assert.equal(override?.state, 'ACTIVE');
+  assert.equal(override?.source, 'EXECUTION');
+  assert.deepEqual(remoteEffects, []);
   db.close();
 });
 
@@ -504,6 +549,7 @@ test('lifecycle probes expired free suspension once and disables failure', async
     source: 'EXECUTION',
   });
   let calls = 0;
+  const remoteEffects: Array<{ resourceId: string; state: string }> = [];
   const manager = new ResourceLifecycleManager(
     new StaticResourceDirectory([freeResource()]),
     repositories.resourceStateOverrides,
@@ -513,10 +559,16 @@ test('lifecycle probes expired free suspension once and disables failure', async
         return false;
       },
     },
+    {
+      apply: async (resource, state) => {
+        remoteEffects.push({ resourceId: resource.resourceId, state });
+      },
+    },
   );
   assert.equal(await manager.reconcileOnce(new Date('2026-01-02T00:00:00.000Z')), 1);
   assert.equal(calls, 1);
   assert.equal(repositories.resourceStateOverrides.get('free-provider')?.state, 'DISABLED');
+  assert.deepEqual(remoteEffects, [{ resourceId: 'free-provider', state: 'DISABLED' }]);
   db.close();
 });
 

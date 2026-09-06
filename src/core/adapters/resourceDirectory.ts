@@ -506,12 +506,14 @@ export class ResourceStateService implements ResourceFeedbackPort {
       state: current.state,
       resourceTier: resource.resourceTier,
     });
-    const result = this.#write({
+    this.#write({
       resourceId: resource.resourceId,
       state: transition.state,
       source,
     });
-    if (result.value) this.#effect(resource, result.value.state);
+    // SUSPENDED is a ForgeFlow-local routing fence and never blocks LiteLLM deployments.
+    // Automatic success therefore restores only the durable resource override; it must
+    // not undo binding-level blocks owned by separate provider/model governance.
   }
   manual(
     resourceId: string,
@@ -574,7 +576,15 @@ export class LiteLlmResourceProbe implements ResourceProbePort {
     );
     for (const binding of bindings) {
       const responses = binding.protocol === 'openai-responses';
-      const endpoint = this.#baseUrl + (responses ? '/responses' : '/chat/completions');
+      const endpoint =
+        this.#baseUrl +
+        (this.#baseUrl.endsWith('/v1')
+          ? responses
+            ? '/responses'
+            : '/chat/completions'
+          : responses
+            ? '/v1/responses'
+            : '/v1/chat/completions');
       const body = responses
         ? {
             model: binding.routeModel!,
@@ -648,7 +658,8 @@ export class ResourceLifecycleManager {
       });
       if (result.status !== 'rejected') {
         changed += 1;
-        if (result.value && this.effect) await this.effect.apply(resource, result.value.state);
+        if (result.value?.state === 'DISABLED' && this.effect)
+          await this.effect.apply(resource, 'DISABLED');
       }
     }
     return changed;
