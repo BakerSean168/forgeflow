@@ -301,6 +301,72 @@ test('LiteLLM resource probe honors protocol paths for root and /v1 base URLs', 
   }
 });
 
+test('resource recovery requires every remaining enabled binding to pass its own protocol probe', async () => {
+  const calls: string[] = [];
+  const probe = new LiteLlmResourceProbe({
+    baseUrl: 'http://litellm.test/v1',
+    bearerToken: 'test-probe-key',
+    fetchImpl: (async (_input: string | URL | Request, init: RequestInit = {}) => {
+      const body = JSON.parse(String(init.body)) as { model?: string };
+      calls.push(body.model ?? 'missing-model');
+      return new Response(JSON.stringify({ ok: true }), {
+        status: body.model === 'route-sol' ? 502 : 200,
+      });
+    }) as typeof fetch,
+  });
+  const resource: ExecutionResource = {
+    resourceId: 'multi-binding-provider',
+    resourceTier: 'METERED',
+    resourceSequence: 205,
+    state: 'ACTIVE',
+    ready: true,
+    commercialType: 'METERED',
+    supplyOrigin: 'COMMERCIAL_RELAY',
+    resourceLifecycle: 'RECURRING',
+    bindings: [
+      {
+        bindingId: 'luna',
+        modelFamily: 'gpt-5.6-luna',
+        transport: 'LITELLM_MANAGED',
+        enabled: true,
+        ready: true,
+        routeModel: 'route-luna',
+        protocol: 'openai-responses',
+      },
+      {
+        bindingId: 'sol',
+        modelFamily: 'gpt-5.6-sol',
+        transport: 'LITELLM_MANAGED',
+        enabled: true,
+        ready: true,
+        routeModel: 'route-sol',
+        protocol: 'openai-responses',
+      },
+      {
+        bindingId: 'blocked-old-model',
+        modelFamily: 'claude-opus-4-8',
+        transport: 'LITELLM_MANAGED',
+        enabled: false,
+        ready: false,
+        routeModel: 'route-blocked-old-model',
+        protocol: 'openai-chat-completions',
+      },
+    ],
+  };
+  assert.equal(await probe.probe(resource), false);
+  assert.deepEqual(calls, ['route-luna', 'route-sol']);
+
+  calls.length = 0;
+  const recovered: ExecutionResource = {
+    ...resource,
+    bindings: resource.bindings.map((binding) =>
+      binding.bindingId === 'sol' ? { ...binding, enabled: false, ready: false } : binding,
+    ),
+  };
+  assert.equal(await probe.probe(recovered), true);
+  assert.deepEqual(calls, ['route-luna']);
+});
+
 test('paid transient suspension probes before reactivation and re-suspends after a failed probe', async () => {
   const db = openDatabase(':memory:', { environment: 'test', env: { NODE_ENV: 'test' } });
   const repositories = createRepositories(db);

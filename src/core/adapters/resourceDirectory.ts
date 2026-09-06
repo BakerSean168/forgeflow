@@ -574,6 +574,7 @@ export class LiteLlmResourceProbe implements ResourceProbePort {
         binding.ready &&
         Boolean(binding.routeModel),
     );
+    if (bindings.length === 0) return false;
     for (const binding of bindings) {
       const responses = binding.protocol === 'openai-responses';
       const endpoint =
@@ -607,12 +608,13 @@ export class LiteLlmResourceProbe implements ResourceProbePort {
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(this.#timeoutMs),
         });
-        if (response.ok) return true;
+        if (!response.ok) return false;
       } catch {
         // Probe failures are intentionally reduced to a boolean; provider bodies are never persisted.
+        return false;
       }
     }
-    return false;
+    return true;
   }
 }
 
