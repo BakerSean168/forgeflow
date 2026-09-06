@@ -288,6 +288,68 @@ function integerValue(
   return parsed;
 }
 
+type ReleaseProvenanceProjection =
+  | { status: 'MISSING' | 'INVALID' | 'MISMATCH' }
+  | {
+      status: 'PENDING' | 'HEALTHY';
+      version: 1;
+      sourceSha: string;
+      artifactSha256: string;
+      releasedAt: string;
+    };
+
+function readReleaseProvenance(file: string): ReleaseProvenanceProjection {
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024)
+      return { status: 'INVALID' };
+    const value = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    if (
+      value.version !== 1 ||
+      (value.status !== 'PENDING' && value.status !== 'HEALTHY') ||
+      typeof value.sourceSha !== 'string' ||
+      !/^[0-9a-f]{40}$/.test(value.sourceSha) ||
+      typeof value.artifactSha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(value.artifactSha256) ||
+      typeof value.releasedAt !== 'string' ||
+      value.releasedAt.length > 64 ||
+      !Number.isFinite(Date.parse(value.releasedAt))
+    )
+      return { status: 'INVALID' };
+    return {
+      status: value.status,
+      version: 1,
+      sourceSha: value.sourceSha,
+      artifactSha256: value.artifactSha256,
+      releasedAt: value.releasedAt,
+    };
+  } catch {
+    return fs.existsSync(file) ? { status: 'INVALID' } : { status: 'MISSING' };
+  }
+}
+
+function bindReleaseProvenance(file: string): () => ReleaseProvenanceProjection {
+  const boot = readReleaseProvenance(file);
+  const valid = (value: ReleaseProvenanceProjection): value is Extract<
+    ReleaseProvenanceProjection,
+    { status: 'PENDING' | 'HEALTHY' }
+  > => value.status === 'PENDING' || value.status === 'HEALTHY';
+  return () => {
+    const current = readReleaseProvenance(file);
+    if (valid(boot) && valid(current)) {
+      if (
+        boot.sourceSha === current.sourceSha &&
+        boot.artifactSha256 === current.artifactSha256 &&
+        boot.releasedAt === current.releasedAt
+      )
+        return current;
+      return { status: 'MISMATCH' };
+    }
+    if (!valid(boot) && !valid(current) && boot.status === current.status) return current;
+    return { status: 'MISMATCH' };
+  };
+}
+
 type HostCacheMaintenanceProjection =
   | { status: 'DISABLED' | 'MISSING' | 'INVALID' }
   | {
@@ -1140,6 +1202,9 @@ export async function buildControlPlane(
   options: BuildControlPlaneOptions = {},
 ): Promise<ControlPlaneRuntime> {
   const env = options.env ?? process.env;
+  const releaseProvenance = bindReleaseProvenance(
+    env.FORGEFLOW_RELEASE_PROVENANCE_FILE ?? '/var/lib/forgeflow/release-provenance.json',
+  );
   const boot = bootstrapForgeFlow({
     dbFile: options.dbFile,
     env,
@@ -1648,6 +1713,7 @@ export async function buildControlPlane(
     apiVersion: 1,
     mode: 'autonomous-engineering',
     database: boot.dbFile,
+    releaseProvenance: releaseProvenance(),
     workspaceStorage: workspaceStorage(),
     hostCacheMaintenance: hostCacheMaintenance(),
     planScheduling: {

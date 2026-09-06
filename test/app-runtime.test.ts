@@ -106,6 +106,81 @@ test('ForgeFlow runtime fails closed when execution automation is disabled', asy
   await runtime.app.close();
 });
 
+test('health binds release provenance to the booted artifact and rejects identity drift', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-release-provenance-'));
+  const provenance = path.join(root, 'release-provenance.json');
+  const sourceA = 'a'.repeat(40);
+  const sourceB = 'b'.repeat(40);
+  const artifactA = 'c'.repeat(64);
+  const artifactB = 'd'.repeat(64);
+  const releasedAt = '2026-09-06T08:45:00.000Z';
+  const write = (status: 'PENDING' | 'HEALTHY', sourceSha: string, artifactSha256: string) =>
+    fs.writeFileSync(
+      provenance,
+      JSON.stringify({ version: 1, status, sourceSha, artifactSha256, releasedAt }) + '\n',
+      { mode: 0o600 },
+    );
+
+  write('PENDING', sourceA, artifactA);
+  const runtime = await buildControlPlane({
+    dbFile: ':memory:',
+    environment: 'test',
+    logger: false,
+    env: {
+      NODE_ENV: 'test',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'false',
+      FORGEFLOW_RELEASE_PROVENANCE_FILE: provenance,
+    },
+  });
+  try {
+    let health = await runtime.app.inject({ method: 'GET', url: '/api/health' });
+    assert.deepEqual(health.json().releaseProvenance, {
+      status: 'PENDING',
+      version: 1,
+      sourceSha: sourceA,
+      artifactSha256: artifactA,
+      releasedAt,
+    });
+
+    write('HEALTHY', sourceA, artifactA);
+    health = await runtime.app.inject({ method: 'GET', url: '/api/health' });
+    assert.equal(health.json().releaseProvenance.status, 'HEALTHY');
+    assert.equal(health.json().releaseProvenance.sourceSha, sourceA);
+    assert.equal(health.json().releaseProvenance.artifactSha256, artifactA);
+
+    write('PENDING', sourceB, artifactB);
+    health = await runtime.app.inject({ method: 'GET', url: '/api/health' });
+    assert.deepEqual(health.json().releaseProvenance, { status: 'MISMATCH' });
+    assert.equal(health.body.includes(sourceB), false);
+    assert.equal(health.body.includes(artifactB), false);
+  } finally {
+    await runtime.app.close();
+  }
+
+  const secret = path.join(root, 'private-release-payload.json');
+  fs.writeFileSync(secret, 'do-not-expose-private-release-payload');
+  fs.rmSync(provenance, { force: true });
+  fs.symlinkSync(secret, provenance);
+  const invalid = await buildControlPlane({
+    dbFile: ':memory:',
+    environment: 'test',
+    logger: false,
+    env: {
+      NODE_ENV: 'test',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'false',
+      FORGEFLOW_RELEASE_PROVENANCE_FILE: provenance,
+    },
+  });
+  try {
+    const health = await invalid.app.inject({ method: 'GET', url: '/api/health' });
+    assert.deepEqual(health.json().releaseProvenance, { status: 'INVALID' });
+    assert.equal(health.body.includes('do-not-expose-private-release-payload'), false);
+  } finally {
+    await invalid.app.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Supervisor runtime refuses the retired static model route', async () => {
   await assert.rejects(
     () =>

@@ -37,6 +37,6 @@ ForgeFlow is an autonomous software engineering system. UI decoration, game/char
 
 ## Deployment workflow
 
-Production promotion uses a fast-forward-only approval ref beneath `refs/forgeflow/`. `scripts/release-gcp.sh` builds and tests an exact detached worktree, backs up the durable database when present, atomically exchanges the build artifact, restarts the service, and requires ForgeFlow v1 health before reporting success.
+Production promotion uses a fast-forward-only approval ref beneath `refs/forgeflow/`. `scripts/release-gcp.sh` builds and tests an exact detached worktree, backs up the durable database when present, hashes and atomically exchanges the build artifact, writes root-owned release provenance as `PENDING`, restarts the service, and requires the boot-bound source SHA/artifact digest to match before promoting that same provenance to `HEALTHY`. A failed restart or identity mismatch leaves no false healthy-release claim.
 
 Do not point a production host at an uncommitted checkout and do not use environment files to weaken repository or review gates.

@@ -102,8 +102,20 @@ test('exact-SHA release is rooted in refs/forgeflow and validates v1 health', ()
   assert.match(release, /new DatabaseSync\(source, \{ readOnly: true \}\)/);
   assert.match(release, /sudo chmod 0600 \"\$backup\"/);
   assert.match(release, /candidate.*release-candidates/);
+  assert.match(release, /artifact_sha256=.*sha256sum/);
+  assert.match(release, /FORGEFLOW_RELEASE_PROVENANCE_FILE/);
+  assert.match(release, /sudo install -o root -g root -m 0600 .*provenance_file/);
+  assert.ok(
+    release.indexOf('atomic-exchange-directories.py') < release.indexOf('write_provenance PENDING'),
+  );
+  assert.match(release, /p\.status !== 'PENDING'/);
+  assert.match(release, /p\.sourceSha !== process\.env\.SOURCE_SHA/);
+  assert.match(release, /p\.artifactSha256 !== process\.env\.ARTIFACT_SHA256/);
+  assert.ok(release.indexOf('write_provenance PENDING') < release.indexOf('write_provenance HEALTHY'));
+  assert.match(release, /p\.status !== 'HEALTHY'/);
   assert.match(release, /h\.service !== 'forgeflow-control-plane'/);
   assert.match(release, /h\.apiVersion !== 1/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_RELEASE_PROVENANCE_FILE=\/var\/lib\/forgeflow\/release-provenance\.json/);
 });
 
 test('host cache maintenance remains bounded and never prunes Docker volumes', () => {
