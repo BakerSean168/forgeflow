@@ -58,7 +58,9 @@ test('installer provisions only ForgeFlow state and refuses unconfigured autonom
   assert.match(installer, /apparmor_parser -r \/etc\/apparmor\.d\/forgeflow-openhands-codex/);
   assert.match(installer, /FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands FORGEFLOW_DSH_SEED_DIR=/);
   assert.match(installer, /ReadWritePaths=%s/);
-  assert.match(installer, /systemctl enable --now forgeflow\.service forgeflow-host-cache\.timer/);
+  assert.match(installer, /systemctl enable forgeflow\.service forgeflow-host-cache\.timer/);
+  assert.match(installer, /systemctl restart forgeflow\.service/);
+  assert.match(installer, /systemctl restart forgeflow-host-cache\.timer/);
 });
 
 test('exact-SHA release is rooted in refs/forgeflow and validates v1 health', () => {

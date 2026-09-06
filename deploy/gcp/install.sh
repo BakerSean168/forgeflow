@@ -101,7 +101,9 @@ dsh_seed="$(awk -F= '$1=="FORGEFLOW_DSH_SEED_DIR"{sub(/^[^=]*=/,""); print; exit
 FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands FORGEFLOW_DSH_SEED_DIR="$dsh_seed" \
   "$repo_root/scripts/install-openhands-tooling.sh"
 
-systemctl enable --now forgeflow.service forgeflow-host-cache.timer
+systemctl enable forgeflow.service forgeflow-host-cache.timer
+systemctl restart forgeflow.service
+systemctl restart forgeflow-host-cache.timer
 for _ in $(seq 1 45); do
   if payload="$(curl -fsS http://127.0.0.1:8420/api/health 2>/dev/null)"; then
     HEALTH_JSON="$payload" node - <<'NODE'
