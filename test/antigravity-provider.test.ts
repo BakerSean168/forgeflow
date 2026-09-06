@@ -156,12 +156,13 @@ async function terminal(
   provider: AntigravityExecutionProvider | AntigravityReviewProvider,
   sessionId: string,
 ): Promise<ProviderSessionSnapshot> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     const snapshot = await provider.inspect(sessionId);
     if (['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(snapshot.status)) return snapshot;
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error('Antigravity fake provider did not terminate');
+  throw new Error('Antigravity fake provider did not terminate within 10 seconds');
 }
 
 test('Antigravity implementation requires a clean committed workspace and writes controller evidence', async () => {
