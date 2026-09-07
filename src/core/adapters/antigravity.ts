@@ -430,6 +430,7 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
         String(this.workspaceGid),
         '--user',
         this.user,
+        ...(this.role === 'REVIEW' ? ['--read-only-workspace'] : []),
         '--',
         ...args,
       ],

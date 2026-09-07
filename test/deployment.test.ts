@@ -252,6 +252,10 @@ test('provider tools use the ForgeFlow execution/evidence contract', () => {
   assert.match(antigravityRunner, /request\.projectKey/);
   assert.match(antigravityRunner, /request\.planId/);
   assert.match(antigravityRunner, /request\.phase/);
+  assert.match(antigravityRunner, /request\.phase === 'REVIEW'.*--read-only-workspace/s);
+  const antigravitySandbox = read('scripts/run-antigravity-sandbox.sh');
+  assert.match(antigravitySandbox, /--read-only-workspace/);
+  assert.match(antigravitySandbox, /remount,bind,ro/);
 });
 
 test('checked-in deployment scripts are syntactically valid', () => {

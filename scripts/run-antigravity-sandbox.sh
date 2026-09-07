@@ -9,6 +9,7 @@ uid=''
 gid=''
 workspace_gid=''
 user=''
+read_only_workspace=false
 
 while (($#)); do
   case "$1" in
@@ -20,6 +21,7 @@ while (($#)); do
     --gid) gid="$2"; shift 2 ;;
     --workspace-gid) workspace_gid="$2"; shift 2 ;;
     --user) user="$2"; shift 2 ;;
+    --read-only-workspace) read_only_workspace=true; shift ;;
     --) shift; break ;;
     *) echo "unknown sandbox argument: $1" >&2; exit 64 ;;
   esac
@@ -106,6 +108,10 @@ workspace_relative="${workspace#"$workspace_root"/}"
 mount -t tmpfs -o mode=0755 tmpfs "$workspace_root"
 mkdir -p "$(dirname "$workspace_root/$workspace_relative")" "$workspace_root/$workspace_relative"
 mount --bind "$stash/workspace" "$workspace_root/$workspace_relative"
+if [[ "$read_only_workspace" == true ]]; then
+  # REVIEW is enforced read-only by the kernel, not only by prompt or POSIX owner bits.
+  mount -o remount,bind,ro "$workspace_root/$workspace_relative"
+fi
 # The process entered this mount namespace with cwd pointing at the pre-overmount
 # workspace dentry. Re-enter the rebound path explicitly so relative `..` traversal
 # cannot retain a reference into the hidden host workspace tree.

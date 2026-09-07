@@ -54,10 +54,14 @@ exec "$@"
     `#!/bin/sh
 set -eu
 binary=''
+read_only=0
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
-  if [ "$1" = "--binary" ]; then shift; binary="$1"; fi
+  if [ "$1" = "--binary" ]; then shift; binary="$1"
+  elif [ "$1" = "--read-only-workspace" ]; then read_only=1
+  fi
   shift
 done
+[ "$read_only" -eq 0 ] || touch ${JSON.stringify(path.join(root, 'read-only-workspace-requested'))}
 [ "$#" -gt 0 ] && shift
 exec "$binary" "$@"
 `,
@@ -172,6 +176,7 @@ test('Antigravity implementation requires a clean committed workspace and writes
   assert.equal(launched.status, 'RUNNING');
   assert.equal(launched.providerSessionId, 'antigravity:exec-ant');
   const completed = await terminal(provider, launched.providerSessionId!);
+  assert.equal(fs.existsSync(path.join(value.root, 'read-only-workspace-requested')), false);
   assert.equal(completed.status, 'SUCCEEDED');
   assert.match(completed.finalResponse ?? '', /Implemented bounded objective/);
   assert.equal(git(value.repository, ['status', '--porcelain']), '');
@@ -196,6 +201,7 @@ test('Antigravity review remains independent and writes exact-SHA structured evi
   const provider = new AntigravityReviewProvider(options(value, 'gemini-3.1-pro-high'));
   const launched = await provider.launch(input(value, 'REVIEW'));
   const completed = await terminal(provider, launched.providerSessionId!);
+  assert.equal(fs.existsSync(path.join(value.root, 'read-only-workspace-requested')), true);
   assert.equal(provider.independentReview, true);
   assert.equal(completed.status, 'SUCCEEDED');
   assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.sourceRevision);

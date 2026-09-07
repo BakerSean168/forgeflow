@@ -201,6 +201,7 @@ const child = spawn(
     String(expectedWorkspaceGid),
     '--user',
     expectedUser,
+    ...(request.phase === 'REVIEW' ? ['--read-only-workspace'] : []),
     '--',
     ...args,
   ],
