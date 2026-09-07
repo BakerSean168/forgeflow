@@ -706,6 +706,41 @@ test('unknown worktree path residue is never silently adopted', async () => {
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+test('exact branched PROVISIONING residue is retried instead of adopted', async () => {
+  const value = fixture();
+  const project = worktreeRefComponent('project-gamma');
+  const plan = worktreeRefComponent(value.plan.planId);
+  const item = worktreeRefComponent(value.itemB.workItemId);
+  const residuePath = path.join(
+    value.managed,
+    'forgeflow',
+    'plans',
+    project,
+    plan,
+    'items',
+    item,
+    'repo',
+  );
+  const branchRef = `refs/heads/forgeflow/${plan}/items/${item}/head`;
+  git(value.repository, ['update-ref', branchRef, value.revision]);
+  fs.mkdirSync(residuePath, { recursive: true });
+
+  const recovered = await value.manager.ensureWorkItem({
+    projectKey: 'project-gamma',
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemB.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  assert.equal(recovered.state, 'READY');
+  assert.equal(recovered.branchRef, branchRef);
+  assert.equal(fs.existsSync(path.join(recovered.hostPath, '.git')), true);
+  assert.equal(git(recovered.hostPath, ['rev-parse', 'HEAD']), value.revision);
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('schema v7 migrates additively to the durable worktree registry', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-worktree-schema-'));
   const dbFile = path.join(root, 'forgeflow.sqlite');
@@ -1091,6 +1126,46 @@ test('Plan cleanup retires a durable PROVISIONING record whose physical worktree
   await value.manager.retirePlan(value.plan.planId, process.getuid?.() ?? 1000);
   assert.equal(value.repositories.planWorktrees.get(orphan.worktreeId).state, 'RETIRED');
   assert.equal(fs.existsSync(orphan.hostPath), false);
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('Plan cleanup retires exact branched PROVISIONING half-created residue', async () => {
+  const value = fixture();
+  await value.manager.ensurePlanActivated(value.plan.planId);
+  const orphanPath = path.join(
+    value.managed,
+    'forgeflow',
+    'plans',
+    value.plan.projectKey,
+    value.plan.planId,
+    'items',
+    'half-created',
+    'repo',
+  );
+  const branchRef = 'refs/heads/forgeflow/plan-a/items/half-created/head';
+  const orphan = value.repositories.planWorktrees.create({
+    worktreeId: 'worktree:work_item:plan-a:half-created',
+    projectKey: value.plan.projectKey,
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    role: 'WORK_ITEM',
+    repositoryPath: value.repository,
+    hostPath: orphanPath,
+    executionPath: '/workspace/forgeflow/plans/project-gamma/plan-a/items/half-created/repo',
+    branchRef,
+    baseRevision: value.revision,
+  }).value!;
+  git(value.repository, ['update-ref', branchRef, value.revision]);
+  fs.mkdirSync(orphanPath, { recursive: true });
+  assert.equal(orphan.state, 'PROVISIONING');
+
+  value.repositories.plans.updateStatus(value.plan.planId, 'RUNNING');
+  value.repositories.plans.updateStatus(value.plan.planId, 'SUCCEEDED');
+  await value.manager.retirePlan(value.plan.planId, process.getuid?.() ?? 1000);
+  assert.equal(value.repositories.planWorktrees.get(orphan.worktreeId).state, 'RETIRED');
+  assert.equal(fs.existsSync(orphanPath), false);
 
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });
