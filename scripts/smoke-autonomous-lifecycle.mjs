@@ -158,22 +158,84 @@ async function openHandsConversationStatus(providerSessionId) {
   return status;
 }
 
-function providerProcessesForPlan(currentPlanId) {
-  const output = execFileSync(
+const ANTIGRAVITY_PROVIDERS = new Set(['antigravity-worker', 'antigravity-review']);
+
+function isAntigravitySession(session) {
+  return ANTIGRAVITY_PROVIDERS.has(session?.provider);
+}
+
+function antigravityExecutionId(session) {
+  const value = session?.executionId;
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(value))
+    fail('SMOKE_ANTIGRAVITY_EXECUTION_ID_INVALID');
+  if (session.providerSessionId !== `antigravity:${value}`)
+    fail('SMOKE_ANTIGRAVITY_PROVIDER_SESSION_ID_INVALID', {
+      executionId: value,
+      providerSessionId: session.providerSessionId ?? null,
+    });
+  return value;
+}
+
+function antigravityUnitState(session) {
+  const executionIdValue = antigravityExecutionId(session);
+  const unit = `forgeflow-antigravity@${executionIdValue}.service`;
+  const result = spawnSync(
+    '/usr/bin/systemctl',
+    ['show', '--property=ActiveState', '--value', unit],
+    { encoding: 'utf8', env: { PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' } },
+  );
+  if (result.status !== 0)
+    fail('SMOKE_ANTIGRAVITY_UNIT_STATE_UNAVAILABLE', {
+      executionId: executionIdValue,
+      status: result.status,
+    });
+  const state = (result.stdout ?? '').trim();
+  if (!['inactive', 'failed'].includes(state))
+    fail('SMOKE_ANTIGRAVITY_UNIT_STILL_ACTIVE', {
+      executionId: executionIdValue,
+      unit,
+      state,
+    });
+  return { executionId: executionIdValue, unit, state };
+}
+
+function providerProcessesForPlan(currentPlanId, sessions = []) {
+  const openHandsOutput = execFileSync(
     '/usr/bin/docker',
     [
       'exec',
       OPENHANDS_CONTAINER,
       'sh',
       '-lc',
-      "ps -eo pid,ppid,etime,args | grep -E 'zcode|dsh|codex' | grep -v grep || true",
+      "ps -eo pid,ppid,etime,args | grep -E 'zcode|dsh|codex|claude' | grep -v grep || true",
     ],
     { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
   );
-  return output
+  const openHands = openHandsOutput
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line.includes(currentPlanId));
+    .filter((line) => line.includes(currentPlanId))
+    .map((line) => `openhands:${line}`);
+
+  const antigravityExecutionIds = sessions
+    .filter(isAntigravitySession)
+    .map(antigravityExecutionId);
+  if (antigravityExecutionIds.length === 0) return openHands;
+  const hostResult = spawnSync('/usr/bin/ps', ['-eo', 'pid,ppid,etime,args'], {
+    encoding: 'utf8',
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (hostResult.status !== 0) fail('SMOKE_PROVIDER_PROCESS_QUERY_FAILED');
+  const host = (hostResult.stdout ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        /(?:agy|antigravity|run-antigravity-unit)/i.test(line) &&
+        antigravityExecutionIds.some((executionIdValue) => line.includes(executionIdValue)),
+    )
+    .map((line) => `antigravity:${line}`);
+  return [...openHands, ...host];
 }
 
 function planRefLines(currentPlanId) {
@@ -230,18 +292,34 @@ async function cleanupProof(executionIdValue) {
   );
 }
 
+async function cleanupAlreadyComplete() {
+  const queue = await api(`/api/v1/projects/${encodeURIComponent(PROJECT_KEY)}/plan-queue`);
+  const view = await api(`/api/v1/plans/${encodeURIComponent(planId)}`);
+  return (
+    queue.lease?.activeRootPlanId !== planId &&
+    TERMINAL.has(view.plan?.status) &&
+    (view.worktrees ?? []).every((worktree) => worktree.state === 'RETIRED')
+  );
+}
+
 async function bestEffortCancel(reason) {
   if (!planId) return;
   try {
-    const queue = await api(`/api/v1/projects/${encodeURIComponent(PROJECT_KEY)}/plan-queue`);
-    const view = await api(`/api/v1/plans/${encodeURIComponent(planId)}`);
-    if (queue.lease?.activeRootPlanId !== planId && TERMINAL.has(view.plan?.status)) return;
+    if (await cleanupAlreadyComplete()) return;
     await api(`/api/v1/plans/${encodeURIComponent(planId)}/cancel`, {
       method: 'POST',
       headers: { 'idempotency-key': `autonomous-smoke-cleanup-${safeStamp}` },
       body: JSON.stringify({ reason }),
     });
   } catch (error) {
+    // A concurrent operator/public cancellation may finish between the preflight and
+    // our duplicate POST. Re-read durable truth once before reporting a cleanup fault.
+    try {
+      await sleep(1_000);
+      if (await cleanupAlreadyComplete()) return;
+    } catch {
+      // Preserve the original cleanup error below.
+    }
     console.error(
       JSON.stringify({
         status: 'CLEANUP_WARNING',
@@ -521,16 +599,22 @@ async function main() {
       providerSessionId: session.providerSessionId,
       evidenceName: proof.name,
     });
-    const status = await openHandsConversationStatus(session.providerSessionId);
-    if (status !== 404)
-      fail('SMOKE_OPENHANDS_CONVERSATION_STILL_PRESENT', {
-        executionId: session.executionId,
-        providerSessionId: session.providerSessionId,
-        status,
-      });
+    if (isAntigravitySession(session)) {
+      antigravityUnitState(session);
+    } else {
+      // Every non-Antigravity execution provider currently comes from the OpenHands
+      // provider factory, so its remote conversation must be demonstrably absent.
+      const status = await openHandsConversationStatus(session.providerSessionId);
+      if (status !== 404)
+        fail('SMOKE_OPENHANDS_CONVERSATION_STILL_PRESENT', {
+          executionId: session.executionId,
+          providerSessionId: session.providerSessionId,
+          status,
+        });
+    }
   }
 
-  const leakedProcesses = providerProcessesForPlan(planId);
+  const leakedProcesses = providerProcessesForPlan(planId, providerSessions);
   if (leakedProcesses.length > 0)
     fail('SMOKE_PROVIDER_PROCESS_LEAK', { count: leakedProcesses.length, leakedProcesses });
   const refs = planRefLines(planId);

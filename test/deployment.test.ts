@@ -261,6 +261,11 @@ test('autonomous lifecycle smoke is explicit, public-API driven, and checks term
   assert.match(autonomousLifecycleSmoke, /provider-session-cleanup/);
   assert.match(autonomousLifecycleSmoke, /WORKTREE_RETIREMENT_INCOMPLETE/);
   assert.match(autonomousLifecycleSmoke, /OPENHANDS_CONVERSATION_STILL_PRESENT/);
+  assert.match(autonomousLifecycleSmoke, /ANTIGRAVITY_PROVIDERS/);
+  assert.match(autonomousLifecycleSmoke, /forgeflow-antigravity@\$\{executionIdValue\}\.service/);
+  assert.match(autonomousLifecycleSmoke, /SMOKE_ANTIGRAVITY_UNIT_STILL_ACTIVE/);
+  assert.match(autonomousLifecycleSmoke, /providerProcessesForPlan\(planId, providerSessions\)/);
+  assert.match(autonomousLifecycleSmoke, /cleanupAlreadyComplete/);
   assert.match(autonomousLifecycleSmoke, /PROVIDER_PROCESS_LEAK/);
   assert.match(autonomousLifecycleSmoke, /CANONICAL_REPOSITORY_MUTATED/);
   assert.match(autonomousLifecycleSmoke, /SMOKE_PLAN_SAFETY_HOLD/);
