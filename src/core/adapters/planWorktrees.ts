@@ -328,15 +328,13 @@ export class PlanWorktreeManager {
       );
     failClosed(current.role !== 'INTEGRATION', 'WORKTREE_INTEGRATION_CONTROLLER_ONLY');
     // Cancellation may be the first controller operation after a worker-created
-    // admin-file replacement. The ownership/SAFETY_HOLD checks above fence this
-    // repair to the exact durable worktree before any provider teardown occurs.
+    // admin-file replacement. The ownership/terminal fence above proves which
+    // durable execution may touch this worktree. An unaccepted candidate commit is
+    // expected here, so prove canonical registry/branch/common-dir identity without
+    // requiring HEAD to equal the durable accepted revision; abandonExecution owns
+    // the later exact reset back to the execution source revision.
     await this.restoreWorktreeAdminSourceAccess(current);
-    await this.verifyRegistered(
-      current,
-      current.currentRevision,
-      current.branchRef,
-      current.role === 'REVIEW',
-    );
+    await this.verifyRegistered(current, undefined, current.branchRef, current.role === 'REVIEW');
     return await this.grantAgentFilesystemAccess(current, uid, gid);
   }
 
@@ -1142,14 +1140,15 @@ export class PlanWorktreeManager {
 
   private async verifyRegistered(
     record: PlanWorktree,
-    expectedHead: string,
+    expectedHead: string | undefined,
     expectedBranch: string | undefined,
     detached: boolean,
     requireLock = true,
   ): Promise<void> {
     const listed = await this.worktreeAt(record.repositoryPath, record.hostPath);
     failClosed(Boolean(listed), 'WORKTREE_REGISTRY_FILESYSTEM_MISSING');
-    failClosed(listed!.head === expectedHead, 'WORKTREE_HEAD_MISMATCH');
+    if (expectedHead !== undefined)
+      failClosed(listed!.head === expectedHead, 'WORKTREE_HEAD_MISMATCH');
     if (detached) failClosed(listed!.detached && !listed!.branch, 'WORKTREE_REVIEW_NOT_DETACHED');
     else failClosed(listed!.branch === expectedBranch, 'WORKTREE_BRANCH_MISMATCH');
     if (requireLock)

@@ -383,6 +383,55 @@ test('cancellation access is limited to the current writer or a quiescent SAFETY
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+test('cancellation access accepts an unaccepted writer commit but normal agent admission remains revision-pinned', async () => {
+  const value = fixture();
+  let worktree = await value.manager.ensureWorkItem({
+    projectKey: 'project-gamma',
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-cancel-unaccepted-candidate',
+    value.revision,
+  );
+  worktree = await value.manager.attachWriter(
+    worktree.worktreeId,
+    'exec-cancel-unaccepted-candidate',
+  );
+  fs.writeFileSync(path.join(worktree.hostPath, 'candidate.txt'), 'unaccepted candidate\n');
+  git(worktree.hostPath, ['add', 'candidate.txt']);
+  git(worktree.hostPath, ['commit', '-m', 'feat: unaccepted cancellation candidate']);
+  const candidate = git(worktree.hostPath, ['rev-parse', 'HEAD']);
+  assert.notEqual(candidate, value.revision);
+  assert.equal(
+    value.repositories.planWorktrees.get(worktree.worktreeId).currentRevision,
+    value.revision,
+  );
+  const uid = process.getuid?.() ?? 1000;
+  const gid = process.getgid?.() ?? 1000;
+
+  await assert.rejects(
+    () => value.manager.prepareAgentAccess(worktree.worktreeId, uid, gid),
+    (error: unknown) => error instanceof ForgeFlowError && error.code === 'WORKTREE_HEAD_MISMATCH',
+  );
+  const cancellationReady = await value.manager.prepareCancellationAccess(
+    worktree.worktreeId,
+    'exec-cancel-unaccepted-candidate',
+    uid,
+    gid,
+  );
+  assert.equal(cancellationReady.ownerExecutionId, 'exec-cancel-unaccepted-candidate');
+  assert.equal(git(worktree.hostPath, ['rev-parse', 'HEAD']), candidate);
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('quiescent FAILED root permits bounded cancellation access without reactivating the Plan', async () => {
   const value = fixture();
   const worktree = await value.manager.ensureWorkItem({
