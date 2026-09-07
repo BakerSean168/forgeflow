@@ -62,7 +62,10 @@ const FINALIZABLE_IMPLEMENTATION_CODES = new Set([
   'WORKSPACE_EVIDENCE_INVALID',
   'WORKSPACE_IMPLEMENTATION_EVIDENCE_MISMATCH',
 ]);
-const RETRYABLE_RESOURCE_QUALITY_CODES = new Set(['WORKSPACE_IMPLEMENTATION_NOOP']);
+const RETRYABLE_RESOURCE_QUALITY_CODES = new Set([
+  'WORKSPACE_IMPLEMENTATION_NOOP',
+  'PROVIDER_MEANINGFUL_PROGRESS_STALLED',
+]);
 const EVIDENCE_FINALIZATION_NAME = 'evidence-verified-provider-finalization';
 const MEANINGFUL_PROGRESS_PREFIX = 'meaningful-progress-';
 const MEANINGFUL_STALL_RECOVERY_PREFIX = 'meaningful-stall-recovery-';
@@ -995,14 +998,12 @@ export class ExecutionWorker {
       const currentSession = this.repositories.sessions.getOptional(executionId);
       const localBlockerCode = localExecutionBlockerCode(observedCode, currentSession);
       const code = localBlockerCode ?? observedCode;
-      if (!localBlockerCode && this.providerFailureEligible(observedCode))
+      if (
+        !localBlockerCode &&
+        this.providerFailureEligible(observedCode) &&
+        !RETRYABLE_RESOURCE_QUALITY_CODES.has(observedCode)
+      )
         this.reportResourceFailure(selectedResource, error);
-      if (!localBlockerCode && RETRYABLE_RESOURCE_QUALITY_CODES.has(observedCode))
-        this.reportResourceFailure(selectedResource, {
-          code: 'PROVIDER_SUCCESS_NO_IMPLEMENTATION',
-          message:
-            'Provider completed without a verified implementation change or SATISFIED evidence.',
-        });
       const execution = this.repositories.executions.get(executionId);
       if (execution.status === 'RUNNING') {
         const workspaceInfrastructureFailure =
@@ -1381,7 +1382,6 @@ export class ExecutionWorker {
       'PROVIDER_MEANINGFUL_PROGRESS_STALLED',
       'Provider liveness continued without meaningful provider-event or repository progress.',
     );
-    this.reportResourceFailure(selectedResource, failure);
     this.repositories.executions.recordResult(execution.identity.executionId, {
       status: 'FAILED',
       errorCode: failure.code,

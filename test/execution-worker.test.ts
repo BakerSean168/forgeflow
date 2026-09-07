@@ -1131,12 +1131,30 @@ test('execution worker treats provider success without implementation evidence a
     status: 'SUCCEEDED',
     observedAt: now(10),
   };
-  const worker = new ExecutionWorker(
-    seeded.repositories,
-    workspace,
-    [{ route: 'implementation', provider }],
-    { ownerId: 'worker-provider-success-noop' },
+  const feedback = new FakeResourceFeedback();
+  seeded.repositories.resourceSelections.create(
+    createExecutionResourceSelection(execution.identity.executionId, {
+      capability: 'IMPLEMENTATION',
+      phase: 'IMPLEMENT',
+      modelFamily: 'gpt-5.6-luna',
+      agentBackend: 'codex-acp',
+      transport: 'LITELLM_MANAGED',
+      resourceId: 'quality-route-resource',
+      resourceTier: 'METERED',
+      modelRank: 30,
+      resourceSequence: 30,
+      resourceState: 'ACTIVE',
+      selectionReason: 'STATIC_POLICY',
+      bindingId: 'quality-route-luna',
+      routeModel: 'route-quality-route-luna',
+    }),
   );
+  const worker = new ExecutionWorker(seeded.repositories, workspace, [], {
+    ownerId: 'worker-provider-success-noop',
+    providerFactory: () => provider,
+    resourceFeedback: feedback,
+    requireResourceSelection: true,
+  });
   const descriptor = await workspace.provision({
     executionId: execution.identity.executionId,
     repositoryPath: seeded.plan.repositoryPath,
@@ -1154,6 +1172,7 @@ test('execution worker treats provider success without implementation evidence a
   const stored = seeded.repositories.executions.get(execution.identity.executionId);
   assert.equal(stored.status, 'FAILED');
   assert.equal(stored.retryable, true);
+  assert.deepEqual(feedback.failures, []);
   seeded.db.close();
 });
 
@@ -1621,9 +1640,11 @@ test('FREE resource selections use the shorter opportunistic meaningful-progress
   provider.launchSnapshot = { ...provider.launchSnapshot, progressFingerprint: 'event-static' };
   provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'event-static' };
   let clock = Date.now();
+  const feedback = new FakeResourceFeedback();
   const worker = new ExecutionWorker(seeded.repositories, workspace, [], {
     ownerId: 'worker-free-meaningful-stall',
     providerFactory: () => provider,
+    resourceFeedback: feedback,
     requireResourceSelection: true,
     meaningfulProgressTimeoutMs: 120_000,
     opportunisticMeaningfulProgressTimeoutMs: 30_000,
@@ -1650,6 +1671,7 @@ test('FREE resource selections use the shorter opportunistic meaningful-progress
     .listByExecution(execution.identity.executionId)
     .find((item) => item.name.startsWith('meaningful-stall-recovery-'));
   assert.equal(recovery?.payload.timeoutMs, 30_000);
+  assert.deepEqual(feedback.failures, []);
   seeded.db.close();
 });
 
