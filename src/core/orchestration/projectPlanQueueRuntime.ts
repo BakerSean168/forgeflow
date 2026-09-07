@@ -360,7 +360,15 @@ export class ProjectPlanQueueRuntime {
           (execution) =>
             execution.status !== 'SUCCEEDED' &&
             !settledExecutions.has(execution.identity.executionId),
-        );
+        )
+        .sort((left, right) => {
+          const leftActive = left.status === 'QUEUED' || left.status === 'RUNNING' ? 0 : 1;
+          const rightActive = right.status === 'QUEUED' || right.status === 'RUNNING' ? 0 : 1;
+          if (leftActive !== rightActive) return leftActive - rightActive;
+          if (left.identity.workItemId === right.identity.workItemId)
+            return right.identity.attempt - left.identity.attempt;
+          return right.createdAt.localeCompare(left.createdAt);
+        });
       if (pending.length === 0) break;
       if (!this.executionCancellation)
         throw new ForgeFlowError('PROJECT_PLAN_CANCEL_EXECUTION_RUNTIME_REQUIRED');

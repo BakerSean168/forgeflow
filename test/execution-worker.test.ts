@@ -1633,12 +1633,19 @@ test('FREE resource selections use the shorter opportunistic meaningful-progress
   });
 
   assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'event-noisy-new-id' };
   clock += 31_000;
   const failed = await worker.runExecution(execution.identity.executionId);
   assert.equal(failed.status, 'FAILED');
   assert.equal(failed.code, 'PROVIDER_MEANINGFUL_PROGRESS_STALLED');
   assert.equal(provider.replaceCalls, 0);
   assert.equal(provider.interruptCalls, 1);
+  assert.equal(
+    seeded.repositories.evidence
+      .listByExecution(execution.identity.executionId)
+      .filter((item) => item.name.startsWith('meaningful-progress-')).length,
+    1,
+  );
   const recovery = seeded.repositories.evidence
     .listByExecution(execution.identity.executionId)
     .find((item) => item.name.startsWith('meaningful-stall-recovery-'));
@@ -1686,10 +1693,17 @@ test('SUBSCRIPTION resource selections keep the standard meaningful-progress bud
   });
 
   assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'event-paid-progress-2' };
   clock += 31_000;
   const active = await worker.runExecution(execution.identity.executionId);
   assert.equal(active.status, 'RUNNING');
   assert.equal(provider.interruptCalls, 0);
+  assert.equal(
+    seeded.repositories.evidence
+      .listByExecution(execution.identity.executionId)
+      .filter((item) => item.name.startsWith('meaningful-progress-')).length,
+    2,
+  );
   seeded.db.close();
 });
 

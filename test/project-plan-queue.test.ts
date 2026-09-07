@@ -359,6 +359,83 @@ test('operator cancellation retires an active root Plan and hands off only after
   db.close();
 });
 
+test('operator cancellation quiesces the active retry writer before historical failed attempts', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const calls: string[] = [];
+  const runtime = new ProjectPlanQueueRuntime(repositories, {
+    retire: async () => undefined,
+  });
+  createRoot(repositories, 'plan-cancel-retry-order');
+  const graph = repositories.plans.createGraphVersion({
+    planId: 'plan-cancel-retry-order',
+    reason: 'retry cancellation ordering fixture',
+  }).value!;
+  const item = repositories.plans.appendGraphWorkItem({
+    graphVersionId: graph.graphVersionId,
+    itemKey: 'retry-item',
+    title: 'Retry item',
+    objective: 'cancel the current writer before historical attempts',
+    acceptanceCriteria: ['active retry is quiesced first'],
+    dependencies: [],
+  }).value!;
+  runtime.scheduleRootPlan('plan-cancel-retry-order');
+  repositories.plans.updateStatus('plan-cancel-retry-order', 'RUNNING');
+  repositories.plans.updateWorkItemStatus(item.workItemId, 'RUNNING');
+  const oldAttempt = repositories.executions.create({
+    idempotencyKey: 'cancel-retry-old',
+    identity: {
+      executionId: 'cancel-retry-old',
+      planId: 'plan-cancel-retry-order',
+      workItemId: item.workItemId,
+      phase: 'IMPLEMENT',
+      attempt: 1,
+      route: 'implementation-a',
+      sourceRevision: 'base-sha',
+    },
+    objective: 'historical failed attempt',
+  }).value!;
+  repositories.executions.updateStatus(oldAttempt.identity.executionId, 'RUNNING');
+  repositories.executions.recordResult(oldAttempt.identity.executionId, {
+    status: 'FAILED',
+    errorCode: 'WORKSPACE_IMPLEMENTATION_NOOP',
+    retryable: true,
+  });
+  const retry = repositories.executions.create({
+    idempotencyKey: 'cancel-retry-current',
+    identity: {
+      executionId: 'cancel-retry-current',
+      planId: 'plan-cancel-retry-order',
+      workItemId: item.workItemId,
+      phase: 'IMPLEMENT',
+      attempt: 2,
+      route: 'implementation-b',
+      sourceRevision: 'base-sha',
+    },
+    objective: 'current retry writer',
+  }).value!;
+  repositories.executions.updateStatus(retry.identity.executionId, 'RUNNING');
+  runtime.setExecutionCancellation({
+    cancelExecution: async (executionId) => {
+      calls.push(executionId);
+      repositories.executions.updateStatus(executionId, 'CANCELLED');
+      return { status: 'SUCCEEDED', code: 'EXECUTION_OPERATOR_CANCELLED' };
+    },
+  });
+
+  const result = await runtime.cancelActive(
+    'plan-cancel-retry-order',
+    'operator-cancel-retry-order',
+    'cancel current retry before historical cleanup',
+  );
+
+  assert.equal(result.code, 'PROJECT_PLAN_CANCELLED');
+  assert.deepEqual(calls, [retry.identity.executionId, oldAttempt.identity.executionId]);
+  assert.equal(repositories.plans.getPlan('plan-cancel-retry-order').status, 'CANCELLED');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId, undefined);
+  db.close();
+});
+
 test('operator cancellation holds the Plan and lease when an execution cannot be quiesced, then retries safely', async () => {
   const db = openDatabase(':memory:', { environment: 'test' });
   const repositories = createRepositories(db);

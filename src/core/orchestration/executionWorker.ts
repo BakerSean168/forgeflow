@@ -1171,12 +1171,18 @@ export class ExecutionWorker {
         .update('|')
         .update(snapshot.status)
         .digest('hex');
+    const workspaceOnlyProgress =
+      (execution.identity.phase === 'IMPLEMENT' || execution.identity.phase === 'IMPLEMENT_FIX') &&
+      (selectedResource?.resourceTier === 'FREE' || selectedResource?.resourceTier === 'PROMOTIONAL');
+    const effectiveProviderFingerprint = workspaceOnlyProgress
+      ? 'opportunistic-workspace-only'
+      : providerFingerprint;
     const fingerprint = createHash('sha256')
       .update(snapshot.providerSessionId)
       .update('|')
       .update(workspaceFingerprint)
       .update('|')
-      .update(providerFingerprint)
+      .update(effectiveProviderFingerprint)
       .digest('hex');
     const latest = existing.at(-1);
     if (
@@ -1195,6 +1201,7 @@ export class ExecutionWorker {
           fingerprint,
           workspaceFingerprint,
           providerFingerprint,
+          progressMode: workspaceOnlyProgress ? 'WORKSPACE_ONLY' : 'WORKSPACE_OR_PROVIDER',
           providerSessionId: snapshot.providerSessionId,
           providerStatus: snapshot.status,
           observedAt: this.now().toISOString(),
