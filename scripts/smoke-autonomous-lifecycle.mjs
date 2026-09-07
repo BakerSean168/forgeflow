@@ -8,10 +8,6 @@ const CONTROL_PLANE = (
 const PROJECT_KEY = process.env.FORGEFLOW_AUTONOMOUS_SMOKE_PROJECT_KEY ?? 'forgeflow-smoke';
 const REPOSITORY =
   process.env.FORGEFLOW_AUTONOMOUS_SMOKE_REPOSITORY ?? '/home/dev/projects/forgeflow-smoke';
-const OPENHANDS_URL = (
-  process.env.FORGEFLOW_OPENHANDS_URL ?? 'http://127.0.0.1:18420'
-).replace(/\/$/, '');
-const OPENHANDS_TOKEN = process.env.FORGEFLOW_OPENHANDS_TOKEN?.trim();
 const OPENHANDS_CONTAINER = process.env.FORGEFLOW_OPENHANDS_CONTAINER ?? 'forgeflow-openhands';
 const TIMEOUT_MS = integerEnv('FORGEFLOW_AUTONOMOUS_SMOKE_TIMEOUT_MS', 20 * 60_000, 60_000, 60 * 60_000);
 const POLL_MS = integerEnv('FORGEFLOW_AUTONOMOUS_SMOKE_POLL_MS', 5_000, 1_000, 60_000);
@@ -126,16 +122,30 @@ async function api(path, init = {}) {
 }
 
 async function openHandsConversationStatus(providerSessionId) {
-  if (!OPENHANDS_TOKEN) fail('FORGEFLOW_OPENHANDS_TOKEN_REQUIRED');
-  const response = await fetch(
-    `${OPENHANDS_URL}/api/conversations/${encodeURIComponent(providerSessionId)}`,
-    {
-      headers: { 'X-Session-API-Key': OPENHANDS_TOKEN },
-      signal: AbortSignal.timeout(10_000),
-    },
-  );
-  await response.body?.cancel();
-  return response.status;
+  if (!/^[A-Za-z0-9._:-]+$/.test(providerSessionId))
+    fail('SMOKE_OPENHANDS_PROVIDER_SESSION_ID_INVALID');
+  const python = [
+    'import os,sys,urllib.error,urllib.parse,urllib.request',
+    'key=os.environ.get("SESSION_API_KEY", "")',
+    'assert key, "SESSION_API_KEY missing inside OpenHands container"',
+    'url="http://127.0.0.1:18420/api/conversations/"+urllib.parse.quote(sys.argv[1], safe="")',
+    'req=urllib.request.Request(url, headers={"X-Session-API-Key": key})',
+    'try:',
+    '  response=urllib.request.urlopen(req, timeout=10)',
+    '  print(response.status)',
+    '  response.close()',
+    'except urllib.error.HTTPError as error:',
+    '  print(error.code)',
+  ].join('\n');
+  const output = execFileSync(
+    '/usr/bin/docker',
+    ['exec', OPENHANDS_CONTAINER, 'python3', '-c', python, providerSessionId],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 },
+  ).trim();
+  const status = Number(output);
+  if (!Number.isInteger(status) || status < 100 || status > 599)
+    fail('SMOKE_OPENHANDS_STATUS_INVALID', { providerSessionId });
+  return status;
 }
 
 function providerProcessesForPlan(currentPlanId) {
@@ -290,7 +300,6 @@ function progress(view, queue) {
 }
 
 async function main() {
-  if (!OPENHANDS_TOKEN) fail('FORGEFLOW_OPENHANDS_TOKEN_REQUIRED');
   const health = await api('/api/health');
   if (health.status !== 'ok') fail('SMOKE_FORGEFLOW_UNHEALTHY');
   if (health.executionRuntime?.autonomousPolling !== true)
