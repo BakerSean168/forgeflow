@@ -4,11 +4,20 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { ForgeFlowError, failClosed } from '../domain/errors.js';
+import { isTerminalPlanStatus } from '../domain/plan.js';
 import type { PlanWorktree, PlanWorktreeRole } from '../domain/worktree.js';
 import type { ForgeFlowRepositories } from '../persistence/repositories.js';
 
 const execFileAsync = promisify(execFile);
 const MAX_ID_BYTES = 120;
+const RETRYABLE_ACTIVATION_FAILURE_CODES = new Set([
+  'WORKTREE_AGENT_HARNESS_PROJECT_UNREGISTERED',
+  'WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED',
+  'WORKTREE_OPENHANDS_MOUNT_CHECK_FAILED',
+  'WORKTREE_GIT_FAILED',
+  'WORKTREE_ACL_TOOL_MISSING',
+  'WORKTREE_ACL_FAILED',
+]);
 
 interface GitWorktreeRecord {
   path: string;
@@ -143,14 +152,22 @@ export class PlanWorktreeManager {
       if (this.projectAdmission) await this.projectAdmission(plan.repositoryPath);
       await this.ensureProtectedRefSnapshot(rootPlanId);
       await this.assertProtectedRefsStable(rootPlanId);
-      return await this.ensureIntegration({
+      const integration = await this.ensureIntegration({
         projectKey: plan.projectKey,
         rootPlanId: plan.planId,
         repositoryPath: plan.repositoryPath,
         baseRevision: plan.currentRevision,
       });
+      this.recoverActivationWait(rootPlanId);
+      return integration;
     } catch (error) {
-      this.enterSafetyHold(rootPlanId);
+      const code = error instanceof ForgeFlowError ? error.code : 'WORKTREE_PLAN_ACTIVATION_FAILED';
+      const disposition = RETRYABLE_ACTIVATION_FAILURE_CODES.has(code)
+        ? 'SYSTEM_REPAIR'
+        : 'SAFETY_HOLD';
+      this.recordActivationFailure(rootPlanId, code, disposition);
+      if (disposition === 'SYSTEM_REPAIR') this.enterSystemRepairWait(rootPlanId);
+      else this.enterSafetyHold(rootPlanId);
       throw error;
     }
   }
@@ -895,6 +912,64 @@ export class PlanWorktreeManager {
       'WORKTREE_PROTECTED_REF_DRIFT',
       'Protected Git refs changed outside the active ForgeFlow Plan namespace.',
     );
+  }
+
+  private recordActivationFailure(
+    rootPlanId: string,
+    errorCode: string,
+    disposition: 'SYSTEM_REPAIR' | 'SAFETY_HOLD',
+  ): void {
+    try {
+      this.repositories.events.appendNew({
+        aggregateId: rootPlanId,
+        aggregateType: 'PLAN',
+        type: 'PLAN_ACTIVATION_FAILED',
+        payload: { errorCode, disposition },
+        occurredAt: new Date().toISOString(),
+        correlationId: rootPlanId,
+      });
+    } catch {
+      // Preserve the primary activation failure even if audit persistence is unavailable.
+    }
+  }
+
+  private enterSystemRepairWait(rootPlanId: string): void {
+    const plan = this.repositories.plans.getPlan(rootPlanId);
+    if (plan.status === 'WAITING_FOR_SYSTEM_REPAIR') return;
+    if (
+      plan.status === 'READY' ||
+      plan.status === 'RUNNING' ||
+      plan.status === 'WAITING_FOR_RESOURCE' ||
+      plan.status === 'WAITING_FOR_EXTERNAL_EVIDENCE'
+    ) {
+      try {
+        this.repositories.plans.updateStatus(rootPlanId, 'WAITING_FOR_SYSTEM_REPAIR');
+      } catch {
+        // Preserve the primary infrastructure activation failure.
+      }
+    }
+  }
+
+  private recoverActivationWait(rootPlanId: string): void {
+    const plan = this.repositories.plans.getPlan(rootPlanId);
+    if (plan.status !== 'WAITING_FOR_SYSTEM_REPAIR') return;
+    const hasNonTerminalChild = plan.childPlanIds.some((childPlanId) =>
+      !isTerminalPlanStatus(this.repositories.plans.getPlan(childPlanId).status),
+    );
+    if (hasNonTerminalChild) return;
+    try {
+      this.repositories.plans.updateStatus(rootPlanId, 'READY');
+      this.repositories.events.appendNew({
+        aggregateId: rootPlanId,
+        aggregateType: 'PLAN',
+        type: 'PLAN_ACTIVATION_RECOVERED',
+        payload: { disposition: 'SYSTEM_REPAIR' },
+        occurredAt: new Date().toISOString(),
+        correlationId: rootPlanId,
+      });
+    } catch {
+      // Keep the Plan parked if recovery cannot be durably recorded.
+    }
   }
 
   private enterSafetyHold(rootPlanId: string): void {

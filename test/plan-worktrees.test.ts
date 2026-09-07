@@ -204,7 +204,59 @@ test('work-item provisioning cannot bypass a failed root Plan admission', async 
   );
   assert.equal(value.repositories.plans.getPlan(value.plan.planId).status, 'SAFETY_HOLD');
   assert.deepEqual(value.repositories.planWorktrees.listByPlan(value.plan.planId), []);
+  const activationFailure = value.repositories.events
+    .listByAggregate(value.plan.planId)
+    .findLast((event) => event.type === 'PLAN_ACTIVATION_FAILED');
+  assert.deepEqual(activationFailure?.payload, {
+    errorCode: 'TEST_PROJECT_ADMISSION_BLOCKED',
+    disposition: 'SAFETY_HOLD',
+  });
 
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('retryable activation infrastructure failure parks for system repair and recovers durably', async () => {
+  const value = fixture();
+  let failAdmission = true;
+  const manager = new PlanWorktreeManager({
+    repositories: value.repositories,
+    allowedRepositoryRoots: [value.repositoriesRoot],
+    managedHostRoot: value.managed,
+    executionRoot: '/workspace',
+    projectAdmission: () => {
+      if (failAdmission) throw new ForgeFlowError('WORKTREE_OPENHANDS_MOUNT_CHECK_FAILED');
+    },
+  });
+
+  await assert.rejects(
+    () => manager.ensurePlanActivated(value.plan.planId),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKTREE_OPENHANDS_MOUNT_CHECK_FAILED',
+  );
+  assert.equal(
+    value.repositories.plans.getPlan(value.plan.planId).status,
+    'WAITING_FOR_SYSTEM_REPAIR',
+  );
+  assert.deepEqual(value.repositories.planWorktrees.listByPlan(value.plan.planId), []);
+  const failure = value.repositories.events
+    .listByAggregate(value.plan.planId)
+    .findLast((event) => event.type === 'PLAN_ACTIVATION_FAILED');
+  assert.deepEqual(failure?.payload, {
+    errorCode: 'WORKTREE_OPENHANDS_MOUNT_CHECK_FAILED',
+    disposition: 'SYSTEM_REPAIR',
+  });
+
+  failAdmission = false;
+  const integration = await manager.ensurePlanActivated(value.plan.planId);
+  assert.equal(integration.role, 'INTEGRATION');
+  assert.equal(value.repositories.plans.getPlan(value.plan.planId).status, 'READY');
+  const recovered = value.repositories.events
+    .listByAggregate(value.plan.planId)
+    .findLast((event) => event.type === 'PLAN_ACTIVATION_RECOVERED');
+  assert.deepEqual(recovered?.payload, { disposition: 'SYSTEM_REPAIR' });
+
+  await manager.retirePlan(value.plan.planId, process.getuid?.() ?? 1000);
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });
 });
