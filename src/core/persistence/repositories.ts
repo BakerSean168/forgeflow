@@ -4356,6 +4356,7 @@ export class RelationshipRepository implements PlanRelationshipRepository {
 }
 
 export interface ForgeFlowRepositories {
+  transaction<T>(operation: () => T): T;
   plans: PlanRepository;
   executions: ExecutionRepository;
   reviews: ReviewRepository;
@@ -4381,6 +4382,7 @@ export function createRepositories(db: DatabaseSync): ForgeFlowRepositories {
   const resourceSelections = new ExecutionResourceSelectionRepository(db, events);
   const resourceStateOverrides = new ResourceStateOverrideRepository(db, events);
   return {
+    transaction: <T>(operation: () => T): T => withTransaction(db, operation),
     plans: new PlanRepository(db, events),
     executions: new ExecutionRepository(db, events),
     reviews: new ReviewRepository(db, events),

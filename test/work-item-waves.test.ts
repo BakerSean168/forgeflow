@@ -104,6 +104,52 @@ test('wave selector respects dependencies, active writers and durable wave numbe
   assert.equal(selectWorkItemWave([{ ...a, status: 'RUNNING' }, b], 's1', 2), undefined);
 });
 
+test('nested repository mutations roll back together when an atomic wave commit fails', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-wave-transaction-'));
+  const file = path.join(root, 'forgeflow.sqlite');
+  const db = openDatabase(file, { environment: 'test', env: { NODE_ENV: 'test' } });
+  const repositories = createRepositories(db);
+  const plan = repositories.plans.createPlan({
+    idempotencyKey: 'wave-transaction-plan',
+    projectKey: 'wave',
+    objective: 'wave transaction',
+    repositoryPath: root,
+    baseRevision: 'base',
+  }).value!;
+  const graph = repositories.plans.createGraphVersion({
+    planId: plan.planId,
+    reason: 'wave transaction',
+  }).value!;
+  const created = repositories.plans.appendGraphWorkItem({
+    graphVersionId: graph.graphVersionId,
+    itemKey: 'parallel',
+    title: 'Parallel',
+    objective: 'parallel',
+    acceptanceCriteria: [],
+    dependencies: [],
+    parallelSafe: true,
+    writeScopes: ['src/parallel'],
+    conflictKeys: [],
+  }).value!;
+
+  assert.throws(
+    () =>
+      repositories.transaction(() => {
+        repositories.plans.assignWorkItemWave(created.workItemId, 1, 'base');
+        repositories.plans.updateWorkItemStatus(created.workItemId, 'RUNNING');
+        throw new Error('inject wave commit failure');
+      }),
+    /inject wave commit failure/,
+  );
+
+  const durable = repositories.plans.getWorkItem(created.workItemId);
+  assert.equal(durable.status, 'PENDING');
+  assert.equal(durable.wave, undefined);
+  assert.equal(durable.integrationBaseRevision, undefined);
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('parallel metadata and wave provenance survive schema migration and restart', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-wave-schema-'));
   const file = path.join(root, 'forgeflow.sqlite');

@@ -492,7 +492,7 @@ test('retryable flag does not permit same-resource reuse for normalized authenti
   seeded.db.close();
 });
 
-test('resource wait resumes a RUNNING work item that has no execution once a resource becomes eligible', async () => {
+test('resource wait leaves a work item unassigned until an implementation resource becomes eligible', async () => {
   const seeded = seed();
   const workspace = new AutomationWorkspace();
   const runner = new ScriptedRunner(seeded.repositories, workspace);
@@ -548,7 +548,10 @@ test('resource wait resumes a RUNNING work item that has no execution once a res
     seeded.repositories.plans.getPlan(seeded.plan.planId).status,
     'WAITING_FOR_RESOURCE',
   );
-  assert.equal(seeded.repositories.plans.listWorkItems(seeded.plan.planId)[0]?.status, 'RUNNING');
+  const pending = seeded.repositories.plans.listWorkItems(seeded.plan.planId)[0]!;
+  assert.equal(pending.status, 'PENDING');
+  assert.equal(pending.wave, undefined);
+  assert.equal(pending.integrationBaseRevision, undefined);
   assert.equal(seeded.repositories.executions.listByPlan(seeded.plan.planId).length, 0);
 
   available = true;
@@ -1614,6 +1617,102 @@ test('parallel wave queues and runs two non-conflicting implementations from the
     seeded.repositories.executions.get(execution.identity.executionId),
   );
   assert.ok(durable.every((execution) => execution.status === 'SUCCEEDED'));
+  seeded.db.close();
+});
+
+test('parallel wave resource preflight leaves no durable half-wave and retries every sibling on the same base', async () => {
+  const seeded = seed([
+    { itemKey: 'a', parallelSafe: true, writeScopes: ['src/a'] },
+    { itemKey: 'b', parallelSafe: true, writeScopes: ['src/b'] },
+  ]);
+  const workspace = new AutomationWorkspace();
+  const runner = new ScriptedRunner(seeded.repositories, workspace);
+  let calls = 0;
+  let failSecondPreflight = true;
+  const profile = {
+    capability: 'IMPLEMENTATION',
+    phase: 'IMPLEMENT',
+    modelFamily: 'gpt-5.6-luna',
+    agentBackend: 'codex-acp',
+    transport: 'PROVIDER_NATIVE',
+    resourceId: 'implementation-primary',
+    resourceTier: 'SUBSCRIPTION',
+    modelRank: 10,
+    resourceSequence: 10,
+    resourceState: 'ACTIVE',
+    selectionReason: 'STATIC_POLICY',
+    bindingId: 'implementation-primary-luna',
+  } as const;
+  const selector = {
+    select() {
+      calls += 1;
+      if (failSecondPreflight && calls === 2)
+        return {
+          status: 'WAITING_FOR_RESOURCE',
+          capability: 'IMPLEMENTATION',
+          reason: 'NO_ELIGIBLE_RESOURCE',
+        } as const;
+      return {
+        status: 'SELECTED',
+        capability: 'IMPLEMENTATION',
+        profile,
+        candidate: { profile, resource: {} as never, binding: {} as never },
+      } as const;
+    },
+  };
+  const automation = new PlanAutomationRuntime(
+    seeded.repositories,
+    runner,
+    workspace,
+    new StaticPlanAutomationPolicyResolver({
+      resourceSelection: { includeProviderNativeProfiles: true },
+      maxImplementationAttempts: 3,
+      maxReviewAttempts: 2,
+      maxInfrastructureAttempts: 2,
+      maxRepairCycles: 2,
+      maxParallelWorkItems: 2,
+      requireDelivery: false,
+    }),
+    undefined,
+    selector,
+  );
+
+  const waiting = await automation.runPlan(seeded.plan.planId);
+  assert.equal(waiting.code, 'WAITING_FOR_RESOURCE');
+  assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'WAITING_FOR_RESOURCE');
+  const afterWait = seeded.repositories.plans.listWorkItems(seeded.plan.planId);
+  assert.deepEqual(new Set(afterWait.map((item) => item.status)), new Set(['PENDING']));
+  assert.ok(afterWait.every((item) => item.wave === undefined));
+  assert.ok(afterWait.every((item) => item.integrationBaseRevision === undefined));
+  assert.equal(seeded.repositories.executions.listByPlan(seeded.plan.planId).length, 0);
+
+  failSecondPreflight = false;
+  const resumed = await automation.runPlan(seeded.plan.planId);
+  assert.equal(resumed.code, 'IMPLEMENTATION_WAVE_QUEUED');
+  assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'RUNNING');
+  const items = seeded.repositories.plans.listWorkItems(seeded.plan.planId);
+  assert.deepEqual(new Set(items.map((item) => item.status)), new Set(['RUNNING']));
+  assert.deepEqual(new Set(items.map((item) => item.wave)), new Set([1]));
+  assert.deepEqual(
+    new Set(items.map((item) => item.integrationBaseRevision)),
+    new Set(['base-sha']),
+  );
+  const executions = seeded.repositories.executions
+    .listByPlan(seeded.plan.planId)
+    .filter((execution) => execution.identity.phase === 'IMPLEMENT');
+  assert.equal(executions.length, 2);
+  assert.deepEqual(
+    new Set(executions.map((execution) => execution.identity.sourceRevision)),
+    new Set(['base-sha']),
+  );
+  assert.ok(
+    executions.every(
+      (execution) =>
+        seeded.repositories.resourceSelections.get(execution.identity.executionId)?.resourceId ===
+        'implementation-primary',
+    ),
+  );
+  assert.equal(calls, 4);
   seeded.db.close();
 });
 

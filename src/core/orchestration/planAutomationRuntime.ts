@@ -296,6 +296,47 @@ export class PlanAutomationRuntime {
     return resumed.value;
   }
 
+  private executableProfileFromSelection(
+    phase: ExecutionPhase,
+    selection: ExecutionResourceSelection,
+  ): ExecutableProfile {
+    return {
+      capability: selection.capability,
+      phase,
+      modelFamily: selection.modelFamily,
+      agentBackend: selection.agentBackend,
+      transport: selection.transport,
+      resourceId: selection.resourceId,
+      resourceTier: selection.resourceTier,
+      modelRank: selection.modelRank,
+      resourceSequence: selection.resourceSequence,
+      resourceState: selection.resourceState,
+      selectionReason: selection.selectionReason,
+      ...(selection.bindingId ? { bindingId: selection.bindingId } : {}),
+      ...(selection.deploymentId ? { deploymentId: selection.deploymentId } : {}),
+      ...(selection.routeModel ? { routeModel: selection.routeModel } : {}),
+      ...(selection.protocol ? { protocol: selection.protocol } : {}),
+    };
+  }
+
+  private selectExecutionProfile(
+    phase: ExecutionPhase,
+    policy: NormalizedPolicy,
+    priorExecutions: readonly Execution[] = [],
+    reuseSelection?: ExecutionResourceSelection,
+  ): ExecutableProfile {
+    if (reuseSelection) return this.executableProfileFromSelection(phase, reuseSelection);
+    if (!this.resourceSelector) throw new ForgeFlowError('RESOURCE_SELECTOR_REQUIRED');
+    const selected = this.resourceSelector.select({
+      phase,
+      includeProviderNativeProfiles: policy.resourceSelection.includeProviderNativeProfiles === true,
+      policy: this.resourceSelectionPolicy(policy),
+      priorAttempts: this.selectionExclusions(priorExecutions),
+    });
+    if (selected.status !== 'SELECTED') throw new ForgeFlowError('NO_ELIGIBLE_RESOURCE');
+    return selected.profile;
+  }
+
   private createSelectedExecution(
     input: {
       plan: Plan;
@@ -310,43 +351,15 @@ export class PlanAutomationRuntime {
     legacyRoute?: string,
     priorExecutions: readonly Execution[] = [],
     reuseSelection?: ExecutionResourceSelection,
+    preparedProfile?: ExecutableProfile,
   ): Execution {
     if (!this.resourceSelector) {
       if (!legacyRoute) throw new ForgeFlowError('EXECUTION_ROUTE_REQUIRED');
       return this.createExecution({ ...input, route: legacyRoute });
     }
 
-    let profile: ExecutableProfile;
-    if (reuseSelection) {
-      profile = {
-        capability: reuseSelection.capability,
-        phase: input.phase,
-        modelFamily: reuseSelection.modelFamily,
-        agentBackend: reuseSelection.agentBackend,
-        transport: reuseSelection.transport,
-        resourceId: reuseSelection.resourceId,
-        resourceTier: reuseSelection.resourceTier,
-        modelRank: reuseSelection.modelRank,
-        resourceSequence: reuseSelection.resourceSequence,
-        resourceState: reuseSelection.resourceState,
-        selectionReason: reuseSelection.selectionReason,
-        ...(reuseSelection.bindingId ? { bindingId: reuseSelection.bindingId } : {}),
-        ...(reuseSelection.deploymentId ? { deploymentId: reuseSelection.deploymentId } : {}),
-        ...(reuseSelection.routeModel ? { routeModel: reuseSelection.routeModel } : {}),
-        ...(reuseSelection.protocol ? { protocol: reuseSelection.protocol } : {}),
-      };
-    } else {
-      const selected = this.resourceSelector.select({
-        phase: input.phase,
-        includeProviderNativeProfiles:
-          policy.resourceSelection.includeProviderNativeProfiles === true,
-        policy: this.resourceSelectionPolicy(policy),
-        priorAttempts: this.selectionExclusions(priorExecutions),
-      });
-      if (selected.status !== 'SELECTED') throw new ForgeFlowError('NO_ELIGIBLE_RESOURCE');
-      profile = selected.profile;
-    }
-
+    const profile =
+      preparedProfile ?? this.selectExecutionProfile(input.phase, policy, priorExecutions, reuseSelection);
     const runningPlan = this.ensurePlanRunning(input.plan);
     const execution = this.createExecution({
       ...input,
@@ -472,26 +485,62 @@ export class PlanAutomationRuntime {
 
     const wave = selectWorkItemWave(items, plan.currentRevision, policy.maxParallelWorkItems);
     if (!wave) return this.failPlan(plan, undefined, 'WORK_GRAPH_DEADLOCK');
-    const created: Execution[] = [];
-    for (const candidate of wave.items) {
-      const assigned = this.repositories.plans.assignWorkItemWave(
-        candidate.workItemId,
-        wave.wave,
-        wave.baseRevision,
-      );
-      if (!assigned.value || assigned.status === 'rejected')
-        throw new ForgeFlowError(assigned.reason ?? 'WORK_ITEM_WAVE_ASSIGNMENT_FAILED');
-      const item = assigned.value;
-      if (item.status !== 'RUNNING')
-        this.repositories.plans.updateWorkItemStatus(item.workItemId, 'RUNNING');
-      created.push(
-        this.createInitialExecution(
-          plan,
-          this.repositories.plans.getWorkItem(item.workItemId),
-          policy,
-        ),
-      );
-    }
+
+    // Resource selection is intentionally completed for the entire wave before any
+    // durable wave provenance is written. A transient admission miss must leave all
+    // siblings PENDING so the same wave/base can be retried without serializing it.
+    const prepared = wave.items.map((candidate) => ({
+      candidate,
+      profile: this.resourceSelector
+        ? this.selectExecutionProfile('IMPLEMENT', policy)
+        : undefined,
+      legacyRoute: this.resourceSelector
+        ? undefined
+        : (policy.implementationRoutes[0] ?? 'implementation'),
+    }));
+
+    // Commit wave provenance, RUNNING status, execution identities, and immutable
+    // resource selections atomically. Nested repository transactions use savepoints,
+    // so any failure rolls the whole wave back instead of leaving a half-committed
+    // writer that would force the remaining siblings into a later wave.
+    const created = this.repositories.transaction(() => {
+      const durablePlan = this.repositories.plans.getPlan(planId);
+      if (durablePlan.status !== 'RUNNING' && durablePlan.status !== 'WAITING_FOR_RESOURCE')
+        throw new ForgeFlowError('STALE_PLAN_STATUS');
+      const runningPlan = this.ensurePlanRunning(durablePlan);
+      const executions: Execution[] = [];
+      for (const entry of prepared) {
+        const assigned = this.repositories.plans.assignWorkItemWave(
+          entry.candidate.workItemId,
+          wave.wave,
+          wave.baseRevision,
+        );
+        if (!assigned.value || assigned.status === 'rejected')
+          throw new ForgeFlowError(assigned.reason ?? 'WORK_ITEM_WAVE_ASSIGNMENT_FAILED');
+        const assignedItem = assigned.value;
+        if (assignedItem.status !== 'RUNNING')
+          this.repositories.plans.updateWorkItemStatus(assignedItem.workItemId, 'RUNNING');
+        const item = this.repositories.plans.getWorkItem(assignedItem.workItemId);
+        executions.push(
+          this.createSelectedExecution(
+            {
+              plan: runningPlan,
+              item,
+              phase: 'IMPLEMENT',
+              attempt: 1,
+              sourceRevision: item.integrationBaseRevision ?? runningPlan.currentRevision,
+              objective: item.objective,
+            },
+            policy,
+            entry.legacyRoute,
+            [],
+            undefined,
+            entry.profile,
+          ),
+        );
+      }
+      return executions;
+    });
     const first = created[0]!;
     return {
       planId,

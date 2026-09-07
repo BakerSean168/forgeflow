@@ -1443,7 +1443,27 @@ export function openDatabase(file: string, options: DatabaseOptions = {}): Datab
   }
 }
 
+let nestedTransactionSequence = 0;
+
 export function withTransaction<T>(db: DatabaseSync, operation: () => T): T {
+  if (db.isTransaction) {
+    const savepoint = 'forgeflow_nested_' + String(++nestedTransactionSequence);
+    db.exec('SAVEPOINT ' + savepoint);
+    try {
+      const result = operation();
+      db.exec('RELEASE SAVEPOINT ' + savepoint);
+      return result;
+    } catch (error) {
+      try {
+        db.exec('ROLLBACK TO SAVEPOINT ' + savepoint);
+        db.exec('RELEASE SAVEPOINT ' + savepoint);
+      } catch {
+        /* preserve original failure */
+      }
+      throw error;
+    }
+  }
+
   db.exec('BEGIN IMMEDIATE');
   try {
     const result = operation();
