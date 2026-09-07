@@ -2326,6 +2326,70 @@ test('terminal provider cleanup deletes a successful provider session without re
   seeded.db.close();
 });
 
+test('terminal provider cleanup supports a retired literal-worktree compatibility path without changing execution truth', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-retired-provider-cleanup',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const descriptor = await workspace.provision({
+    executionId: execution.identity.executionId,
+    planId: seeded.plan.planId,
+    projectKey: seeded.plan.projectKey,
+    workItemId: seeded.item.workItemId,
+    repositoryPath: seeded.plan.repositoryPath,
+    sourceRevision: execution.identity.sourceRevision!,
+    phase: 'IMPLEMENT',
+  });
+  succeedImplementationSession(seeded.repositories, execution, descriptor, 'retired-result-sha');
+  let worktree = seeded.repositories.planWorktrees.create({
+    worktreeId: 'worktree:work_item:retired-provider-cleanup',
+    projectKey: seeded.plan.projectKey,
+    rootPlanId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+    role: 'WORK_ITEM',
+    repositoryPath: seeded.plan.repositoryPath,
+    hostPath: descriptor.hostPath,
+    executionPath: descriptor.executionPath,
+    branchRef: 'refs/heads/forgeflow/worker-test/retired-provider-cleanup',
+    baseRevision: execution.identity.sourceRevision!,
+  }).value!;
+  worktree = seeded.repositories.planWorktrees.transition(
+    worktree.worktreeId,
+    worktree.version,
+    'READY',
+  ).value!;
+  seeded.repositories.planWorktrees.transition(worktree.worktreeId, worktree.version, 'RETIRED');
+  seeded.repositories.plans.updateStatus(seeded.plan.planId, 'SUCCEEDED');
+  workspace.prepareCancellationError = new ForgeFlowError('WORKTREE_NOT_FOUND');
+  const provider = new FakeProvider();
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-retired-provider-cleanup' },
+  );
+
+  const cleaned = await worker.cleanupProviderSession(
+    execution.identity.executionId,
+    'retired-provider-cleanup-1',
+    'repair a historical terminal session after worktree retirement',
+  );
+
+  assert.equal(cleaned.status, 'SUCCEEDED');
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(seeded.repositories.executions.get(execution.identity.executionId).status, 'SUCCEEDED');
+  const proof = seeded.repositories.evidence.find(
+    execution.identity.executionId,
+    'RECOVERY',
+    'provider-session-cleanup',
+  );
+  assert.equal(proof?.payload.retiredWorkspaceCompatibility, true);
+  seeded.db.close();
+});
+
 test('terminal provider cleanup fails closed while a remote provider session remains active', async () => {
   const seeded = seed();
   const execution = createExecution(seeded.repositories, {

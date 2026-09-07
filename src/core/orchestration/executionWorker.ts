@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { ForgeFlowError } from '../domain/errors.js';
 import type { Execution } from '../domain/execution.js';
+import { isTerminalPlanStatus } from '../domain/plan.js';
 import type { ExecutionResourceSelection } from '../domain/resourceRouting.js';
 import type { Review } from '../domain/review.js';
 import type { ForgeFlowRepositories } from '../persistence/repositories.js';
@@ -202,6 +203,16 @@ export class ExecutionWorker {
       this.opportunisticMaxStallRecoveries > 10
     )
       throw new ForgeFlowError('EXECUTION_OPPORTUNISTIC_STALL_RECOVERY_LIMIT_INVALID');
+  }
+
+  private retiredWorkspaceProviderCleanupAllowed(
+    execution: Execution,
+    session: ExecutionSession,
+  ): boolean {
+    const plan = this.repositories.plans.getPlan(execution.identity.planId);
+    if (!isTerminalPlanStatus(plan.status)) return false;
+    const worktree = this.repositories.planWorktrees.findByPath(session.workspace.hostPath);
+    return worktree?.state === 'RETIRED';
   }
 
   private resolveProvider(
@@ -706,6 +717,7 @@ export class ExecutionWorker {
           providerSessionId,
         };
       let remoteProviderStatus = session.providerStatus;
+      let retiredWorkspaceCompatibility = false;
       const alreadyQuiescent =
         session.providerStatus === 'PAUSED' ||
         session.providerStatus === 'WAITING_FOR_CONFIRMATION' ||
@@ -720,8 +732,19 @@ export class ExecutionWorker {
             providerSessionId,
           };
       } else {
-        if (this.workspace.prepareCancellationAccess)
-          await this.workspace.prepareCancellationAccess(session.workspace);
+        if (this.workspace.prepareCancellationAccess) {
+          try {
+            await this.workspace.prepareCancellationAccess(session.workspace);
+          } catch (error) {
+            if (
+              error instanceof ForgeFlowError &&
+              error.code === 'WORKTREE_NOT_FOUND' &&
+              this.retiredWorkspaceProviderCleanupAllowed(execution, session)
+            )
+              retiredWorkspaceCompatibility = true;
+            else throw error;
+          }
+        }
         const cleaned = await resolved.provider.cancel(providerSessionId);
         if (
           cleaned.providerSessionId !== providerSessionId ||
@@ -754,6 +777,7 @@ export class ExecutionWorker {
           executionStatus: execution.status,
           reason: reason.trim(),
           idempotencyDigest: createHash('sha256').update(idempotencyKey.trim()).digest('hex'),
+          ...(retiredWorkspaceCompatibility ? { retiredWorkspaceCompatibility: true } : {}),
         },
       });
       return {
