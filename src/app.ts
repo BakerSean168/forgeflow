@@ -887,7 +887,7 @@ async function buildExecutionAutomation(
       '20m',
     sandboxWrapper:
       env.FORGEFLOW_ANTIGRAVITY_SANDBOX_WRAPPER ??
-      path.join(process.cwd(), 'model-control-plane/scripts/run-antigravity-sandbox.sh'),
+      path.join(process.cwd(), 'scripts/run-antigravity-sandbox.sh'),
     systemdUnitTemplate:
       env.FORGEFLOW_ANTIGRAVITY_SYSTEMD_UNIT ?? 'forgeflow-antigravity@%i.service',
   };

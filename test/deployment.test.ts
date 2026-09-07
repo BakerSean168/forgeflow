@@ -31,6 +31,9 @@ test('ForgeFlow service is standalone, headless, and fail-closed around host wri
   assert.match(service, /WorkingDirectory=\/home\/dev\/projects\/forgeflow/);
   assert.match(service, /UMask=0077/);
   assert.match(service, /FORGEFLOW_PORT=8420/);
+  assert.doesNotMatch(appSource, /model-control-plane\/scripts\/run-antigravity-sandbox\.sh/);
+  assert.doesNotMatch(read('scripts/run-antigravity-unit.mjs'), /model-control-plane\/scripts\/run-antigravity-sandbox\.sh/);
+  assert.match(appSource, /scripts\/run-antigravity-sandbox\.sh/);
   assert.match(service, /FORGEFLOW_DB=\/var\/lib\/forgeflow\/forgeflow\.sqlite/);
   assert.match(service, /FORGEFLOW_RESOURCE_SELECTOR_ENABLED=true/);
   assert.match(service, /FORGEFLOW_SINGLE_ACTIVE_PLAN_ENABLED=true/);

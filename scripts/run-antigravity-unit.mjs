@@ -17,7 +17,7 @@ const canonicalBinary = path.resolve(
 );
 const canonicalWrapper = path.resolve(
   process.env.FORGEFLOW_ANTIGRAVITY_SANDBOX_WRAPPER ??
-    '/home/dev/projects/forgeflow/model-control-plane/scripts/run-antigravity-sandbox.sh',
+    '/home/dev/projects/forgeflow/scripts/run-antigravity-sandbox.sh',
 );
 const expectedUid = Number(process.env.FORGEFLOW_ANTIGRAVITY_UID ?? '1001');
 const expectedGid = Number(process.env.FORGEFLOW_ANTIGRAVITY_GID ?? '1002');
