@@ -1033,6 +1033,39 @@ test('OpenHands inspect, continue and cancel sanitize terminal provider evidence
   assert.ok(calls.some((call) => call.url.endsWith('/pause') && call.method === 'POST'));
 });
 
+test('OpenHands cancel escalates from pause to interrupt when the ACP child remains running', async () => {
+  const calls: Array<{ url: string; method: string }> = [];
+  let interrupted = false;
+  const fake = (async (url: string | URL | Request, init: RequestInit = {}) => {
+    const value = String(url);
+    calls.push({ url: value, method: String(init.method ?? 'GET') });
+    if (value.endsWith('/pause') && init.method === 'POST')
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    if (value.endsWith('/interrupt') && init.method === 'POST') {
+      interrupted = true;
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    }
+    if (value.endsWith('/api/conversations/session-stubborn-cancel'))
+      return new Response(
+        JSON.stringify({
+          id: 'session-stubborn-cancel',
+          execution_status: interrupted ? 'paused' : 'running',
+        }),
+        { status: 200 },
+      );
+    if (value.includes('/events/search'))
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    throw new Error('unexpected request ' + value);
+  }) as typeof fetch;
+  const provider = new OpenHandsExecutionProvider(options(fake));
+
+  const cancelled = await provider.cancel('session-stubborn-cancel');
+
+  assert.equal(cancelled.status, 'PAUSED');
+  assert.ok(calls.some((call) => call.url.endsWith('/pause') && call.method === 'POST'));
+  assert.ok(calls.some((call) => call.url.endsWith('/interrupt') && call.method === 'POST'));
+});
+
 test('OpenHands maps finished ACP transport errors to retryable provider failures', async () => {
   const fake = (async (url: string | URL | Request) => {
     const value = String(url);
