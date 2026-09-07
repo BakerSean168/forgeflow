@@ -2353,6 +2353,53 @@ test('execution worker operator cancel handles queued work without launching a p
 });
 
 
+test('execution worker preserves an immutable terminal provider result while cancelling a failed execution', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-operator-cancel-terminal-provider-result',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const provider = new FakeProvider();
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-operator-cancel-terminal-provider-result' },
+  );
+  await worker.runExecution(execution.identity.executionId);
+  seeded.repositories.sessions.complete(execution.identity.executionId, {
+    status: 'SUCCEEDED',
+    completedAt: now(200),
+  });
+  seeded.repositories.executions.recordResult(execution.identity.executionId, {
+    status: 'FAILED',
+    errorCode: 'WORKSPACE_IMPLEMENTATION_NOOP',
+    retryable: true,
+  });
+
+  const cancelled = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-terminal-provider-result-1',
+    'cancel failed work while preserving terminal provider provenance',
+  );
+
+  assert.equal(cancelled.status, 'SUCCEEDED');
+  assert.equal(cancelled.code, 'EXECUTION_OPERATOR_CANCELLED');
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(seeded.repositories.executions.get(execution.identity.executionId).status, 'CANCELLED');
+  assert.equal(seeded.repositories.sessions.get(execution.identity.executionId).providerStatus, 'SUCCEEDED');
+  assert.ok(
+    seeded.repositories.evidence.find(
+      execution.identity.executionId,
+      'RECOVERY',
+      'operator-provider-cancellation-cleanup',
+    ),
+  );
+  seeded.db.close();
+});
+
 test('execution worker backfills remote provider cleanup for an already-CANCELLED durable execution', async () => {
   const seeded = seed();
   const execution = createExecution(seeded.repositories, {

@@ -771,7 +771,7 @@ export class ExecutionWorker {
         return { executionId, status: 'SUCCEEDED', code: 'EXECUTION_ALREADY_CANCELLED' };
       }
 
-      if (session && session.providerStatus !== 'CANCELLED') {
+      if (session && !TERMINAL_PROVIDER_STATUSES.has(session.providerStatus)) {
         if (!providerSessionId) remoteProviderStatus = 'NO_PROVIDER_SESSION';
         completeSessionCancellation(
           remoteProviderStatus === 'PAUSED' || remoteProviderStatus === 'WAITING_FOR_CONFIRMATION'
