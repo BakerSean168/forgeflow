@@ -305,14 +305,8 @@ export class PlanWorktreeManager {
       const objects = path.join(common, 'objects');
       this.ensureObjectDirectories(objects, source.uid, source.gid);
       await this.grantObjectStoreAcl(objects, uid);
-      const adminRaw = await this.gitInWorktree(current.repositoryPath, current.hostPath, [
-        'rev-parse',
-        '--git-dir',
-      ]);
-      const admin = fs.realpathSync(
-        path.isAbsolute(adminRaw) ? adminRaw : path.resolve(current.hostPath, adminRaw),
-      );
-      failClosed(inside(admin, common), 'WORKTREE_ADMIN_DIR_UNSAFE');
+      const { admin } = this.worktreeGitfileIdentity(current, common);
+      await this.grantTraverseAcl(common, admin, uid);
       await this.grantRecursiveAcl(admin, uid);
       if (current.branchRef) {
         const plan = worktreeRefComponent(current.rootPlanId);
@@ -327,13 +321,30 @@ export class PlanWorktreeManager {
           fs.existsSync(refPath) && fs.existsSync(refParent),
           'WORKTREE_PLAN_REF_NAMESPACE_MISSING',
         );
+        await this.grantTraverseAcl(common, refParent, uid);
         await this.grantRecursiveAcl(refParent, uid);
         const logPath = path.join(common, 'logs', ...current.branchRef.split('/'));
         const logParent = path.dirname(logPath);
-        if (fs.existsSync(logParent)) await this.grantRecursiveAcl(logParent, uid);
+        if (fs.existsSync(logParent)) {
+          await this.grantTraverseAcl(common, logParent, uid);
+          await this.grantRecursiveAcl(logParent, uid);
+        }
       }
     }
+    await this.protectWorktreeIdentity(current, uid, common, source.uid, source.gid);
     return this.repositories.planWorktrees.get(worktreeIdValue);
+  }
+
+  async assertExecutionWorktreeLinked(worktreeIdValue: string): Promise<void> {
+    const current = this.repositories.planWorktrees.get(worktreeIdValue);
+    failClosed(current.role !== 'INTEGRATION', 'WORKTREE_INTEGRATION_CONTROLLER_ONLY');
+    const common = await this.canonicalCommonDir(current.repositoryPath);
+    this.worktreeGitfileIdentity(current, common);
+    const listed = await this.worktreeAt(current.repositoryPath, current.hostPath);
+    failClosed(Boolean(listed), 'WORKTREE_GIT_LINKAGE_VIOLATED');
+    if (current.role === 'REVIEW')
+      failClosed(listed!.detached && !listed!.branch, 'WORKTREE_GIT_LINKAGE_VIOLATED');
+    else failClosed(listed!.branch === current.branchRef, 'WORKTREE_GIT_LINKAGE_VIOLATED');
   }
 
   async prepareWriterForExecution(
@@ -549,6 +560,18 @@ export class PlanWorktreeManager {
     if (source.uid === uid || !fs.existsSync(this.setfaclBinary)) return;
     await this.execAcl(['-x', `u:${uid}`, '--', common], true);
     await this.revokeObjectStoreAcl(path.join(common, 'objects'), uid);
+    for (const candidate of [
+      path.join(common, 'worktrees'),
+      path.join(common, 'refs'),
+      path.join(common, 'refs', 'heads'),
+      path.join(common, 'refs', 'heads', 'forgeflow'),
+      path.join(common, 'logs'),
+      path.join(common, 'logs', 'refs'),
+      path.join(common, 'logs', 'refs', 'heads'),
+      path.join(common, 'logs', 'refs', 'heads', 'forgeflow'),
+    ]) {
+      if (fs.existsSync(candidate)) await this.execAcl(['-x', `u:${uid}`, '--', candidate], true);
+    }
     const plan = worktreeRefComponent(rootPlanId);
     for (const candidate of [
       path.join(common, 'refs', 'heads', 'forgeflow', plan),
@@ -1183,6 +1206,60 @@ export class PlanWorktreeManager {
     failClosed(inside(admin, common), 'WORKTREE_ADMIN_DIR_UNSAFE');
     const identity = this.repositoryIdentity(worktree.repositoryPath);
     this.restoreSourceTreeNoFollow(admin, identity.uid, identity.gid);
+  }
+
+  private worktreeGitfileIdentity(
+    worktree: PlanWorktree,
+    common: string,
+  ): { gitfile: string; admin: string } {
+    const gitfile = path.join(worktree.hostPath, '.git');
+    const stat = fs.lstatSync(gitfile, { throwIfNoEntry: false });
+    failClosed(Boolean(stat?.isFile()) && !stat!.isSymbolicLink(), 'WORKTREE_GIT_LINKAGE_VIOLATED');
+    const content = fs.readFileSync(gitfile, 'utf8').trim();
+    const match = /^gitdir:\s*(.+)$/i.exec(content);
+    failClosed(Boolean(match?.[1]), 'WORKTREE_GIT_LINKAGE_VIOLATED');
+    const candidate = path.isAbsolute(match![1]!)
+      ? match![1]!
+      : path.resolve(worktree.hostPath, match![1]!);
+    let admin: string;
+    let worktreesRoot: string;
+    try {
+      admin = fs.realpathSync(candidate);
+      worktreesRoot = fs.realpathSync(path.join(common, 'worktrees'));
+    } catch {
+      throw new ForgeFlowError('WORKTREE_GIT_LINKAGE_VIOLATED');
+    }
+    failClosed(admin !== worktreesRoot && inside(admin, worktreesRoot), 'WORKTREE_GIT_LINKAGE_VIOLATED');
+    return { gitfile, admin };
+  }
+
+  private async protectWorktreeIdentity(
+    worktree: PlanWorktree,
+    uid: number,
+    common: string,
+    sourceUid: number,
+    sourceGid: number,
+  ): Promise<void> {
+    const { gitfile } = this.worktreeGitfileIdentity(worktree, common);
+    const root = fs.lstatSync(worktree.hostPath);
+    failClosed(root.isDirectory() && !root.isSymbolicLink(), 'WORKTREE_PARENT_UNSAFE');
+    fs.lchownSync(worktree.hostPath, sourceUid, sourceGid);
+    fs.chmodSync(worktree.hostPath, 0o1750);
+    fs.lchownSync(gitfile, sourceUid, sourceGid);
+    fs.chmodSync(gitfile, 0o444);
+    if (sourceUid !== uid) await this.execAcl(['-m', `u:${uid}:rwx`, '--', worktree.hostPath]);
+  }
+
+  private async grantTraverseAcl(base: string, target: string, uid: number): Promise<void> {
+    failClosed(target === base || inside(target, base), 'WORKTREE_ACL_TARGET_UNSAFE');
+    const relative = path.relative(base, target).split(path.sep).filter(Boolean);
+    let current = base;
+    for (const component of relative.slice(0, -1)) {
+      current = path.join(current, component);
+      const stat = fs.lstatSync(current);
+      failClosed(stat.isDirectory() && !stat.isSymbolicLink(), 'WORKTREE_ACL_TARGET_UNSAFE');
+      await this.execAcl(['-m', `u:${uid}:--x`, '--', current]);
+    }
   }
 
   private async grantRecursiveAcl(target: string, uid: number): Promise<void> {

@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import { LiteralWorktreeWorkspaceAdapter } from '../src/core/adapters/literalWorktreeWorkspace.js';
 import { PlanWorktreeManager } from '../src/core/adapters/planWorktrees.js';
+import { ForgeFlowError } from '../src/core/domain/errors.js';
 import { openDatabase } from '../src/core/persistence/database.js';
 import { createRepositories } from '../src/core/persistence/repositories.js';
 import { REPOSITORY_COMPLETION_EVIDENCE_FILE } from '../src/core/orchestration/contracts.js';
@@ -124,6 +125,10 @@ test('literal workspace completes implementation, exact-SHA review and Plan inte
   });
   assert.match(workspace.executionPath, /^\/workspace\/forgeflow\/plans\/literal\/plan-literal\/items\//);
   assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.revision);
+  const gitfileStat = fs.lstatSync(path.join(workspace.hostPath, '.git'));
+  assert.equal(gitfileStat.isFile(), true);
+  assert.equal(gitfileStat.mode & 0o777, 0o444);
+  assert.notEqual(fs.lstatSync(workspace.hostPath).mode & 0o1000, 0);
   fs.mkdirSync(path.join(workspace.hostPath, 'src'), { recursive: true });
   fs.writeFileSync(path.join(workspace.hostPath, 'src/item.txt'), 'implemented\n');
   git(workspace.hostPath, ['add', 'src/item.txt']);
@@ -208,6 +213,33 @@ test('literal workspace completes implementation, exact-SHA review and Plan inte
   );
   assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.revision);
   assert.equal(fs.existsSync(path.join(value.repository, 'src/item.txt')), false);
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('literal workspace fails closed when the shared-worktree gitfile is replaced', async () => {
+  const value = fixture();
+  const implementation = createExecution(value, 'exec-linkage-guard', 'IMPLEMENT', value.revision);
+  const workspace = await value.adapter.provision({
+    executionId: implementation.identity.executionId,
+    planId: value.plan.planId,
+    projectKey: value.plan.projectKey,
+    workItemId: value.item.workItemId,
+    repositoryPath: value.repository,
+    sourceRevision: value.revision,
+    phase: 'IMPLEMENT',
+  });
+  const gitfile = path.join(workspace.hostPath, '.git');
+  fs.chmodSync(gitfile, 0o644);
+  fs.rmSync(gitfile);
+  fs.mkdirSync(gitfile);
+
+  await assert.rejects(
+    () => value.adapter.progressFingerprint(workspace),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKTREE_GIT_LINKAGE_VIOLATED',
+  );
 
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });

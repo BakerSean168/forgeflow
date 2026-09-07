@@ -164,6 +164,7 @@ function forceRemoveRegisteredWorktrees() {
     const candidate = first.slice('worktree '.length);
     if (!candidate.startsWith(path.join(managedHostRoot, 'forgeflow', 'plans', projectKey, planId)))
       continue;
+    execFileSync('chown', ['-R', `${sourceIdentity.uid}:${sourceIdentity.gid}`, candidate]);
     sourceGit(['worktree', 'unlock', '--', candidate], true);
     sourceGit(['worktree', 'remove', '--force', '--', candidate], true);
   }
@@ -245,6 +246,20 @@ try {
     sourceRevision: baseRevision,
     phase: 'IMPLEMENT',
   });
+  const identityGuardScript = [
+    'set -euo pipefail',
+    `cd ${JSON.stringify(implementationWorkspace.executionPath)}`,
+    'test -f .git',
+    'test "$(stat -c %a .git)" = 444',
+    'unset GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2 GIT_CONFIG_KEY_3 GIT_CONFIG_VALUE_3 GIT_CONFIG_COUNT GIT_CONFIG_NOSYSTEM',
+    'git init -q >/tmp/forgeflow-git-init.out 2>/tmp/forgeflow-git-init.err || true',
+    'test -f .git',
+    'test ! -d .git',
+    'if rm -f .git 2>/tmp/forgeflow-gitfile-remove.err; then exit 73; fi',
+    'test -f .git',
+    'git -c safe.directory="$PWD" rev-parse --git-common-dir >/dev/null',
+  ].join('; ');
+  containerRun(implementationWorkspace, implementationId, identityGuardScript);
   const implementationScript = [
     'set -euo pipefail',
     `cd ${JSON.stringify(implementationWorkspace.executionPath)}`,

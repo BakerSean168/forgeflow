@@ -287,6 +287,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
 
   async progressFingerprint(workspace: WorkspaceDescriptor): Promise<string> {
     const descriptor = this.validateWorkspace(workspace);
+    await this.assertLiteralLinkage(descriptor);
     const head = await this.git(descriptor.hostPath, ['rev-parse', '--verify', 'HEAD^{commit}']);
     const status = await this.git(descriptor.hostPath, ['status', '--porcelain=v1', '-z']);
     const staged = fs.lstatSync(
@@ -354,6 +355,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
 
   async verifyImplementation(workspace: WorkspaceDescriptor): Promise<WorkspaceCompletionSnapshot> {
     const descriptor = this.validateWorkspace(workspace);
+    await this.assertLiteralLinkage(descriptor);
     const headRevision = await this.git(descriptor.hostPath, [
       'rev-parse',
       '--verify',
@@ -448,6 +450,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
     reviewedSha: string,
   ): Promise<WorkspaceCompletionSnapshot> {
     const descriptor = this.validateWorkspace(workspace);
+    await this.assertLiteralLinkage(descriptor);
     const headRevision = await this.git(descriptor.hostPath, [
       'rev-parse',
       '--verify',
@@ -646,6 +649,12 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
     failClosed(stat.isDirectory() && !stat.isSymbolicLink(), 'WORKSPACE_EXECUTION_DIR_UNSAFE');
     fs.chownSync(executionDirectory, this.workspaceUid, this.workspaceGid);
     fs.chmodSync(executionDirectory, 0o700);
+  }
+
+  private async assertLiteralLinkage(descriptor: WorkspaceDescriptor): Promise<void> {
+    const record = this.repositories.planWorktrees.findByPath(descriptor.hostPath);
+    if (!record || record.state === 'RETIRED') throw new ForgeFlowError('WORKTREE_NOT_FOUND');
+    await this.manager.assertExecutionWorktreeLinked(record.worktreeId);
   }
 
   private validateWorkspace(workspace: WorkspaceDescriptor): WorkspaceDescriptor {
@@ -876,6 +885,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
             HOME: '/nonexistent',
             GIT_CONFIG_NOSYSTEM: '1',
             GIT_TERMINAL_PROMPT: '0',
+            GIT_OPTIONAL_LOCKS: '0',
             LC_ALL: 'C.UTF-8',
           },
         },
