@@ -124,6 +124,12 @@ mkdir -p "$source_git_dir"
 mount --bind "$stash/source-git" "$source_git_dir"
 if [[ "$read_only_workspace" == true ]]; then
   mount -o remount,bind,ro "$source_git_dir"
+else
+  # systemd ProtectHome=read-only makes the source Git metadata mount read-only before
+  # this private namespace is created. Re-enable writes only on this exact rebound
+  # repository metadata mount. Existing ForgeFlow ACLs still restrict the worker UID
+  # to its worktree admin area, Plan ref/log namespace, and object creation paths.
+  mount -o remount,bind,rw "$source_git_dir"
 fi
 
 # Hide every other ForgeFlow workspace. Re-bind exactly one execution workspace at

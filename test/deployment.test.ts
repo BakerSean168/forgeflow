@@ -270,6 +270,8 @@ test('provider tools use the ForgeFlow execution/evidence contract', () => {
   assert.match(antigravitySandbox, /GIT_CONFIG_KEY_2=maintenance\.auto/);
   assert.match(antigravitySandbox, /mount --bind \"\$stash\/source-git\" \"\$source_git_dir\"/);
   assert.match(antigravitySandbox, /remount,bind,ro/);
+  assert.match(antigravitySandbox, /remount,bind,rw/);
+  assert.match(antigravitySandbox, /Existing ForgeFlow ACLs still restrict the worker UID/);
 });
 
 test('checked-in deployment scripts are syntactically valid', () => {

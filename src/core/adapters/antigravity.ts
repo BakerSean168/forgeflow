@@ -613,6 +613,19 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
   }
 
   private grantWriterAccess(workspace: string): void {
+    const gitEntry = fs.lstatSync(path.join(workspace, '.git'), { throwIfNoEntry: false });
+    if (gitEntry?.isFile() && !gitEntry.isSymbolicLink()) {
+      // Literal Plan worktrees are already prepared by PlanWorktreeManager with exact
+      // worker ACLs for the working tree, linked-worktree admin directory, Plan ref/log
+      // namespace, and object creation. Never recursively chmod/chgrp here: doing so
+      // would make the protected .git link writable and let a provider sever durable
+      // worktree provenance.
+      if ((gitEntry.mode & 0o022) !== 0)
+        throw new ForgeFlowError('ANTIGRAVITY_WORKTREE_GITFILE_WRITABLE');
+      return;
+    }
+    if (gitEntry && (!gitEntry.isDirectory() || gitEntry.isSymbolicLink()))
+      throw new ForgeFlowError('ANTIGRAVITY_WORKTREE_GIT_ENTRY_INVALID');
     const stat = fs.statSync(workspace);
     if (stat.gid === this.workspaceGid && (stat.mode & 0o030) === 0o030) return;
     execFileSync('/usr/bin/chgrp', ['-R', String(this.workspaceGid), workspace], {
@@ -665,6 +678,7 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
       'Implementation rules:',
       '- Work directly in the current repository and complete the objective, not merely analyze it.',
       '- Inspect repository instructions and preserve contracts outside scope.',
+      '- For repository edits, use run_command with standard shell tools. Do not use Antigravity write_to_file for repository paths; headless write_to_file is artifact-scoped.',
       '- Run focused verification and the appropriate wider checks.',
       '- Commit every intended tracked change with a concise conventional commit and leave git status clean.',
       '- Do not fetch, pull, rebase, run git gc, or run git maintenance; work only from the exact local source graph.',

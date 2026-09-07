@@ -84,7 +84,9 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
   const request = JSON.parse(input.trim());
-  if (request.event !== 'user' || !String(request.message?.content ?? '').includes('bounded objective')) process.exit(41);
+  const message = String(request.message?.content ?? '');
+  if (request.event !== 'user' || !message.includes('bounded objective')) process.exit(41);
+  if (${JSON.stringify(mode)} === 'implementation' && !message.includes('Do not use Antigravity write_to_file for repository paths')) process.exit(43);
   const args = process.argv.slice(2);
   if (!args.includes('--sandbox') || !args.includes('--dangerously-skip-permissions')) process.exit(42);
   if (${JSON.stringify(mode)} === 'wait') {
@@ -309,6 +311,74 @@ test('Antigravity systemd request binds literal Plan workspace identity before l
       error instanceof Error &&
       'code' in error &&
       (error as { code?: string }).code === 'ANTIGRAVITY_META_INVALID',
+  );
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+
+test('Antigravity implementation preserves the protected literal-worktree gitfile', async () => {
+  const value = fixture('wait');
+  const sourceRepository = value.repository;
+  const literal = path.join(
+    value.root,
+    'workspaces',
+    'forgeflow',
+    'plans',
+    'project-alpha',
+    'plan-root',
+    'items',
+    'work-ant',
+    'repo',
+  );
+  fs.mkdirSync(literal, { recursive: true });
+  fs.writeFileSync(path.join(literal, 'README.md'), '# bounded\n', { mode: 0o660 });
+  const gitfile = path.join(literal, '.git');
+  const gitfileValue = 'gitdir: ' + path.join(sourceRepository, '.git', 'worktrees', 'repo-test') + '\n';
+  fs.writeFileSync(gitfile, gitfileValue, { mode: 0o444 });
+  fs.chmodSync(gitfile, 0o444);
+  const systemctl = executable(path.join(value.root, 'fake-systemctl.sh'), '#!/bin/sh\nexit 0\n');
+  const provider = new AntigravityExecutionProvider({
+    ...options(value, 'gemini-3.8-flash-high'),
+    systemdUnitTemplate: 'forgeflow-antigravity@%i.service',
+    systemctlBinary: systemctl,
+  });
+  const requestInput = input(value, 'IMPLEMENT');
+  requestInput.workspace.hostPath = literal;
+  requestInput.workspace.executionPath =
+    '/workspace/forgeflow/plans/project-alpha/plan-root/items/work-ant/repo';
+  requestInput.workspace.sourceRepositoryPath = sourceRepository;
+  requestInput.workspace.evidenceHostPath = path.join(
+    path.dirname(literal),
+    '.executions',
+    'exec-ant',
+    'completion-evidence.json',
+  );
+  requestInput.workspace.evidenceExecutionPath =
+    '/workspace/forgeflow/plans/project-alpha/plan-root/items/work-ant/.executions/exec-ant/completion-evidence.json';
+  const launched = await provider.launch(requestInput);
+  assert.equal(launched.status, 'RUNNING');
+  assert.equal(fs.readFileSync(gitfile, 'utf8'), gitfileValue);
+  assert.equal(fs.statSync(gitfile).mode & 0o022, 0);
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('Antigravity implementation fails closed when a literal-worktree gitfile is writable', async () => {
+  const value = fixture('wait');
+  const sourceRepository = value.repository;
+  const literal = path.join(value.root, 'workspaces', 'forgeflow', 'plans', 'project-alpha', 'plan-root', 'items', 'work-ant', 'repo');
+  fs.mkdirSync(literal, { recursive: true });
+  fs.writeFileSync(path.join(literal, '.git'), 'gitdir: ' + path.join(sourceRepository, '.git', 'worktrees', 'repo-test') + '\n', { mode: 0o664 });
+  fs.chmodSync(path.join(literal, '.git'), 0o664);
+  const provider = new AntigravityExecutionProvider(options(value, 'gemini-3.8-flash-high'));
+  const requestInput = input(value, 'IMPLEMENT');
+  requestInput.workspace.hostPath = literal;
+  requestInput.workspace.sourceRepositoryPath = sourceRepository;
+  await assert.rejects(
+    () => provider.launch(requestInput),
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      (error as { code?: string }).code === 'ANTIGRAVITY_WORKTREE_GITFILE_WRITABLE',
   );
   fs.rmSync(value.root, { recursive: true, force: true });
 });
