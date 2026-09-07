@@ -310,6 +310,78 @@ test('WorkItem worktree survives provider retries and enforces one durable write
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+test('cancellation access is limited to the current writer or a quiescent SAFETY_HOLD worktree', async () => {
+  const value = fixture();
+  let worktree = await value.manager.ensureWorkItem({
+    projectKey: 'project-gamma',
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-cancel-access-owner',
+    value.revision,
+  );
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-cancel-access-other',
+    value.revision,
+  );
+  worktree = await value.manager.attachWriter(worktree.worktreeId, 'exec-cancel-access-owner');
+  const uid = process.getuid?.() ?? 1000;
+  const gid = process.getgid?.() ?? 1000;
+
+  const owned = await value.manager.prepareCancellationAccess(
+    worktree.worktreeId,
+    'exec-cancel-access-owner',
+    uid,
+    gid,
+  );
+  assert.equal(owned.ownerExecutionId, 'exec-cancel-access-owner');
+  await assert.rejects(
+    () =>
+      value.manager.prepareCancellationAccess(
+        worktree.worktreeId,
+        'exec-cancel-access-other',
+        uid,
+        gid,
+      ),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKTREE_CANCEL_ACCESS_WRITER_MISMATCH',
+  );
+
+  worktree = await value.manager.releaseWriter(worktree.worktreeId, 'exec-cancel-access-owner');
+  await assert.rejects(
+    () =>
+      value.manager.prepareCancellationAccess(
+        worktree.worktreeId,
+        'exec-cancel-access-owner',
+        uid,
+        gid,
+      ),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKTREE_CANCEL_ACCESS_REQUIRES_SAFETY_HOLD',
+  );
+  const held = value.repositories.plans.compareAndSetStatus(value.plan.planId, 'READY', 'SAFETY_HOLD');
+  assert.equal(held.status, 'updated');
+  const recovered = await value.manager.prepareCancellationAccess(
+    worktree.worktreeId,
+    'exec-cancel-access-owner',
+    uid,
+    gid,
+  );
+  assert.equal(recovered.ownerExecutionId, undefined);
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('review worktree is detached at exact SHA and restart reconcile re-adopts registered worktrees without cloning', async () => {
   const value = fixture();
   const item = await value.manager.ensureWorkItem({

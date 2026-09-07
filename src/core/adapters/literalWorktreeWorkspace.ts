@@ -265,6 +265,18 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
     );
   }
 
+  async prepareCancellationAccess(workspace: WorkspaceDescriptor): Promise<void> {
+    const descriptor = this.validateWorkspace(workspace);
+    const record = this.repositories.planWorktrees.findByPath(descriptor.hostPath);
+    if (!record || record.state === 'RETIRED') throw new ForgeFlowError('WORKTREE_NOT_FOUND');
+    await this.manager.prepareCancellationAccess(
+      record.worktreeId,
+      descriptor.executionId,
+      this.workspaceUid,
+      this.workspaceGid,
+    );
+  }
+
   async abandonExecution(workspace: WorkspaceDescriptor): Promise<void> {
     const descriptor = this.validateWorkspace(workspace);
     const record = this.repositories.planWorktrees.findByPath(descriptor.hostPath);

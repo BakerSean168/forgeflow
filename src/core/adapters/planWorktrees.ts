@@ -294,6 +294,47 @@ export class PlanWorktreeManager {
       current.branchRef,
       current.role === 'REVIEW',
     );
+    return await this.grantAgentFilesystemAccess(current, uid, gid);
+  }
+
+  async prepareCancellationAccess(
+    worktreeIdValue: string,
+    executionId: string,
+    uid: number,
+    gid: number,
+  ): Promise<PlanWorktree> {
+    failClosed(executionId.trim().length > 0, 'EXECUTION_ID_REQUIRED');
+    failClosed(
+      Number.isInteger(uid) && uid > 0 && Number.isInteger(gid) && gid > 0,
+      'WORKTREE_AGENT_IDENTITY_INVALID',
+    );
+    const current = this.repositories.planWorktrees.get(worktreeIdValue);
+    const rootPlan = this.repositories.plans.getPlan(current.rootPlanId);
+    if (current.ownerExecutionId)
+      failClosed(
+        current.ownerExecutionId === executionId,
+        'WORKTREE_CANCEL_ACCESS_WRITER_MISMATCH',
+      );
+    else
+      failClosed(
+        rootPlan.status === 'SAFETY_HOLD',
+        'WORKTREE_CANCEL_ACCESS_REQUIRES_SAFETY_HOLD',
+      );
+    failClosed(current.role !== 'INTEGRATION', 'WORKTREE_INTEGRATION_CONTROLLER_ONLY');
+    await this.verifyRegistered(
+      current,
+      current.currentRevision,
+      current.branchRef,
+      current.role === 'REVIEW',
+    );
+    return await this.grantAgentFilesystemAccess(current, uid, gid);
+  }
+
+  private async grantAgentFilesystemAccess(
+    current: PlanWorktree,
+    uid: number,
+    gid: number,
+  ): Promise<PlanWorktree> {
     this.chownTreeNoFollow(current.hostPath, uid, gid);
     const common = await this.canonicalCommonDir(current.repositoryPath);
     const source = fs.statSync(common);
@@ -332,7 +373,7 @@ export class PlanWorktreeManager {
       }
     }
     await this.protectWorktreeIdentity(current, uid, common, source.uid, source.gid);
-    return this.repositories.planWorktrees.get(worktreeIdValue);
+    return this.repositories.planWorktrees.get(current.worktreeId);
   }
 
   async assertExecutionWorktreeLinked(worktreeIdValue: string): Promise<void> {

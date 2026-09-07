@@ -234,6 +234,8 @@ export interface WorkspaceProviderPort {
   hasCompletionEvidence?(workspace: WorkspaceDescriptor): boolean;
   /** Opaque repository-state hash; raw paths/content are never persisted by the worker. */
   progressFingerprint?(workspace: WorkspaceDescriptor): Promise<string>;
+  /** Restore bounded workspace access needed to tear down a recovered remote provider session. */
+  prepareCancellationAccess?(workspace: WorkspaceDescriptor): Promise<void>;
   /** Discard unaccepted execution-local work and release any shared worktree writer ownership. */
   abandonExecution?(workspace: WorkspaceDescriptor): Promise<void>;
   storageStatus?(): WorkspaceStorageStatus;

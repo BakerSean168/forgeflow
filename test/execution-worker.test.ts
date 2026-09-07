@@ -94,8 +94,10 @@ class FakeWorkspace implements WorkspaceProviderPort {
   readonly progressFingerprints = new Map<string, string>();
   readonly progressFailures = new Map<string, ForgeFlowError[]>();
   provisionError?: ForgeFlowError;
+  prepareCancellationError?: ForgeFlowError;
   abandonError?: ForgeFlowError;
   provisionCalls = 0;
+  prepareCancellationCalls = 0;
   abandonCalls = 0;
 
   hasCompletionEvidence(workspace: WorkspaceDescriptor): boolean {
@@ -108,6 +110,11 @@ class FakeWorkspace implements WorkspaceProviderPort {
     return (
       this.progressFingerprints.get(workspace.executionId) ?? 'workspace:' + workspace.executionId
     );
+  }
+
+  async prepareCancellationAccess(_workspace: WorkspaceDescriptor): Promise<void> {
+    this.prepareCancellationCalls += 1;
+    if (this.prepareCancellationError) throw this.prepareCancellationError;
   }
 
   async abandonExecution(_workspace: WorkspaceDescriptor): Promise<void> {
@@ -2277,6 +2284,7 @@ test('execution worker operator cancel quiesces a running provider before durabl
   );
   assert.equal(cancelled.status, 'SUCCEEDED');
   assert.equal(cancelled.code, 'EXECUTION_OPERATOR_CANCELLED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
   assert.equal(provider.cancelCalls, 1);
   assert.equal(workspace.abandonCalls, 1);
   assert.equal(
@@ -2329,6 +2337,7 @@ test('execution worker operator cancel fails closed when provider does not quies
   );
   assert.equal(refused.status, 'WAITING');
   assert.equal(refused.code, 'PROVIDER_CANCEL_NOT_QUIESCED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
   assert.equal(provider.cancelCalls, 1);
   assert.equal(
     seeded.repositories.executions.get(execution.identity.executionId).status,
@@ -2339,6 +2348,41 @@ test('execution worker operator cancel fails closed when provider does not quies
       .listByExecution(execution.identity.executionId)
       .some((item) => item.payload.mode === 'operator-execution-cancel'),
     false,
+  );
+  seeded.db.close();
+});
+
+test('execution worker cancellation prepares recovered workspace access before touching the provider', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-operator-cancel-prepare-access',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const provider = new FakeProvider();
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-operator-cancel-prepare-access' },
+  );
+  await worker.runExecution(execution.identity.executionId);
+  workspace.prepareCancellationError = new ForgeFlowError('WORKTREE_CANCEL_ACCESS_UNAVAILABLE');
+
+  const refused = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-prepare-access-1',
+    'workspace access must be restored before provider teardown',
+  );
+
+  assert.equal(refused.status, 'FAILED');
+  assert.equal(refused.code, 'WORKTREE_CANCEL_ACCESS_UNAVAILABLE');
+  assert.equal(workspace.prepareCancellationCalls, 1);
+  assert.equal(provider.cancelCalls, 0);
+  assert.equal(
+    seeded.repositories.executions.get(execution.identity.executionId).status,
+    'RUNNING',
   );
   seeded.db.close();
 });
@@ -2366,6 +2410,7 @@ test('execution worker operator cancel handles queued work without launching a p
   );
   assert.equal(cancelled.status, 'SUCCEEDED');
   assert.equal(provider.launchCalls, 0);
+  assert.equal(workspace.prepareCancellationCalls, 0);
   assert.equal(provider.cancelCalls, 0);
   assert.equal(
     seeded.repositories.executions.get(execution.identity.executionId).status,
@@ -2409,6 +2454,7 @@ test('execution worker preserves an immutable terminal provider result while can
 
   assert.equal(cancelled.status, 'SUCCEEDED');
   assert.equal(cancelled.code, 'EXECUTION_OPERATOR_CANCELLED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
   assert.equal(provider.cancelCalls, 1);
   assert.equal(seeded.repositories.executions.get(execution.identity.executionId).status, 'CANCELLED');
   assert.equal(seeded.repositories.sessions.get(execution.identity.executionId).providerStatus, 'SUCCEEDED');
@@ -2452,6 +2498,7 @@ test('execution worker backfills remote provider cleanup for an already-CANCELLE
 
   assert.equal(cleaned.status, 'SUCCEEDED');
   assert.equal(cleaned.code, 'EXECUTION_ALREADY_CANCELLED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
   assert.equal(provider.cancelCalls, 1);
   assert.equal(workspace.abandonCalls, 1);
   const cleanup = seeded.repositories.evidence.find(
@@ -2468,6 +2515,7 @@ test('execution worker backfills remote provider cleanup for an already-CANCELLE
     'backfill missing remote cleanup proof',
   );
   assert.equal(repeated.status, 'SUCCEEDED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
   assert.equal(provider.cancelCalls, 1);
   assert.equal(workspace.abandonCalls, 2);
   seeded.db.close();
@@ -2498,6 +2546,7 @@ test('execution worker retries cancelled workspace cleanup without re-cancelling
   );
   assert.equal(first.status, 'FAILED');
   assert.equal(first.code, 'WORKTREE_CANCEL_CLEANUP_FAILED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
   assert.equal(provider.cancelCalls, 1);
   assert.equal(workspace.abandonCalls, 1);
   assert.equal(
@@ -2513,6 +2562,7 @@ test('execution worker retries cancelled workspace cleanup without re-cancelling
   );
   assert.equal(second.status, 'SUCCEEDED');
   assert.equal(second.code, 'EXECUTION_ALREADY_CANCELLED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
   assert.equal(provider.cancelCalls, 1);
   assert.equal(workspace.abandonCalls, 2);
   seeded.db.close();

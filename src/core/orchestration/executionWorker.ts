@@ -715,6 +715,8 @@ export class ExecutionWorker {
               providerSessionId,
             };
         } else {
+          if (this.workspace.prepareCancellationAccess)
+            await this.workspace.prepareCancellationAccess(session.workspace);
           const cancelled = await resolved.provider.cancel(providerSessionId);
           if (
             cancelled.providerSessionId !== providerSessionId ||
