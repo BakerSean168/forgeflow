@@ -539,6 +539,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
       'HEAD^{commit}',
     ]);
     failClosed(candidateHead === input.acceptedRevision, 'WORKTREE_ACCEPTED_REVISION_NOT_PINNED');
+    await this.pruneMatchingRepositoryEvidenceResidue(descriptor, input.acceptedRevision);
     failClosed(
       (await this.git(descriptor.hostPath, ['status', '--porcelain=v1', '-z'])).length === 0,
       'WORKTREE_ACCEPTED_REVISION_DIRTY',
@@ -730,6 +731,42 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
     for (const [key, value] of Object.entries({ version: 1, ...workspace }))
       if (stored[key] !== value) throw new ForgeFlowError('WORKSPACE_DESCRIPTOR_MISMATCH');
     return workspace;
+  }
+
+  private async pruneMatchingRepositoryEvidenceResidue(
+    descriptor: WorkspaceDescriptor,
+    expectedRevision: string,
+  ): Promise<void> {
+    const staged = path.join(descriptor.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE);
+    const stagedStat = fs.lstatSync(staged, { throwIfNoEntry: false });
+    if (!stagedStat) return;
+    if (
+      !stagedStat.isFile() ||
+      stagedStat.isSymbolicLink() ||
+      stagedStat.size <= 0 ||
+      stagedStat.size > MAX_EVIDENCE_BYTES
+    )
+      throw new ForgeFlowError('WORKSPACE_REPOSITORY_EVIDENCE_INVALID');
+    const tracked = await this.git(descriptor.hostPath, [
+      'ls-files',
+      '--',
+      REPOSITORY_COMPLETION_EVIDENCE_FILE,
+    ]);
+    if (tracked) throw new ForgeFlowError('WORKSPACE_REPOSITORY_EVIDENCE_TRACKED');
+
+    const stagedEvidence = decodeImplementationEvidence(
+      readJson(staged, 'WORKSPACE_EVIDENCE_INVALID'),
+    );
+    const durableEvidence = decodeImplementationEvidence(
+      readJson(descriptor.evidenceHostPath, 'WORKSPACE_EVIDENCE_INVALID'),
+    );
+    assertImplementationEvidenceGate(stagedEvidence, descriptor, expectedRevision);
+    assertImplementationEvidenceGate(durableEvidence, descriptor, expectedRevision);
+    failClosed(
+      JSON.stringify(stagedEvidence) === JSON.stringify(durableEvidence),
+      'WORKSPACE_EVIDENCE_AMBIGUOUS',
+    );
+    fs.unlinkSync(staged);
   }
 
   private async promoteRepositoryEvidence(

@@ -197,7 +197,14 @@ test('literal workspace completes implementation, exact-SHA review and Plan inte
   assert.equal(reviewed.evidence.phase, 'REVIEW');
   assert.equal(reviewed.evidence.verdict, 'PASS');
 
-  const integrated = await value.adapter.integrateAcceptedRevision({
+  // A provider can finish its turn just after controller-side evidence promotion and
+  // recreate repository-local evidence. Integration must reject any differing replay,
+  // while an exact revalidated duplicate may be pruned before the strict dirty gate.
+  const repositoryEvidence = path.join(
+    workspace.hostPath,
+    REPOSITORY_COMPLETION_EVIDENCE_FILE,
+  );
+  const integrationInput = {
     repositoryPath: value.repository,
     expectedRevision: value.revision,
     acceptedRevision: candidate,
@@ -205,7 +212,41 @@ test('literal workspace completes implementation, exact-SHA review and Plan inte
     planId: value.plan.planId,
     workItemId: value.item.workItemId,
     integrationBaseRevision: value.revision,
-  });
+  };
+  fs.writeFileSync(
+    repositoryEvidence,
+    JSON.stringify({
+      version: 1,
+      executionId: implementation.identity.executionId,
+      phase: 'IMPLEMENT',
+      sourceRevision: value.revision,
+      resultRevision: candidate,
+      outcome: 'CHANGED',
+      summary: 'different replay',
+      tests: [{ command: 'test', status: 'PASS', exitCode: 0 }],
+    }) + '\n',
+  );
+  await assert.rejects(
+    () => value.adapter.integrateAcceptedRevision(integrationInput),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKSPACE_EVIDENCE_AMBIGUOUS',
+  );
+  assert.equal(fs.existsSync(repositoryEvidence), true);
+
+  fs.writeFileSync(
+    repositoryEvidence,
+    JSON.stringify({
+      version: 1,
+      executionId: implementation.identity.executionId,
+      phase: 'IMPLEMENT',
+      sourceRevision: value.revision,
+      resultRevision: candidate,
+      outcome: 'CHANGED',
+      summary: 'implemented',
+      tests: [{ command: 'test', status: 'PASS', exitCode: 0 }],
+    }) + '\n',
+  );
+  const integrated = await value.adapter.integrateAcceptedRevision(integrationInput);
   assert.notEqual(integrated.headRevision, value.revision);
   assert.equal(
     fs.readFileSync(path.join(integrated.rootPath, 'src/item.txt'), 'utf8'),
@@ -213,6 +254,7 @@ test('literal workspace completes implementation, exact-SHA review and Plan inte
   );
   assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.revision);
   assert.equal(fs.existsSync(path.join(value.repository, 'src/item.txt')), false);
+  assert.equal(fs.existsSync(repositoryEvidence), false);
 
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });
