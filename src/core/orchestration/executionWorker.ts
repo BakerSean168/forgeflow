@@ -667,15 +667,12 @@ export class ExecutionWorker {
         if (session && this.workspace.abandonExecution)
           await this.workspace.abandonExecution(session.workspace);
       };
-      if (execution.status === 'CANCELLED') {
-        await abandonWorkspace();
-        return { executionId, status: 'SUCCEEDED', code: 'EXECUTION_ALREADY_CANCELLED' };
-      }
       if (execution.status === 'SUCCEEDED')
         return { executionId, status: 'SKIPPED', code: 'EXECUTION_ALREADY_SUCCEEDED' };
 
       let remoteProviderStatus: string | undefined = session?.providerStatus;
       const providerSessionId = session?.providerSessionId;
+      const providerCleanupEvidenceName = 'operator-provider-cancellation-cleanup';
       const cancellationEvidenceName =
         'operator-execution-cancel-' +
         createHash('sha256').update(idempotencyKey.trim()).digest('hex').slice(0, 40);
@@ -687,6 +684,68 @@ export class ExecutionWorker {
         });
         if (completed.status === 'rejected')
           throw new ForgeFlowError(completed.reason ?? 'STALE_PROVIDER_COMPLETION');
+      };
+      const ensureRemoteProviderCleanup = async (): Promise<ExecutionWorkerResult | undefined> => {
+        if (!session || !providerSessionId) return undefined;
+        if (this.repositories.evidence.find(executionId, 'RECOVERY', providerCleanupEvidenceName))
+          return undefined;
+
+        const alreadyQuiescent =
+          session.providerStatus === 'PAUSED' ||
+          session.providerStatus === 'WAITING_FOR_CONFIRMATION' ||
+          session.providerStatus === 'CANCELLED' ||
+          TERMINAL_PROVIDER_STATUSES.has(session.providerStatus);
+        const resolved = this.resolveProvider(execution);
+        if (!resolved)
+          return {
+            executionId,
+            status: 'WAITING',
+            code: 'EXECUTION_RESOURCE_SELECTION_UNAVAILABLE',
+            providerSessionId,
+          };
+        if (!resolved.provider.cancel) {
+          if (!alreadyQuiescent)
+            return {
+              executionId,
+              status: 'WAITING',
+              code: 'PROVIDER_CANCEL_UNSUPPORTED',
+              providerSessionId,
+            };
+        } else {
+          const cancelled = await resolved.provider.cancel(providerSessionId);
+          if (
+            cancelled.providerSessionId !== providerSessionId ||
+            cancelled.provider !== resolved.provider.provider
+          )
+            throw new ForgeFlowError('PROVIDER_CANCEL_PROVENANCE_MISMATCH');
+          remoteProviderStatus = cancelled.status;
+          if (
+            cancelled.status !== 'CANCELLED' &&
+            cancelled.status !== 'PAUSED' &&
+            !TERMINAL_PROVIDER_STATUSES.has(cancelled.status)
+          ) {
+            this.recordActiveProviderStatus(executionId, session, cancelled);
+            return {
+              executionId,
+              status: 'WAITING',
+              code: 'PROVIDER_CANCEL_NOT_QUIESCED',
+              providerSessionId,
+            };
+          }
+        }
+        this.repositories.evidence.append({
+          executionId,
+          kind: 'RECOVERY',
+          name: providerCleanupEvidenceName,
+          sourceRevision: execution.identity.sourceRevision,
+          payload: {
+            mode: 'operator-provider-cancellation-cleanup',
+            provider: resolved.provider.provider,
+            providerSessionId,
+            remoteProviderStatus: remoteProviderStatus ?? session.providerStatus,
+          },
+        });
+        return undefined;
       };
       const appendCancellationEvidence = () => {
         this.repositories.evidence.append({
@@ -704,76 +763,22 @@ export class ExecutionWorker {
         });
       };
 
-      if (session) {
-        const providerTerminal =
-          session.providerStatus === 'SUCCEEDED' ||
-          session.providerStatus === 'FAILED' ||
-          session.providerStatus === 'STUCK';
-        if (execution.status === 'RUNNING' && providerTerminal)
-          return {
-            executionId,
-            status: 'SKIPPED',
-            code: 'EXECUTION_PROVIDER_ALREADY_TERMINAL',
-            ...(providerSessionId ? { providerSessionId } : {}),
-          };
+      const remoteCleanup = await ensureRemoteProviderCleanup();
+      if (remoteCleanup) return remoteCleanup;
 
-        if (!providerTerminal && session.providerStatus !== 'CANCELLED') {
-          if (!providerSessionId) {
-            completeSessionCancellation(
-              'OPERATOR_EXECUTION_CANCELLED',
-              session.lastProviderObservedAt,
-            );
-            remoteProviderStatus = 'NO_PROVIDER_SESSION';
-          } else if (
-            session.providerStatus === 'PAUSED' ||
-            session.providerStatus === 'WAITING_FOR_CONFIRMATION'
-          ) {
-            remoteProviderStatus = session.providerStatus;
-            completeSessionCancellation(
-              'OPERATOR_CANCELLED_AFTER_PROVIDER_QUIESCE',
-              session.lastProviderObservedAt,
-            );
-          } else {
-            const resolved = this.resolveProvider(execution);
-            if (!resolved)
-              return {
-                executionId,
-                status: 'WAITING',
-                code: 'EXECUTION_RESOURCE_SELECTION_UNAVAILABLE',
-                providerSessionId,
-              };
-            if (!resolved.provider.cancel)
-              return {
-                executionId,
-                status: 'WAITING',
-                code: 'PROVIDER_CANCEL_UNSUPPORTED',
-                providerSessionId,
-              };
-            const cancelled = await resolved.provider.cancel(providerSessionId);
-            if (
-              cancelled.providerSessionId !== providerSessionId ||
-              cancelled.provider !== resolved.provider.provider
-            )
-              throw new ForgeFlowError('PROVIDER_CANCEL_PROVENANCE_MISMATCH');
-            remoteProviderStatus = cancelled.status;
-            if (cancelled.status !== 'CANCELLED' && cancelled.status !== 'PAUSED') {
-              if (!TERMINAL_PROVIDER_STATUSES.has(cancelled.status))
-                this.recordActiveProviderStatus(executionId, session, cancelled);
-              return {
-                executionId,
-                status: 'WAITING',
-                code: 'PROVIDER_CANCEL_NOT_QUIESCED',
-                providerSessionId,
-              };
-            }
-            completeSessionCancellation(
-              cancelled.status === 'PAUSED'
-                ? 'OPERATOR_CANCELLED_AFTER_PROVIDER_QUIESCE'
-                : 'OPERATOR_EXECUTION_CANCELLED',
-              cancelled.observedAt,
-            );
-          }
-        }
+      if (execution.status === 'CANCELLED') {
+        await abandonWorkspace();
+        return { executionId, status: 'SUCCEEDED', code: 'EXECUTION_ALREADY_CANCELLED' };
+      }
+
+      if (session && session.providerStatus !== 'CANCELLED') {
+        if (!providerSessionId) remoteProviderStatus = 'NO_PROVIDER_SESSION';
+        completeSessionCancellation(
+          remoteProviderStatus === 'PAUSED' || remoteProviderStatus === 'WAITING_FOR_CONFIRMATION'
+            ? 'OPERATOR_CANCELLED_AFTER_PROVIDER_QUIESCE'
+            : 'OPERATOR_EXECUTION_CANCELLED',
+          session.lastProviderObservedAt,
+        );
       }
 
       appendCancellationEvidence();

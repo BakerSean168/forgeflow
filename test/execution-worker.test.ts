@@ -2353,6 +2353,57 @@ test('execution worker operator cancel handles queued work without launching a p
 });
 
 
+test('execution worker backfills remote provider cleanup for an already-CANCELLED durable execution', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-operator-cancel-legacy-remote-cleanup',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const provider = new FakeProvider();
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-operator-cancel-legacy-remote-cleanup' },
+  );
+  await worker.runExecution(execution.identity.executionId);
+  seeded.repositories.sessions.complete(execution.identity.executionId, {
+    status: 'CANCELLED',
+    errorCode: 'LEGACY_CANCEL_WITHOUT_REMOTE_CLEANUP_PROOF',
+  });
+  seeded.repositories.executions.updateStatus(execution.identity.executionId, 'CANCELLED');
+
+  const cleaned = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-legacy-remote-cleanup-1',
+    'backfill missing remote cleanup proof',
+  );
+
+  assert.equal(cleaned.status, 'SUCCEEDED');
+  assert.equal(cleaned.code, 'EXECUTION_ALREADY_CANCELLED');
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(workspace.abandonCalls, 1);
+  const cleanup = seeded.repositories.evidence.find(
+    execution.identity.executionId,
+    'RECOVERY',
+    'operator-provider-cancellation-cleanup',
+  );
+  assert.equal(cleanup?.payload.mode, 'operator-provider-cancellation-cleanup');
+  assert.equal(cleanup?.payload.providerSessionId, 'provider-session-1');
+
+  const repeated = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-legacy-remote-cleanup-1',
+    'backfill missing remote cleanup proof',
+  );
+  assert.equal(repeated.status, 'SUCCEEDED');
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(workspace.abandonCalls, 2);
+  seeded.db.close();
+});
+
 test('execution worker retries cancelled workspace cleanup without re-cancelling the provider', async () => {
   const seeded = seed();
   const execution = createExecution(seeded.repositories, {

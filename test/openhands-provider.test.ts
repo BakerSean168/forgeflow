@@ -982,6 +982,7 @@ test('OpenHands progress fingerprint advances only on repository/tool activity, 
 test('OpenHands inspect, continue and cancel sanitize terminal provider evidence', async () => {
   const calls: Array<{ url: string; method: string }> = [];
   let state: 'error' | 'paused' = 'error';
+  let deleted = false;
   const fake = (async (url: string | URL | Request, init: RequestInit = {}) => {
     const value = String(url);
     calls.push({ url: value, method: String(init.method ?? 'GET') });
@@ -989,6 +990,10 @@ test('OpenHands inspect, continue and cancel sanitize terminal provider evidence
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     if (value.endsWith('/pause') && init.method === 'POST') {
       state = 'paused';
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    }
+    if (value.endsWith('/api/conversations/session-1') && init.method === 'DELETE') {
+      deleted = true;
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     }
     if (value.endsWith('/agent_final_response'))
@@ -1013,9 +1018,11 @@ test('OpenHands inspect, continue and cancel sanitize terminal provider evidence
         { status: 200 },
       );
     if (value.endsWith('/api/conversations/session-1'))
-      return new Response(JSON.stringify({ id: 'session-1', execution_status: state }), {
-        status: 200,
-      });
+      return deleted
+        ? new Response(JSON.stringify({ detail: 'not found' }), { status: 404 })
+        : new Response(JSON.stringify({ id: 'session-1', execution_status: state }), {
+            status: 200,
+          });
     throw new Error('unexpected request ' + value);
   }) as typeof fetch;
   const provider = new OpenHandsExecutionProvider(options(fake));
@@ -1028,14 +1035,19 @@ test('OpenHands inspect, continue and cancel sanitize terminal provider evidence
   assert.equal(JSON.stringify(failed).includes('token-value'), false);
   await provider.continue('session-1', 'Continue the same bounded execution.');
   const cancelled = await provider.cancel('session-1');
-  assert.equal(cancelled.status, 'PAUSED');
+  assert.equal(cancelled.status, 'CANCELLED');
   assert.ok(calls.some((call) => call.url.endsWith('/events') && call.method === 'POST'));
-  assert.ok(calls.some((call) => call.url.endsWith('/pause') && call.method === 'POST'));
+  assert.ok(
+    calls.some(
+      (call) => call.url.endsWith('/api/conversations/session-1') && call.method === 'DELETE',
+    ),
+  );
 });
 
 test('OpenHands cancel escalates from pause to interrupt when the ACP child remains running', async () => {
   const calls: Array<{ url: string; method: string }> = [];
   let interrupted = false;
+  let deleted = false;
   const fake = (async (url: string | URL | Request, init: RequestInit = {}) => {
     const value = String(url);
     calls.push({ url: value, method: String(init.method ?? 'GET') });
@@ -1045,14 +1057,20 @@ test('OpenHands cancel escalates from pause to interrupt when the ACP child rema
       interrupted = true;
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     }
+    if (value.endsWith('/api/conversations/session-stubborn-cancel') && init.method === 'DELETE') {
+      deleted = true;
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    }
     if (value.endsWith('/api/conversations/session-stubborn-cancel'))
-      return new Response(
-        JSON.stringify({
-          id: 'session-stubborn-cancel',
-          execution_status: interrupted ? 'paused' : 'running',
-        }),
-        { status: 200 },
-      );
+      return deleted
+        ? new Response(JSON.stringify({ detail: 'not found' }), { status: 404 })
+        : new Response(
+            JSON.stringify({
+              id: 'session-stubborn-cancel',
+              execution_status: interrupted ? 'paused' : 'running',
+            }),
+            { status: 200 },
+          );
     if (value.includes('/events/search'))
       return new Response(JSON.stringify({ items: [] }), { status: 200 });
     throw new Error('unexpected request ' + value);
@@ -1061,9 +1079,40 @@ test('OpenHands cancel escalates from pause to interrupt when the ACP child rema
 
   const cancelled = await provider.cancel('session-stubborn-cancel');
 
-  assert.equal(cancelled.status, 'PAUSED');
+  assert.equal(cancelled.status, 'CANCELLED');
   assert.ok(calls.some((call) => call.url.endsWith('/pause') && call.method === 'POST'));
   assert.ok(calls.some((call) => call.url.endsWith('/interrupt') && call.method === 'POST'));
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.url.endsWith('/api/conversations/session-stubborn-cancel') && call.method === 'DELETE',
+    ),
+  );
+});
+
+test('OpenHands cancel fails closed when conversation deletion cannot be verified', async () => {
+  const fake = (async (url: string | URL | Request, init: RequestInit = {}) => {
+    const value = String(url);
+    if (value.endsWith('/pause') && init.method === 'POST')
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    if (value.endsWith('/api/conversations/session-delete-not-verified') && init.method === 'DELETE')
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    if (value.endsWith('/api/conversations/session-delete-not-verified'))
+      return new Response(
+        JSON.stringify({ id: 'session-delete-not-verified', execution_status: 'paused' }),
+        { status: 200 },
+      );
+    if (value.includes('/events/search'))
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    throw new Error('unexpected request ' + value);
+  }) as typeof fetch;
+  const provider = new OpenHandsExecutionProvider(options(fake));
+
+  await assert.rejects(
+    () => provider.cancel('session-delete-not-verified'),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'OPENHANDS_CANCEL_CLEANUP_NOT_VERIFIED',
+  );
 });
 
 test('OpenHands maps finished ACP transport errors to retryable provider failures', async () => {

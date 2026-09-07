@@ -489,17 +489,26 @@ abstract class OpenHandsProviderBase implements ExecutionProviderPort {
 
   async cancel(providerSessionId: string): Promise<ProviderSessionSnapshot> {
     failClosed(providerSessionId.trim().length > 0, 'PROVIDER_SESSION_ID_REQUIRED');
-    await this.request('/api/conversations/' + encodeURIComponent(providerSessionId) + '/pause', {
-      method: 'POST',
-    });
+    if (!(await this.conversationExists(providerSessionId)))
+      return this.cancelledSnapshot(providerSessionId);
+
     let snapshot = await this.inspect(providerSessionId);
-    if (snapshot.status === 'PAUSED' || TERMINAL_STATUSES.has(snapshot.status)) return snapshot;
-    await this.request(
-      '/api/conversations/' + encodeURIComponent(providerSessionId) + '/interrupt',
-      { method: 'POST' },
-    );
-    snapshot = await this.inspect(providerSessionId);
-    return snapshot;
+    if (snapshot.status !== 'PAUSED' && !TERMINAL_STATUSES.has(snapshot.status)) {
+      await this.request('/api/conversations/' + encodeURIComponent(providerSessionId) + '/pause', {
+        method: 'POST',
+      });
+      snapshot = await this.inspect(providerSessionId);
+    }
+    if (snapshot.status !== 'PAUSED' && !TERMINAL_STATUSES.has(snapshot.status)) {
+      await this.request(
+        '/api/conversations/' + encodeURIComponent(providerSessionId) + '/interrupt',
+        { method: 'POST' },
+      );
+      snapshot = await this.inspect(providerSessionId);
+    }
+
+    await this.deleteConversationAndVerify(providerSessionId);
+    return this.cancelledSnapshot(providerSessionId);
   }
 
   protected conversationAgent(
@@ -644,6 +653,42 @@ abstract class OpenHandsProviderBase implements ExecutionProviderPort {
     await this.request('/api/conversations/' + encodeURIComponent(providerSessionId), {
       method: 'DELETE',
     });
+  }
+
+  private cancelledSnapshot(providerSessionId: string): ProviderSessionSnapshot {
+    return {
+      provider: this.provider,
+      providerSessionId,
+      status: 'CANCELLED',
+      observedAt: new Date().toISOString(),
+    };
+  }
+
+  private async conversationExists(providerSessionId: string): Promise<boolean> {
+    try {
+      await this.request('/api/conversations/' + encodeURIComponent(providerSessionId));
+      return true;
+    } catch (error) {
+      if (error instanceof ForgeFlowError && error.code === 'OPENHANDS_HTTP_404') return false;
+      throw error;
+    }
+  }
+
+  private async deleteConversationAndVerify(providerSessionId: string): Promise<void> {
+    try {
+      await this.deleteConversation(providerSessionId);
+    } catch (error) {
+      if (
+        !(error instanceof ForgeFlowError) ||
+        (error.code !== 'OPENHANDS_HTTP_400' && error.code !== 'OPENHANDS_HTTP_404')
+      )
+        throw error;
+    }
+    if (await this.conversationExists(providerSessionId))
+      throw new ForgeFlowError(
+        'OPENHANDS_CANCEL_CLEANUP_NOT_VERIFIED',
+        'OpenHands conversation still exists after cancellation cleanup.',
+      );
   }
 
   protected async cleanupRuntimeProbeGroup(
