@@ -192,6 +192,17 @@ test('literal worktree deployment is project-mounted, runtime-verified, and smok
   assert.match(literalSmoke, /useRunningContainer[\s\S]*'exec'/);
 });
 
+test('autonomous execution polling does not await slow runtime-admission probes', () => {
+  assert.match(
+    appSource,
+    /const results = await automation\.plans\.runOnce\(\);[\s\S]*void automation\.reconcileRuntimeAdmission\(\)\.catch/,
+  );
+  assert.doesNotMatch(
+    appSource,
+    /await automation\.reconcileRuntimeAdmission\(\);\s*return await automation\.plans\.runOnce\(\)/,
+  );
+});
+
 test('literal worktree Git object access is read-minimized and revoked after Plan cleanup', () => {
   assert.match(planWorktrees, /grantObjectStoreAcl\(objects, uid\)/);
   assert.match(planWorktrees, /\['-R', '-m', `u:\$\{uid\}:rX`, '--', objects\]/);

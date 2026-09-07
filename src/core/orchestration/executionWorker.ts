@@ -39,6 +39,7 @@ export interface ExecutionWorkerOptions {
   resourceFeedback?: ExecutionResourceFeedbackPort;
   requireResourceSelection?: boolean;
   meaningfulProgressTimeoutMs?: number;
+  opportunisticMeaningfulProgressTimeoutMs?: number;
   maxStallRecoveries?: number;
   now?: () => Date;
 }
@@ -129,6 +130,7 @@ export class ExecutionWorker {
   readonly resourceFeedback?: ExecutionResourceFeedbackPort;
   readonly requireResourceSelection: boolean;
   readonly meaningfulProgressTimeoutMs: number;
+  readonly opportunisticMeaningfulProgressTimeoutMs: number;
   readonly maxStallRecoveries: number;
   readonly now: () => Date;
 
@@ -152,6 +154,8 @@ export class ExecutionWorker {
     this.leaseTtlMs = options.leaseTtlMs ?? 30_000;
     this.maxExecutionsPerCycle = options.maxExecutionsPerCycle ?? 20;
     this.meaningfulProgressTimeoutMs = options.meaningfulProgressTimeoutMs ?? 15 * 60_000;
+    this.opportunisticMeaningfulProgressTimeoutMs =
+      options.opportunisticMeaningfulProgressTimeoutMs ?? 5 * 60_000;
     this.maxStallRecoveries = options.maxStallRecoveries ?? 2;
     this.now = options.now ?? (() => new Date());
     if (this.leaseTtlMs < 1_000 || this.leaseTtlMs > 5 * 60_000)
@@ -171,6 +175,12 @@ export class ExecutionWorker {
       this.meaningfulProgressTimeoutMs > 24 * 60 * 60_000
     )
       throw new ForgeFlowError('EXECUTION_MEANINGFUL_PROGRESS_TIMEOUT_INVALID');
+    if (
+      !Number.isInteger(this.opportunisticMeaningfulProgressTimeoutMs) ||
+      this.opportunisticMeaningfulProgressTimeoutMs < 30_000 ||
+      this.opportunisticMeaningfulProgressTimeoutMs > 24 * 60 * 60_000
+    )
+      throw new ForgeFlowError('EXECUTION_OPPORTUNISTIC_PROGRESS_TIMEOUT_INVALID');
     if (
       !Number.isInteger(this.maxStallRecoveries) ||
       this.maxStallRecoveries < 0 ||
@@ -1187,7 +1197,8 @@ export class ExecutionWorker {
       typeof latest.payload.observedAt === 'string' ? latest.payload.observedAt : latest.createdAt,
     );
     const now = this.now().getTime();
-    if (!Number.isFinite(lastProgressAt) || now - lastProgressAt < this.meaningfulProgressTimeoutMs)
+    const meaningfulProgressTimeoutMs = this.progressTimeoutFor(selectedResource);
+    if (!Number.isFinite(lastProgressAt) || now - lastProgressAt < meaningfulProgressTimeoutMs)
       return undefined;
     return await this.recoverMeaningfulProgressStall(
       provider,
@@ -1195,9 +1206,16 @@ export class ExecutionWorker {
       session,
       snapshot,
       selectedResource,
+      meaningfulProgressTimeoutMs,
       fingerprint,
       latest.createdAt,
     );
+  }
+
+  private progressTimeoutFor(selectedResource: ExecutionResourceSelection | undefined): number {
+    return selectedResource?.resourceTier === 'FREE' || selectedResource?.resourceTier === 'PROMOTIONAL'
+      ? Math.min(this.opportunisticMeaningfulProgressTimeoutMs, this.meaningfulProgressTimeoutMs)
+      : this.meaningfulProgressTimeoutMs;
   }
 
   private async recoverMeaningfulProgressStall(
@@ -1206,6 +1224,7 @@ export class ExecutionWorker {
     session: ExecutionSession,
     snapshot: ProviderSessionSnapshot,
     selectedResource: ExecutionResourceSelection | undefined,
+    timeoutMs: number,
     fingerprint: string,
     stalledSince: string,
   ): Promise<ExecutionWorkerResult> {
@@ -1220,7 +1239,7 @@ export class ExecutionWorker {
       stalledSince,
       previousProviderSessionId,
       providerStatus: snapshot.status,
-      timeoutMs: this.meaningfulProgressTimeoutMs,
+      timeoutMs,
     };
 
     if (recoveries.length < this.maxStallRecoveries && provider.replace && provider.interrupt) {

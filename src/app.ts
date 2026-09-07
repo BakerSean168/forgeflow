@@ -1163,6 +1163,13 @@ async function buildExecutionAutomation(
       24 * 60 * 60_000,
       'EXECUTION_MEANINGFUL_PROGRESS_TIMEOUT_INVALID',
     ),
+    opportunisticMeaningfulProgressTimeoutMs: integerValue(
+      env.FORGEFLOW_OPPORTUNISTIC_MEANINGFUL_PROGRESS_TIMEOUT_MS,
+      5 * 60_000,
+      30_000,
+      15 * 60_000,
+      'EXECUTION_OPPORTUNISTIC_PROGRESS_TIMEOUT_INVALID',
+    ),
     maxStallRecoveries: integerValue(
       env.FORGEFLOW_MAX_STALL_RECOVERIES,
       2,
@@ -2973,8 +2980,18 @@ export async function buildControlPlane(
             void runWorkspaceStorageMaintenance()
               .then(async () => {
                 if (projectPlanQueue) await projectPlanQueue.reconcile();
-                await automation.reconcileRuntimeAdmission();
-                return await automation.plans.runOnce();
+                const results = await automation.plans.runOnce();
+                // Runtime admission is a readiness refresh, not part of the active-execution
+                // heartbeat path. Its own single-flight serializes provider probes; keeping it
+                // detached here prevents a slow or unhealthy standby route from starving
+                // RUNNING execution inspection and stall recovery.
+                void automation.reconcileRuntimeAdmission().catch((error) =>
+                  app.log.error(
+                    { error: error instanceof Error ? error.message : String(error) },
+                    'runtime admission cycle failed',
+                  ),
+                );
+                return results;
               })
               .then((results) => {
                 for (const result of results)

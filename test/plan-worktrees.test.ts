@@ -800,6 +800,44 @@ test('schema v9 migrates additively to durable protected-ref snapshots', () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('cancelled execution abandonment repairs source access to worktree admin metadata', async () => {
+  const value = fixture();
+  let worktree = await value.manager.ensureWorkItem({
+    projectKey: 'project-gamma',
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-admin-access-repair',
+    value.revision,
+  );
+  worktree = await value.manager.attachWriter(worktree.worktreeId, 'exec-admin-access-repair');
+  const adminRaw = git(worktree.hostPath, ['rev-parse', '--git-dir']);
+  const admin = fs.realpathSync(
+    path.isAbsolute(adminRaw) ? adminRaw : path.resolve(worktree.hostPath, adminRaw),
+  );
+  const indexPath = path.join(admin, 'index');
+  fs.chmodSync(indexPath, 0o000);
+
+  const abandoned = await value.manager.abandonExecutionWorktree(
+    worktree.worktreeId,
+    'exec-admin-access-repair',
+    value.revision,
+  );
+
+  assert.equal(abandoned.ownerExecutionId, undefined);
+  assert.equal(abandoned.state, 'QUIESCENT');
+  assert.equal(fs.statSync(indexPath).mode & 0o600, 0o600);
+  assert.equal(git(worktree.hostPath, ['rev-parse', 'HEAD']), value.revision);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('cancelled execution abandonment resets unaccepted work and releases literal writer ownership', async () => {
   const value = fixture();
   let worktree = await value.manager.ensureWorkItem({

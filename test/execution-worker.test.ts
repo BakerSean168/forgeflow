@@ -1592,6 +1592,104 @@ test('execution worker separates liveness heartbeats from meaningful progress an
   seeded.db.close();
 });
 
+test('FREE resource selections use the shorter opportunistic meaningful-progress budget', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-free-meaningful-stall',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const selection = createExecutionResourceSelection(execution.identity.executionId, {
+    capability: 'IMPLEMENTATION',
+    phase: 'IMPLEMENT',
+    modelFamily: 'deepseek-v4-flash',
+    agentBackend: 'dsh-acp',
+    transport: 'LITELLM_MANAGED',
+    resourceId: 'community-free',
+    resourceTier: 'FREE',
+    modelRank: 10,
+    resourceSequence: 10,
+    resourceState: 'ACTIVE',
+    selectionReason: 'STATIC_POLICY',
+    bindingId: 'community-free-deepseek',
+    routeModel: 'route-community-free-deepseek',
+  });
+  seeded.repositories.resourceSelections.create(selection);
+  const workspace = new FakeWorkspace();
+  workspace.progressFingerprints.set(execution.identity.executionId, 'workspace-static');
+  const provider = new FakeProvider();
+  provider.launchSnapshot = { ...provider.launchSnapshot, progressFingerprint: 'event-static' };
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'event-static' };
+  let clock = Date.now();
+  const worker = new ExecutionWorker(seeded.repositories, workspace, [], {
+    ownerId: 'worker-free-meaningful-stall',
+    providerFactory: () => provider,
+    requireResourceSelection: true,
+    meaningfulProgressTimeoutMs: 120_000,
+    opportunisticMeaningfulProgressTimeoutMs: 30_000,
+    maxStallRecoveries: 0,
+    now: () => new Date(clock),
+  });
+
+  assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+  clock += 31_000;
+  const failed = await worker.runExecution(execution.identity.executionId);
+  assert.equal(failed.status, 'FAILED');
+  assert.equal(failed.code, 'PROVIDER_MEANINGFUL_PROGRESS_STALLED');
+  const recovery = seeded.repositories.evidence
+    .listByExecution(execution.identity.executionId)
+    .find((item) => item.name.startsWith('meaningful-stall-recovery-'));
+  assert.equal(recovery?.payload.timeoutMs, 30_000);
+  seeded.db.close();
+});
+
+test('SUBSCRIPTION resource selections keep the standard meaningful-progress budget', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-paid-meaningful-stall',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const selection = createExecutionResourceSelection(execution.identity.executionId, {
+    capability: 'IMPLEMENTATION',
+    phase: 'IMPLEMENT',
+    modelFamily: 'gpt-5.6-luna',
+    agentBackend: 'codex-acp',
+    transport: 'LITELLM_MANAGED',
+    resourceId: 'subscription-primary',
+    resourceTier: 'SUBSCRIPTION',
+    modelRank: 30,
+    resourceSequence: 30,
+    resourceState: 'ACTIVE',
+    selectionReason: 'STATIC_POLICY',
+    bindingId: 'subscription-luna',
+    routeModel: 'route-subscription-luna',
+  });
+  seeded.repositories.resourceSelections.create(selection);
+  const workspace = new FakeWorkspace();
+  workspace.progressFingerprints.set(execution.identity.executionId, 'workspace-static');
+  const provider = new FakeProvider();
+  provider.launchSnapshot = { ...provider.launchSnapshot, progressFingerprint: 'event-static' };
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'event-static' };
+  let clock = Date.now();
+  const worker = new ExecutionWorker(seeded.repositories, workspace, [], {
+    ownerId: 'worker-paid-meaningful-stall',
+    providerFactory: () => provider,
+    requireResourceSelection: true,
+    meaningfulProgressTimeoutMs: 120_000,
+    opportunisticMeaningfulProgressTimeoutMs: 30_000,
+    maxStallRecoveries: 0,
+    now: () => new Date(clock),
+  });
+
+  assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+  clock += 31_000;
+  const active = await worker.runExecution(execution.identity.executionId);
+  assert.equal(active.status, 'RUNNING');
+  assert.equal(provider.interruptCalls, 0);
+  seeded.db.close();
+});
+
 test('meaningful-progress stall recovery finalizes a terminal race in the same execution cycle', async () => {
   const seeded = seed();
   const execution = createExecution(seeded.repositories, {

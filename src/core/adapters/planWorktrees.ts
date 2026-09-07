@@ -672,6 +672,7 @@ export class PlanWorktreeManager {
     if (current.state === 'RETIRED') return current;
     const listed = await this.worktreeAt(current.repositoryPath, current.hostPath);
     if (listed) {
+      await this.restoreWorktreeAdminSourceAccess(current);
       await this.verifyRegistered(
         current,
         current.currentRevision,
@@ -1159,6 +1160,31 @@ export class PlanWorktreeManager {
       this.chownTreeNoFollow(path.join(target, entry), uid, gid);
   }
 
+  private restoreSourceTreeNoFollow(target: string, uid: number, gid: number): void {
+    const stat = fs.lstatSync(target);
+    fs.lchownSync(target, uid, gid);
+    if (stat.isSymbolicLink()) return;
+    const mode = stat.mode & 0o7777;
+    fs.chmodSync(target, mode | (stat.isDirectory() ? 0o700 : 0o600));
+    if (!stat.isDirectory()) return;
+    for (const entry of fs.readdirSync(target))
+      this.restoreSourceTreeNoFollow(path.join(target, entry), uid, gid);
+  }
+
+  private async restoreWorktreeAdminSourceAccess(worktree: PlanWorktree): Promise<void> {
+    const common = await this.canonicalCommonDir(worktree.repositoryPath);
+    const adminRaw = await this.gitInWorktree(worktree.repositoryPath, worktree.hostPath, [
+      'rev-parse',
+      '--git-dir',
+    ]);
+    const admin = fs.realpathSync(
+      path.isAbsolute(adminRaw) ? adminRaw : path.resolve(worktree.hostPath, adminRaw),
+    );
+    failClosed(inside(admin, common), 'WORKTREE_ADMIN_DIR_UNSAFE');
+    const identity = this.repositoryIdentity(worktree.repositoryPath);
+    this.restoreSourceTreeNoFollow(admin, identity.uid, identity.gid);
+  }
+
   private async grantRecursiveAcl(target: string, uid: number): Promise<void> {
     await this.execAcl(['-R', '-m', `u:${uid}:rwX`, '--', target]);
     const directories: string[] = [];
@@ -1255,6 +1281,7 @@ export class PlanWorktreeManager {
     expectedRevision: string,
   ): Promise<void> {
     const identity = this.repositoryIdentity(worktree.repositoryPath);
+    await this.restoreWorktreeAdminSourceAccess(worktree);
     if (fs.existsSync(worktree.hostPath))
       this.chownTreeNoFollow(worktree.hostPath, identity.uid, identity.gid);
     await this.gitAsSourceInWorktree(worktree.repositoryPath, worktree.hostPath, [
@@ -1373,6 +1400,7 @@ export class PlanWorktreeManager {
           GIT_CONFIG_NOSYSTEM: '1',
           GIT_TERMINAL_PROMPT: '0',
           LC_ALL: 'C.UTF-8',
+          ...(safeWorktreePath ? { GIT_OPTIONAL_LOCKS: '0' } : {}),
         },
       });
       return stdout.trim();
