@@ -88,6 +88,11 @@ export class ProjectScopedWorkspaceAdapter implements WorkspaceProviderPort {
     return await provider.progressFingerprint(workspace);
   }
 
+  async prepareCancellationAccess(workspace: WorkspaceDescriptor): Promise<void> {
+    const provider = this.isLiteral(workspace) ? this.literal : this.legacy;
+    if (provider.prepareCancellationAccess) await provider.prepareCancellationAccess(workspace);
+  }
+
   async abandonExecution(workspace: WorkspaceDescriptor): Promise<void> {
     const provider = this.isLiteral(workspace) ? this.literal : this.legacy;
     if (provider.abandonExecution) await provider.abandonExecution(workspace);
