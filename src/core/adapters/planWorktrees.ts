@@ -795,6 +795,14 @@ export class PlanWorktreeManager {
       await this.git(current.repositoryPath, ['worktree', 'prune', '--expire', 'now']);
       failClosed(!fs.existsSync(current.hostPath), 'WORKTREE_REMOVE_INCOMPLETE');
     } else {
+      if (current.state === 'PROVISIONING' && fs.existsSync(current.hostPath)) {
+        const recovered = await this.removeRecoverableProvisioningResidue(
+          current,
+          current.currentRevision,
+          current.branchRef,
+        );
+        failClosed(recovered, 'WORKTREE_REGISTRY_FILESYSTEM_MISSING');
+      }
       failClosed(
         current.state === 'PROVISIONING' && !fs.existsSync(current.hostPath),
         'WORKTREE_REGISTRY_FILESYSTEM_MISSING',
@@ -1121,7 +1129,14 @@ export class PlanWorktreeManager {
       await this.verifyRegistered(record, revision, branchRef, detached);
       return;
     }
-    if (fs.existsSync(record.hostPath)) throw new ForgeFlowError('WORKTREE_UNKNOWN_PATH_RESIDUE');
+    if (fs.existsSync(record.hostPath)) {
+      const recovered = await this.removeRecoverableProvisioningResidue(
+        record,
+        revision,
+        branchRef,
+      );
+      if (!recovered) throw new ForgeFlowError('WORKTREE_UNKNOWN_PATH_RESIDUE');
+    }
     if (branchRef) {
       const branchExists = await this.gitSucceeds(record.repositoryPath, [
         'show-ref',
@@ -1175,6 +1190,36 @@ export class PlanWorktreeManager {
       ]);
     }
     await this.verifyRegistered(record, revision, branchRef, detached);
+  }
+
+  private async removeRecoverableProvisioningResidue(
+    record: PlanWorktree,
+    revision: string,
+    branchRef: string | undefined,
+  ): Promise<boolean> {
+    if (record.state !== 'PROVISIONING' || !branchRef || !fs.existsSync(record.hostPath))
+      return false;
+    const stat = fs.lstatSync(record.hostPath);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    const source = this.repositoryIdentity(record.repositoryPath);
+    if (stat.uid !== source.uid || stat.gid !== source.gid) return false;
+    if (fs.readdirSync(record.hostPath).length !== 0) return false;
+    const branchExists = await this.gitSucceeds(record.repositoryPath, [
+      'show-ref',
+      '--verify',
+      '--quiet',
+      branchRef,
+    ]);
+    if (!branchExists) return false;
+    const branchHead = await this.git(record.repositoryPath, [
+      'rev-parse',
+      '--verify',
+      branchRef + '^{commit}',
+    ]);
+    if (branchHead !== revision) return false;
+    fs.rmdirSync(record.hostPath);
+    await this.git(record.repositoryPath, ['worktree', 'prune', '--expire', 'now']);
+    return true;
   }
 
   private async ensurePlanDirectory(record: PlanWorktree): Promise<void> {
