@@ -1,66 +1,138 @@
 # ForgeFlow
 
-**ForgeFlow** is a headless autonomous software engineering control plane.
+> **Autonomous software engineering with durable plans, isolated execution, independent review, recovery, and exact-revision release evidence.**
 
-Give ForgeFlow an engineering objective. It turns that objective into a durable plan, executes dependency-ready work in isolated workspaces, independently reviews exact revisions, repairs failed work, integrates accepted changes, and closes delivery through real repository and CI evidence.
+<p align="left">
+  <a href="https://github.com/BakerSean168/forgeflow/releases/tag/v1.0.0"><strong>v1.0.0</strong></a> ·
+  <a href="./docs/getting-started.md"><strong>Getting Started</strong></a> ·
+  <a href="./docs/architecture.md"><strong>Architecture</strong></a> ·
+  <a href="./CREDITS.md"><strong>Credits</strong></a>
+</p>
 
-ForgeFlow is designed for long-running software work where correctness, recoverability, provenance, and controlled autonomy matter more than a single model response.
+<p align="left">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" />
+  <img alt="Node.js 24+" src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg" />
+  <img alt="Release v1.0.0" src="https://img.shields.io/badge/release-v1.0.0-blue.svg" />
+</p>
 
-## Engineering loop
+Give ForgeFlow a software-engineering objective. It turns that objective into durable work, executes dependency-ready tasks through governed coding-agent resources, independently reviews exact revisions, repairs failures, integrates accepted changes, and closes the lifecycle with repository and release evidence.
+
+ForgeFlow is not a single coding agent and it does not treat an agent saying “done” as completion. **The model proposes work; ForgeFlow owns the lifecycle.**
+
+## Why ForgeFlow?
+
+A conventional autonomous coding loop can collapse planning, implementation, verification, and acceptance into one mutable session:
+
+```text
+Prompt -> Agent -> edits files -> "done"
+```
+
+ForgeFlow separates those responsibilities and makes them durable:
 
 ```text
 Objective
-  -> Plan / dependency graph
-  -> Implementation
-  -> Exact-revision independent review
-  -> Repair + re-review when needed
-  -> Integration
-  -> CI / delivery verification
-  -> Complete
+   |
+   v
+Durable Plan / dependency graph
+   |
+   +---- dependency-ready WorkItems ----+
+   |                                     |
+   v                                     v
+Implementation A                    Implementation B
+   | exact commit                       | exact commit
+   v                                     v
+Independent exact-SHA review       Independent exact-SHA review
+   |                                     |
+   +---------- repair / retry -----------+
+                     |
+                     v
+              Serial integration
+                     |
+                     v
+        Provider cleanup + worktree retirement
+                     |
+                     v
+            Delivery / release evidence
 ```
 
-Repeated bounded engineering failures can also enter a separate improvement intake path:
+This makes long-running development recoverable across model failures, provider outages, process restarts, review failures, and interrupted execution without giving a model authority over the controller's safety state.
+
+## Engineering highlights
+
+| Concern | ForgeFlow approach |
+| --- | --- |
+| Long-running development | durable Plan / WorkItem / Execution / Review state |
+| Project concurrency | one active root Plan per project + FIFO queue |
+| Parallel implementation | dependency-aware, explicitly non-conflicting waves |
+| Repository isolation | literal Git worktrees with controller-owned provenance |
+| Writer safety | one mutable writer per worktree, fenced handoff |
+| Review | independent review pinned to the exact candidate SHA |
+| Recovery | immutable retry/fallback lineage + restart-safe reconciliation |
+| Provider routing | governed resource directory with runtime admission |
+| Progress | provider/tool activity is distinct from meaningful workspace progress |
+| Cleanup | terminal provider cleanup proof before retirement/lease release |
+| Release | exact source SHA + artifact digest + release-bound acceptance |
+| Improvement | typed, bounded diagnosis feeding ordinary Plans rather than privileged mutation |
+| Self-change | separate canary and promotion gates; disabled by default |
+
+## Engineering loop
+
+```mermaid
+flowchart LR
+    O[Objective] --> P[Durable Plan]
+    P --> W[Dependency-ready WorkItems]
+    W --> I[Implementation resources]
+    I --> R[Independent exact-SHA review]
+    R -->|Fail| F[Repair / retry]
+    F --> R
+    R -->|Pass| G[Integration]
+    G --> D[Delivery / release]
+    D --> A[Attestation / provenance]
+```
+
+Implementation and review are separate lifecycle phases. A successful provider process is not sufficient: ForgeFlow validates Git linkage, changed-file scope, clean committed state, review provenance, provider cleanup, worktree retirement, lease/head state, and release identity before acceptance.
+
+## Execution ecosystem
+
+ForgeFlow deliberately separates the **control plane** from the **execution plane**.
 
 ```text
-Repeated verified failure
-  -> deterministic Improvement Candidate
-  -> optional bounded AI Diagnostician over controller-owned evidence only
-  -> typed PROPOSE_REPAIR / NO_ACTION attestation
-  -> explicit adoption (or separately enabled STANDARD/LOW-risk post-diagnosis auto-adoption)
-  -> ordinary ForgeFlow Plan
-  -> the same implementation / independent review / integration / delivery gates
+                         ForgeFlow
+                durable lifecycle authority
+                           |
+          +----------------+----------------+
+          |                                 |
+          v                                 v
+      OpenHands                      Provider-native workers
+   execution plane                     (e.g. Antigravity)
+          |
+   ACP/headless agents
+   Codex / Claude / OpenCode /
+   DSH / ZCode / ...
+          |
+          v
+        LiteLLM / provider APIs
 ```
 
-ForgeFlow self-change adds another independently gated release phase rather than a privileged writer:
+### OpenHands relationship
 
-```text
-ForgeFlow self-change Plan SUCCEEDED
-  -> exact-SHA canary build + full verification + artifact digest
-  -> durable promotion request
-  -> out-of-process systemd promotion runner
-  -> exact source + exact canary artifact release
-  -> restarted control plane proves HEALTHY release provenance
-  -> Improvement Candidate COMPLETED
-```
+ForgeFlow uses the [OpenHands Software Agent SDK](https://github.com/OpenHands/software-agent-sdk) as a version-pinned Agent Server execution plane. The checked-in deployment currently pins `v1.39.1` and verifies the exact upstream commit before building the image.
 
-Discovery, AI diagnosis, adoption, low-risk auto-adoption, self-change, self-promotion, and autonomous self-promotion are separate opt-in controls and default off. `CONSERVATIVE` programs remain human-adopted even if the global auto-adopt switch is enabled, and Maintenance never receives a privileged repository writer.
+OpenHands owns that agent-server/runtime layer. ForgeFlow independently owns durable planning, worktree/writer authority, resource selection, independent review lineage, recovery, integration, cleanup barriers, and release attestation. ForgeFlow is an independent project and is not an OpenHands fork or rebrand.
 
-ForgeFlow has two deliberately separate bounded-intelligence roles. The **AI Supervisor** handles exceptional decisions inside one active Plan, such as replanning the remaining graph, changing an execution route, creating a repair/follow-up plan, or escalating a genuine external gate. The **Improvement Diagnostician** reflects across repeated failures from multiple Executions and can only produce a typed, evidence-grounded diagnosis attestation. It receives structured controller metadata rather than raw logs/provider bodies, cannot invent evidence IDs, cannot lower risk, and cannot write code, create Executions, merge, deploy, or weaken safety gates. Deterministic code retains authority over state transitions, leases, workspace ownership, review provenance, adoption, and delivery safety.
+See [`CREDITS.md`](./CREDITS.md) and [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) for attribution and third-party licensing information.
 
-## V1 principles
+## V1 safety model
 
-- **Headless by default** — the product surface is plans, executions, reviews, repairs, resources, incidents, and deliveries.
 - **Durable before conversational** — the database, not chat history, is the source of truth.
-- **Single-writer safety** — one mutable writer owns a worktree at a time; literal worktree projects additionally require an explicit canonical-repository Git mount that the running OpenHands container must prove before Plan activation.
-- **Exact-revision review** — implementation and review are separate phases with immutable Git provenance.
-- **Evidence over claims** — tests, commits, reviews, CI, merges, releases, and sanitized Supervisor admission diagnostics remain inspectable as durable evidence rather than ephemeral process state.
-- **Exact release identity** — each promoted artifact is bound at process boot to an exact Git source SHA and deterministic artifact digest; release health moves from `PENDING` to `HEALTHY` only after the restarted process proves that same identity.
-- **Resource-aware execution** — models/providers are selected through a governed resource directory rather than hard-coded attempt ladders; transient recovery must pass a protocol-correct health probe before a resource re-enters selection, and both ACP execution admission and paid Supervisor admission are demand-driven with durable bounded-TTL readiness caches rather than probing providers while the control plane is idle or immediately after every restart.
-- **Bounded intelligence** — AI may diagnose and propose typed actions, never execute privileged mutations directly. Supervisor and Improvement diagnosis both use governed `REASONING` resources with direct-protocol admission; malformed diagnosis output is scoped out for that evidence context rather than globally poisoning a healthy resource.
-- **Recoverable execution** — retries, process restarts, provider failures, and interrupted sessions preserve durable lineage; both ACP runtime-admission and Supervisor direct-admission TTLs survive restart. Runtime probes use a stable recovery group plus a unique attempt workspace, planned SIGTERM/SIGINT shutdown aborts new probe work but completes non-cancellable OpenHands cleanup, and recovered probe groups prune crash-residue workspaces only after the remote session is quiescent. Resource recovery wakes parked Supervisors through durable events with a bounded watchdog fallback.
-- **Fail-closed operator cancellation** — cancelling an active root Plan first parks it in `SAFETY_HOLD`, quiesces/cancels live provider sessions, cancels unfinished Reviews/WorkItems, retires the Plan workspace family, and only then releases the project lease or hands it to the next queued Plan. Non-terminal child Plans must be cancelled deepest-first through the same public endpoint; child cancellation never retires the shared root worktree family or releases the root project lease. Cleanup or provider-cancel failure keeps the original lease fenced.
-- **Explicit improvement adoption** — repeated failures become durable Candidates first. When AI diagnosis is enabled, discovery cannot auto-adopt before diagnosis; `NO_ACTION` remains non-adopting, AI may only raise risk, and only a safe grounded `PROPOSE_REPAIR` can feed the normal low-risk adoption policy. Adoption still creates an ordinary Plan rather than a privileged repair path.
-- **Hard-gated self-change** — even an allowlisted `forgeflow` Candidate cannot target ForgeFlow's own repository unless the separate self-change gate is enabled. A successful self-change Plan is not considered completed until an exact-SHA canary produces a deterministic artifact digest, the separate promotion gate authorizes an out-of-process release of exactly that artifact, and the restarted process reports matching `HEALTHY` release provenance. Autonomous promotion is a third, separately disabled gate.
+- **Single-writer safety** — one mutable writer owns a worktree at a time.
+- **Exact-revision review** — review is detached from implementation and bound to an immutable Git revision.
+- **Evidence over claims** — provider success, reasoning, or tool churn does not replace controller verification.
+- **Fail-closed recovery** — unknown repository identity, writer ownership, cleanup, or provenance drift blocks handoff rather than being silently repaired.
+- **Bounded intelligence** — Supervisor/diagnosis models may propose typed actions; deterministic controller code owns privileged state transitions.
+- **Hard-gated self-change** — self-change, canary, promotion, and autonomous promotion are separate controls and default off.
+
+For the detailed state machine, literal-worktree ACL/provenance model, retry semantics, provider cleanup barrier, and release acceptance contract, read [`docs/architecture.md`](./docs/architecture.md).
 
 ## Repository layout
 
@@ -78,44 +150,69 @@ src/
 
 deploy/
   gcp/                 hardened systemd deployment
-  openhands/           isolated execution plane
-openhands_tools/       execution/review ACP adapters
-scripts/               release, probes and bounded maintenance
-test/                  core, adapter, recovery and deployment contracts
+  openhands/           isolated OpenHands execution plane
+openhands_tools/       execution/review ACP and headless adapters
+scripts/               release, probes, acceptance and maintenance
+test/                  lifecycle, adapter, recovery and deployment contracts
 ```
 
-## Development
+## Quick start
 
 Requirements: Node.js 24+ and npm 10+.
 
 ```bash
+git clone https://github.com/BakerSean168/forgeflow.git
+cd forgeflow
 npm ci
 npm run check
 ```
 
-`npm run check` performs product-boundary validation, type checking, the full test suite, and a clean production build.
-
-A real-provider Improvement Diagnostician smoke test is intentionally separate from the deterministic suite:
+Start the local control plane:
 
 ```bash
-npm run smoke:improvement-diagnosis
+npm run dev
 ```
 
-The smoke runner uses an in-memory ForgeFlow database and no-op resource feedback, so it never mutates the production database or durable resource state. It reads the live LiteLLM resource directory and performs a bounded `REASONING` request through the same typed diagnosis client used by production. `FORGEFLOW_IMPROVEMENT_SMOKE_RESOURCE_IDS` may contain a comma-separated allowlist when a specific provider path must be tested. Runtime credentials must already be present in the process environment; the runner never prints them or provider response bodies on failure.
+The repository is intentionally fail-closed: checked-in examples contain no enabled projects or credentials. Full provider/repository execution requires explicit operator configuration.
 
-See [Architecture](docs/architecture.md) and [Development](docs/development.md) for the system model and contribution workflow.
+Continue with:
+
+- [`docs/getting-started.md`](./docs/getting-started.md) — first local run and real-provider acceptance.
+- [`docs/configuration.md`](./docs/configuration.md) — project authorization, resources, OpenHands, provider-native workers and secrets.
+- [`docs/development.md`](./docs/development.md) — development and contribution workflow.
+- [`docs/architecture.md`](./docs/architecture.md) — full runtime and safety architecture.
+
+## Verification
+
+```bash
+npm run check
+```
+
+The deterministic gate runs product-boundary validation, type checking, the full test suite, and a clean production build.
+
+Real-provider acceptance is intentionally separate:
+
+```bash
+npm run smoke:autonomous-lifecycle
+```
+
+It creates real autonomous lifecycle state and may consume provider resources. Release acceptance is bound to the exact running source SHA and artifact digest; an older attestation cannot make a newer release healthy.
 
 ## Deployment safety
 
-The checked-in deployment is intentionally fail-closed. The example environment contains no enabled projects or credentials. A host operator must explicitly configure project allowlists and runtime credentials before `deploy/gcp/install.sh` will start autonomous execution.
+The hardened Linux/GCP deployment uses explicit project allowlists, host-managed credentials, isolated execution identities, and a fail-closed installer. Default locations are:
 
-ForgeFlow defaults to its own local interfaces and state:
+- control plane: `127.0.0.1:8420`
+- OpenHands Agent Server: `127.0.0.1:18420`
+- durable state: `/var/lib/forgeflow`
+- configuration: `/etc/forgeflow`
+- API: `/api/v1/*`
+- approved release ref: `refs/forgeflow/release-approved`
 
-- Control plane: `127.0.0.1:8420`
-- OpenHands execution plane: `127.0.0.1:18420`
-- State: `/var/lib/forgeflow`
-- Configuration: `/etc/forgeflow`
-- API: `/api/v1/*` (including idempotent active-root cancellation plus explicit Improvement diagnosis/self-change canary/promotion endpoints under `/api/v1/improvements/:candidateId/*`)
-- Release approval: `refs/forgeflow/release-approved`
+Do not copy production credentials into the repository. See [`SECURITY.md`](./SECURITY.md).
 
-These defaults allow ForgeFlow to coexist with another engineering system during migration or canary deployment without sharing mutable state.
+## License
+
+ForgeFlow is open source under the [MIT License](./LICENSE).
+
+Third-party software keeps its own license. OpenHands attribution and the pinned upstream MIT notice are documented in [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md); broader ecosystem acknowledgements are in [`CREDITS.md`](./CREDITS.md).

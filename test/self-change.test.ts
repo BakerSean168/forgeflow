@@ -87,7 +87,7 @@ function createCanaryFixture(): {
 test('exact-SHA self-change canary builds, hashes, smoke-boots and removes its worktree', async () => {
   const value = createCanaryFixture();
   try {
-    execFileSync('/usr/bin/npm', ['run', 'build'], { cwd: value.repository, stdio: 'ignore' });
+    execFileSync('npm', ['run', 'build'], { cwd: value.repository, stdio: 'ignore' });
     const expectedDigest = execFileSync(
       path.join(value.repository, 'scripts', 'artifact-digest.sh'),
       [path.join(value.repository, 'dist')],

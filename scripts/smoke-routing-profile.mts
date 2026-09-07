@@ -77,7 +77,7 @@ function git(cwd: string, args: string[]): string {
 }
 
 function npmTest(cwd: string): void {
-  execFileSync('/usr/bin/npm', ['test'], { cwd, stdio: 'ignore' });
+  execFileSync('npm', ['test'], { cwd, stdio: 'ignore' });
 }
 
 function sleep(ms: number): Promise<void> {

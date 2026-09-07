@@ -114,8 +114,8 @@ export class ExactShaSelfChangeCanary implements SelfChangeCanaryPort {
         this.commandTimeoutMs <= 60 * 60_000,
       'IMPROVEMENT_CANARY_TIMEOUT_INVALID',
     );
-    this.npmCommand = options.npmCommand ?? '/usr/bin/npm';
-    this.nodeCommand = options.nodeCommand ?? '/usr/bin/node';
+    this.npmCommand = options.npmCommand ?? 'npm';
+    this.nodeCommand = options.nodeCommand ?? process.execPath;
   }
 
   async run(input: SelfChangeCanaryInput): Promise<SelfChangeCanaryResult> {
