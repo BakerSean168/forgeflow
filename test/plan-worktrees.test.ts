@@ -432,6 +432,43 @@ test('cancellation access accepts an unaccepted writer commit but normal agent a
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+test('cancellation access repairs an unreadable Plan-scoped branch ref before identity proof', async () => {
+  const value = fixture();
+  let worktree = await value.manager.ensureWorkItem({
+    projectKey: 'project-gamma',
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-cancel-ref-repair',
+    value.revision,
+  );
+  worktree = await value.manager.attachWriter(worktree.worktreeId, 'exec-cancel-ref-repair');
+  assert.ok(worktree.branchRef);
+  const refPath = path.join(value.repository, '.git', ...worktree.branchRef!.split('/'));
+  fs.chmodSync(refPath, 0o000);
+  const uid = process.getuid?.() ?? 1000;
+  const gid = process.getgid?.() ?? 1000;
+
+  const recovered = await value.manager.prepareCancellationAccess(
+    worktree.worktreeId,
+    'exec-cancel-ref-repair',
+    uid,
+    gid,
+  );
+
+  assert.equal(recovered.ownerExecutionId, 'exec-cancel-ref-repair');
+  fs.accessSync(refPath, fs.constants.R_OK | fs.constants.W_OK);
+  assert.equal(git(value.repository, ['rev-parse', worktree.branchRef!]), value.revision);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('quiescent FAILED root permits bounded cancellation access without reactivating the Plan', async () => {
   const value = fixture();
   const worktree = await value.manager.ensureWorkItem({

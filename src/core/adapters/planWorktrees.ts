@@ -292,6 +292,7 @@ export class PlanWorktreeManager {
     // canonical source access before proving linkage, then re-grant bounded worker
     // access with source-continuity defaults for future replacements.
     await this.restoreWorktreeAdminSourceAccess(current);
+    await this.restoreWorktreeRefSourceAccess(current);
     await this.verifyRegistered(
       current,
       current.currentRevision,
@@ -334,6 +335,7 @@ export class PlanWorktreeManager {
     // requiring HEAD to equal the durable accepted revision; abandonExecution owns
     // the later exact reset back to the execution source revision.
     await this.restoreWorktreeAdminSourceAccess(current);
+    await this.restoreWorktreeRefSourceAccess(current);
     await this.verifyRegistered(current, undefined, current.branchRef, current.role === 'REVIEW');
     return await this.grantAgentFilesystemAccess(current, uid, gid);
   }
@@ -371,12 +373,12 @@ export class PlanWorktreeManager {
           'WORKTREE_PLAN_REF_NAMESPACE_MISSING',
         );
         await this.grantTraverseAcl(common, refParent, uid);
-        await this.grantRecursiveAcl(refParent, uid);
+        await this.grantRecursiveAcl(refParent, uid, source.uid);
         const logPath = path.join(common, 'logs', ...current.branchRef.split('/'));
         const logParent = path.dirname(logPath);
         if (fs.existsSync(logParent)) {
           await this.grantTraverseAcl(common, logParent, uid);
-          await this.grantRecursiveAcl(logParent, uid);
+          await this.grantRecursiveAcl(logParent, uid, source.uid);
         }
       }
     }
@@ -1255,6 +1257,23 @@ export class PlanWorktreeManager {
     const { admin } = this.worktreeGitfileIdentity(worktree, common);
     const identity = this.repositoryIdentity(worktree.repositoryPath);
     this.restoreSourceTreeNoFollow(admin, identity.uid, identity.gid);
+  }
+
+  private async restoreWorktreeRefSourceAccess(worktree: PlanWorktree): Promise<void> {
+    if (!worktree.branchRef) return;
+    const common = await this.canonicalCommonDir(worktree.repositoryPath);
+    const plan = worktreeRefComponent(worktree.rootPlanId);
+    const allowedPrefix = 'refs/heads/forgeflow/' + plan + '/';
+    failClosed(worktree.branchRef.startsWith(allowedPrefix), 'WORKTREE_BRANCH_NAMESPACE_INVALID');
+    const identity = this.repositoryIdentity(worktree.repositoryPath);
+    const refParent = path.dirname(path.join(common, ...worktree.branchRef.split('/')));
+    if (fs.existsSync(refParent))
+      this.restoreSourceTreeNoFollow(refParent, identity.uid, identity.gid);
+    const logParent = path.dirname(
+      path.join(common, 'logs', ...worktree.branchRef.split('/')),
+    );
+    if (fs.existsSync(logParent))
+      this.restoreSourceTreeNoFollow(logParent, identity.uid, identity.gid);
   }
 
   private async rebuildCorruptedWorktree(
