@@ -322,6 +322,7 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
       throw new ForgeFlowError('ANTIGRAVITY_EVIDENCE_PATH_INVALID');
 
     if (this.role === 'IMPLEMENTATION') this.grantWriterAccess(workspace);
+    else this.grantReviewerAccess(workspace);
 
     const stdoutFile = path.join(directory, 'stdout.ndjson');
     const stderrFile = path.join(directory, 'stderr.log');
@@ -602,6 +603,17 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
       timeout: 120_000,
     });
     execFileSync('/usr/bin/chmod', ['-R', 'g+rwX', workspace], { timeout: 120_000 });
+  }
+
+  private grantReviewerAccess(workspace: string): void {
+    // Antigravity review runs as the dedicated unprivileged user with workspaceGid.
+    // Literal Plan worktrees may have been materialized under a stricter controller
+    // umask or owned by the OpenHands worker, so normalize only group readability.
+    // Explicitly remove group write to preserve independent review immutability.
+    execFileSync('/usr/bin/chgrp', ['-R', String(this.workspaceGid), workspace], {
+      timeout: 120_000,
+    });
+    execFileSync('/usr/bin/chmod', ['-R', 'g+rX,g-w', workspace], { timeout: 120_000 });
   }
 
   private prompt(input: ProviderLaunchInput, workspace: string): string {

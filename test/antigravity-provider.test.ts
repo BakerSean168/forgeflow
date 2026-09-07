@@ -223,6 +223,8 @@ test('Antigravity systemd request binds literal Plan workspace identity before l
   fs.mkdirSync(path.dirname(literal), { recursive: true });
   fs.renameSync(value.repository, literal);
   value.repository = literal;
+  fs.chmodSync(literal, 0o700);
+  fs.chmodSync(path.join(literal, 'README.md'), 0o600);
   const systemctl = executable(path.join(value.root, 'fake-systemctl.sh'), '#!/bin/sh\nexit 0\n');
   const provider = new AntigravityReviewProvider({
     ...options(value, 'gemini-3.1-pro-high'),
@@ -242,6 +244,12 @@ test('Antigravity systemd request binds literal Plan workspace identity before l
     '/workspace/forgeflow/plans/project-alpha/plan-root/reviews/exec-ant/.executions/exec-ant/completion-evidence.json';
   const launched = await provider.launch(requestInput);
   assert.equal(launched.status, 'RUNNING');
+  const rootMode = fs.statSync(literal).mode & 0o777;
+  const readmeMode = fs.statSync(path.join(literal, 'README.md')).mode & 0o777;
+  assert.equal(rootMode & 0o050, 0o050);
+  assert.equal(rootMode & 0o020, 0);
+  assert.equal(readmeMode & 0o040, 0o040);
+  assert.equal(readmeMode & 0o020, 0);
   const recovered = await provider.recover({
     executionId: 'exec-ant',
     createdAt: new Date().toISOString(),
