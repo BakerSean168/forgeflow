@@ -98,6 +98,12 @@ export class ProjectScopedWorkspaceAdapter implements WorkspaceProviderPort {
     if (provider.abandonExecution) await provider.abandonExecution(workspace);
   }
 
+  async preparePlanRetirement(planId: string): Promise<void> {
+    const plan = this.repositories.plans.getPlan(planId);
+    const provider = this.literalProjects.has(plan.projectKey) ? this.literal : this.legacy;
+    if (provider.preparePlanRetirement) await provider.preparePlanRetirement(planId);
+  }
+
   storageStatus(): WorkspaceStorageStatus {
     if (!this.legacy.storageStatus) throw new ForgeFlowError('WORKSPACE_STORAGE_STATUS_UNAVAILABLE');
     return this.legacy.storageStatus();

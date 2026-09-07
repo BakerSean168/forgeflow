@@ -1516,8 +1516,11 @@ export async function buildControlPlane(
         },
         retire: async (rootPlanId) => {
           const plan = repositories.plans.getPlan(rootPlanId);
-          if (literalProjects.has(plan.projectKey))
+          if (literalProjects.has(plan.projectKey)) {
+            if (automation.workspace.preparePlanRetirement)
+              await automation.workspace.preparePlanRetirement(rootPlanId);
             await automation.planWorktreeManager!.retirePlan(rootPlanId, automation.workspaceUid);
+          }
         },
       });
       for (const lease of repositories.projectPlans.listLeases()) {

@@ -238,6 +238,8 @@ export interface WorkspaceProviderPort {
   prepareCancellationAccess?(workspace: WorkspaceDescriptor): Promise<void>;
   /** Discard unaccepted execution-local work and release any shared worktree writer ownership. */
   abandonExecution?(workspace: WorkspaceDescriptor): Promise<void>;
+  /** Remove only evidence residue that can be revalidated against durable terminal execution truth. */
+  preparePlanRetirement?(planId: string): Promise<void>;
   storageStatus?(): WorkspaceStorageStatus;
   pruneTerminalCaches?(
     workspaces: readonly WorkspaceDescriptor[],

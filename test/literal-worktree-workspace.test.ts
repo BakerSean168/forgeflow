@@ -111,6 +111,39 @@ function createExecution(
   }).value!;
 }
 
+
+function attachSession(
+  value: ReturnType<typeof fixture>,
+  executionId: string,
+  workspace: import('../src/core/orchestration/contracts.js').WorkspaceDescriptor,
+) {
+  value.repositories.sessions.create({
+    executionId,
+    phase: 'IMPLEMENT',
+    provider: 'fake-implementation',
+    workspace,
+    sourceRevision: workspace.sourceRevision,
+  });
+}
+
+function implementationEvidence(
+  executionId: string,
+  sourceRevision: string,
+  resultRevision: string,
+  summary = 'implemented',
+) {
+  return {
+    version: 1,
+    executionId,
+    phase: 'IMPLEMENT',
+    sourceRevision,
+    resultRevision,
+    outcome: 'CHANGED',
+    summary,
+    tests: [{ command: 'test', status: 'PASS', exitCode: 0 }],
+  } as const;
+}
+
 test('literal workspace completes implementation, exact-SHA review and Plan integration without touching canonical checkout', async () => {
   const value = fixture();
   const implementation = createExecution(value, 'exec-literal-impl', 'IMPLEMENT', value.revision);
@@ -255,6 +288,185 @@ test('literal workspace completes implementation, exact-SHA review and Plan inte
   assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.revision);
   assert.equal(fs.existsSync(path.join(value.repository, 'src/item.txt')), false);
   assert.equal(fs.existsSync(repositoryEvidence), false);
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+
+test('terminal literal Plan retirement prunes only an exact durable implementation evidence replay', async () => {
+  const value = fixture();
+  const implementation = createExecution(
+    value,
+    'exec-terminal-retirement-residue',
+    'IMPLEMENT',
+    value.revision,
+  );
+  const workspace = await value.adapter.provision({
+    executionId: implementation.identity.executionId,
+    planId: value.plan.planId,
+    projectKey: value.plan.projectKey,
+    workItemId: value.item.workItemId,
+    repositoryPath: value.repository,
+    sourceRevision: value.revision,
+    phase: 'IMPLEMENT',
+  });
+  attachSession(value, implementation.identity.executionId, workspace);
+  fs.mkdirSync(path.join(workspace.hostPath, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspace.hostPath, 'src/item.txt'), 'implemented\n');
+  git(workspace.hostPath, ['add', 'src/item.txt']);
+  git(workspace.hostPath, ['commit', '-m', 'feat: implement retirement evidence case']);
+  const candidate = git(workspace.hostPath, ['rev-parse', 'HEAD']);
+  const evidence = implementationEvidence(
+    implementation.identity.executionId,
+    value.revision,
+    candidate,
+  );
+  const staged = path.join(workspace.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE);
+  fs.writeFileSync(staged, JSON.stringify(evidence) + '\n');
+  await value.adapter.verifyImplementation(workspace);
+  assert.equal(fs.existsSync(staged), false);
+
+  value.repositories.executions.updateStatus(implementation.identity.executionId, 'RUNNING');
+  value.repositories.executions.recordResult(implementation.identity.executionId, {
+    status: 'SUCCEEDED',
+    resultRevision: candidate,
+    resultSummary: 'implemented',
+  });
+  fs.writeFileSync(staged, JSON.stringify(evidence) + '\n');
+  value.repositories.plans.updateStatus(value.plan.planId, 'CANCELLED');
+
+  await value.adapter.preparePlanRetirement(value.plan.planId);
+  assert.equal(fs.existsSync(staged), false);
+  await value.manager.retirePlan(value.plan.planId, process.getuid?.() ?? 1000);
+  assert.ok(
+    value.repositories.planWorktrees
+      .listByPlan(value.plan.planId)
+      .every((worktree) => worktree.state === 'RETIRED'),
+  );
+  assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.revision);
+  assert.equal(git(value.repository, ['status', '--porcelain=v1']), '');
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('terminal literal Plan retirement rejects a differing evidence replay and live Plans cannot prune it', async () => {
+  const value = fixture();
+  const implementation = createExecution(
+    value,
+    'exec-terminal-retirement-tamper',
+    'IMPLEMENT',
+    value.revision,
+  );
+  const workspace = await value.adapter.provision({
+    executionId: implementation.identity.executionId,
+    planId: value.plan.planId,
+    projectKey: value.plan.projectKey,
+    workItemId: value.item.workItemId,
+    repositoryPath: value.repository,
+    sourceRevision: value.revision,
+    phase: 'IMPLEMENT',
+  });
+  attachSession(value, implementation.identity.executionId, workspace);
+  fs.mkdirSync(path.join(workspace.hostPath, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspace.hostPath, 'src/item.txt'), 'implemented\n');
+  git(workspace.hostPath, ['add', 'src/item.txt']);
+  git(workspace.hostPath, ['commit', '-m', 'feat: implement retirement tamper case']);
+  const candidate = git(workspace.hostPath, ['rev-parse', 'HEAD']);
+  const durable = implementationEvidence(
+    implementation.identity.executionId,
+    value.revision,
+    candidate,
+  );
+  const staged = path.join(workspace.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE);
+  fs.writeFileSync(staged, JSON.stringify(durable) + '\n');
+  await value.adapter.verifyImplementation(workspace);
+  value.repositories.executions.updateStatus(implementation.identity.executionId, 'RUNNING');
+  value.repositories.executions.recordResult(implementation.identity.executionId, {
+    status: 'SUCCEEDED',
+    resultRevision: candidate,
+    resultSummary: 'implemented',
+  });
+  fs.writeFileSync(
+    staged,
+    JSON.stringify(
+      implementationEvidence(
+        implementation.identity.executionId,
+        value.revision,
+        candidate,
+        'tampered replay',
+      ),
+    ) + '\n',
+  );
+
+  await assert.rejects(
+    () => value.adapter.preparePlanRetirement(value.plan.planId),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKSPACE_RETIREMENT_PLAN_NOT_TERMINAL',
+  );
+  assert.equal(fs.existsSync(staged), true);
+  value.repositories.plans.updateStatus(value.plan.planId, 'CANCELLED');
+  await assert.rejects(
+    () => value.adapter.preparePlanRetirement(value.plan.planId),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKSPACE_EVIDENCE_AMBIGUOUS',
+  );
+  assert.equal(fs.existsSync(staged), true);
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('abandoning an already retired literal execution workspace is idempotent only for exact durable provenance', async () => {
+  const value = fixture();
+  const implementation = createExecution(
+    value,
+    'exec-retired-abandon-replay',
+    'IMPLEMENT',
+    value.revision,
+  );
+  const workspace = await value.adapter.provision({
+    executionId: implementation.identity.executionId,
+    planId: value.plan.planId,
+    projectKey: value.plan.projectKey,
+    workItemId: value.item.workItemId,
+    repositoryPath: value.repository,
+    sourceRevision: value.revision,
+    phase: 'IMPLEMENT',
+  });
+  attachSession(value, implementation.identity.executionId, workspace);
+  fs.mkdirSync(path.join(workspace.hostPath, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspace.hostPath, 'src/item.txt'), 'implemented\n');
+  git(workspace.hostPath, ['add', 'src/item.txt']);
+  git(workspace.hostPath, ['commit', '-m', 'feat: implement retired abandon case']);
+  const candidate = git(workspace.hostPath, ['rev-parse', 'HEAD']);
+  fs.writeFileSync(
+    path.join(workspace.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE),
+    JSON.stringify(
+      implementationEvidence(implementation.identity.executionId, value.revision, candidate),
+    ) + '\n',
+  );
+  await value.adapter.verifyImplementation(workspace);
+  value.repositories.executions.updateStatus(implementation.identity.executionId, 'CANCELLED');
+  const worktree = value.repositories.planWorktrees.findForWorkItem(
+    value.plan.planId,
+    value.item.workItemId,
+  )!;
+  await value.manager.retire(worktree.worktreeId);
+  assert.equal(fs.existsSync(workspace.hostPath), false);
+  assert.equal(value.repositories.planWorktrees.get(worktree.worktreeId).state, 'RETIRED');
+
+  await value.adapter.abandonExecution(workspace);
+  await assert.rejects(
+    () =>
+      value.adapter.abandonExecution({
+        ...workspace,
+        createdAt: '2099-01-01T00:00:00.000Z',
+      }),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKTREE_RETIRED_WORKSPACE_MISMATCH',
+  );
 
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });

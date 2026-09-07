@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { ForgeFlowError, failClosed } from '../domain/errors.js';
+import { isTerminalPlanStatus } from '../domain/plan.js';
 import type { PlanWorktree } from '../domain/worktree.js';
 import type { ForgeFlowRepositories } from '../persistence/repositories.js';
 import {
@@ -293,6 +294,25 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
   }
 
   async abandonExecution(workspace: WorkspaceDescriptor): Promise<void> {
+    const retired = this.repositories.planWorktrees.findByPath(path.resolve(workspace.hostPath));
+    if (retired?.state === 'RETIRED') {
+      const session = this.repositories.sessions.getOptional(workspace.executionId);
+      failClosed(
+        Boolean(session) &&
+          session!.workspace.executionId === workspace.executionId &&
+          session!.workspace.hostPath === retired.hostPath &&
+          session!.workspace.hostPath === workspace.hostPath &&
+          session!.workspace.executionPath === workspace.executionPath &&
+          session!.workspace.evidenceHostPath === workspace.evidenceHostPath &&
+          session!.workspace.evidenceExecutionPath === workspace.evidenceExecutionPath &&
+          session!.workspace.sourceRepositoryPath === workspace.sourceRepositoryPath &&
+          session!.workspace.sourceRevision === workspace.sourceRevision &&
+          session!.workspace.createdAt === workspace.createdAt &&
+          !fs.existsSync(retired.hostPath),
+        'WORKTREE_RETIRED_WORKSPACE_MISMATCH',
+      );
+      return;
+    }
     const descriptor = this.validateWorkspace(workspace);
     const record = this.repositories.planWorktrees.findByPath(descriptor.hostPath);
     if (!record) throw new ForgeFlowError('WORKTREE_NOT_FOUND');
@@ -333,6 +353,50 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
       .update('\0')
       .update(durable ? `${durable.size}:${durable.mtimeMs}` : '-')
       .digest('hex');
+  }
+
+  async preparePlanRetirement(planId: string): Promise<void> {
+    const root = this.rootPlan(planId);
+    failClosed(isTerminalPlanStatus(root.status), 'WORKSPACE_RETIREMENT_PLAN_NOT_TERMINAL');
+    for (const record of this.repositories.planWorktrees.listByPlan(root.planId)) {
+      if (record.state === 'RETIRED' || !fs.existsSync(record.hostPath)) continue;
+      const staged = path.join(record.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE);
+      if (!fs.existsSync(staged)) continue;
+      const raw = readJson(staged, 'WORKSPACE_EVIDENCE_INVALID');
+      const executionId = typeof raw.executionId === 'string' ? raw.executionId.trim() : '';
+      failClosed(executionId.length > 0, 'WORKSPACE_EVIDENCE_INVALID');
+      const execution = this.repositories.executions.get(executionId);
+      const session = this.repositories.sessions.getOptional(executionId);
+      failClosed(
+        Boolean(session) &&
+          session!.workspace.hostPath === record.hostPath &&
+          this.rootPlan(execution.identity.planId).planId === root.planId &&
+          execution.status === 'SUCCEEDED',
+        'WORKSPACE_RETIREMENT_EVIDENCE_PROVENANCE_INVALID',
+      );
+      if (execution.identity.phase === 'REVIEW') {
+        failClosed(
+          Boolean(execution.identity.sourceRevision),
+          'WORKSPACE_RETIREMENT_EVIDENCE_PROVENANCE_INVALID',
+        );
+        await this.pruneMatchingRepositoryEvidenceResidue(
+          session!.workspace,
+          execution.identity.sourceRevision!,
+          'REVIEW',
+        );
+        continue;
+      }
+      failClosed(
+        (execution.identity.phase === 'IMPLEMENT' || execution.identity.phase === 'IMPLEMENT_FIX') &&
+          Boolean(execution.resultRevision),
+        'WORKSPACE_RETIREMENT_EVIDENCE_PROVENANCE_INVALID',
+      );
+      await this.pruneMatchingRepositoryEvidenceResidue(
+        session!.workspace,
+        execution.resultRevision!,
+        'IMPLEMENTATION',
+      );
+    }
   }
 
   storageStatus(): WorkspaceStorageStatus {
@@ -736,6 +800,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
   private async pruneMatchingRepositoryEvidenceResidue(
     descriptor: WorkspaceDescriptor,
     expectedRevision: string,
+    phase: 'IMPLEMENTATION' | 'REVIEW' = 'IMPLEMENTATION',
   ): Promise<void> {
     const staged = path.join(descriptor.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE);
     const stagedStat = fs.lstatSync(staged, { throwIfNoEntry: false });
@@ -754,14 +819,39 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
     ]);
     if (tracked) throw new ForgeFlowError('WORKSPACE_REPOSITORY_EVIDENCE_TRACKED');
 
-    const stagedEvidence = decodeImplementationEvidence(
-      readJson(staged, 'WORKSPACE_EVIDENCE_INVALID'),
-    );
-    const durableEvidence = decodeImplementationEvidence(
-      readJson(descriptor.evidenceHostPath, 'WORKSPACE_EVIDENCE_INVALID'),
-    );
-    assertImplementationEvidenceGate(stagedEvidence, descriptor, expectedRevision);
-    assertImplementationEvidenceGate(durableEvidence, descriptor, expectedRevision);
+    const stagedRaw = readJson(staged, 'WORKSPACE_EVIDENCE_INVALID');
+    const durableRaw = readJson(descriptor.evidenceHostPath, 'WORKSPACE_EVIDENCE_INVALID');
+    const stagedEvidence =
+      phase === 'IMPLEMENTATION'
+        ? decodeImplementationEvidence(stagedRaw)
+        : decodeReviewEvidence(stagedRaw);
+    const durableEvidence =
+      phase === 'IMPLEMENTATION'
+        ? decodeImplementationEvidence(durableRaw)
+        : decodeReviewEvidence(durableRaw);
+    if (phase === 'IMPLEMENTATION') {
+      assertImplementationEvidenceGate(
+        stagedEvidence as ReturnType<typeof decodeImplementationEvidence>,
+        descriptor,
+        expectedRevision,
+      );
+      assertImplementationEvidenceGate(
+        durableEvidence as ReturnType<typeof decodeImplementationEvidence>,
+        descriptor,
+        expectedRevision,
+      );
+    } else {
+      assertReviewEvidenceGate(
+        stagedEvidence as ReturnType<typeof decodeReviewEvidence>,
+        descriptor,
+        expectedRevision,
+      );
+      assertReviewEvidenceGate(
+        durableEvidence as ReturnType<typeof decodeReviewEvidence>,
+        descriptor,
+        expectedRevision,
+      );
+    }
     failClosed(
       JSON.stringify(stagedEvidence) === JSON.stringify(durableEvidence),
       'WORKSPACE_EVIDENCE_AMBIGUOUS',
