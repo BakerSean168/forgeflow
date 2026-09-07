@@ -1184,6 +1184,13 @@ async function buildExecutionAutomation(
       24 * 60 * 60_000,
       'EXECUTION_MEANINGFUL_PROGRESS_TIMEOUT_INVALID',
     ),
+    providerOnlyProgressTimeoutMs: integerValue(
+      env.FORGEFLOW_PROVIDER_ONLY_PROGRESS_TIMEOUT_MS,
+      10 * 60_000,
+      30_000,
+      24 * 60 * 60_000,
+      'EXECUTION_PROVIDER_ONLY_PROGRESS_TIMEOUT_INVALID',
+    ),
     opportunisticMeaningfulProgressTimeoutMs: integerValue(
       env.FORGEFLOW_OPPORTUNISTIC_MEANINGFUL_PROGRESS_TIMEOUT_MS,
       5 * 60_000,

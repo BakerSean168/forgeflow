@@ -1736,6 +1736,133 @@ test('SUBSCRIPTION resource selections keep the standard meaningful-progress bud
   seeded.db.close();
 });
 
+
+test('provider-only tool progress cannot extend a static workspace beyond the bounded window', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-provider-only-churn',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  seeded.repositories.resourceSelections.create(
+    createExecutionResourceSelection(execution.identity.executionId, {
+      capability: 'IMPLEMENTATION',
+      phase: 'IMPLEMENT',
+      modelFamily: 'gemini-3.8-flash-high',
+      agentBackend: 'antigravity-worker',
+      transport: 'PROVIDER_NATIVE',
+      resourceId: 'antigravity-primary',
+      resourceTier: 'SUBSCRIPTION',
+      modelRank: 10,
+      resourceSequence: 10,
+      resourceState: 'ACTIVE',
+      selectionReason: 'STATIC_POLICY',
+      bindingId: 'antigravity-flash-high',
+    }),
+  );
+  const workspace = new FakeWorkspace();
+  workspace.progressFingerprints.set(execution.identity.executionId, 'workspace-static');
+  const provider = new FakeProvider();
+  provider.launchSnapshot = { ...provider.launchSnapshot, progressFingerprint: 'tool-1' };
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-1' };
+  let clock = Date.now();
+  const worker = new ExecutionWorker(seeded.repositories, workspace, [], {
+    ownerId: 'worker-provider-only-churn',
+    providerFactory: () => provider,
+    requireResourceSelection: true,
+    meaningfulProgressTimeoutMs: 120_000,
+    providerOnlyProgressTimeoutMs: 30_000,
+    maxStallRecoveries: 0,
+    now: () => new Date(clock),
+  });
+
+  assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+  clock += 10_000;
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-2' };
+  assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+  clock += 10_000;
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-3' };
+  assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+  clock += 11_000;
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-4' };
+  const stalled = await worker.runExecution(execution.identity.executionId);
+  assert.equal(stalled.status, 'FAILED');
+  assert.equal(stalled.code, 'PROVIDER_MEANINGFUL_PROGRESS_STALLED');
+  assert.equal(provider.interruptCalls, 1);
+  assert.equal(provider.replaceCalls, 0);
+  const evidence = seeded.repositories.evidence.listByExecution(execution.identity.executionId);
+  assert.equal(evidence.filter((item) => item.name.startsWith('meaningful-progress-')).length, 3);
+  const recovery = evidence.find((item) => item.name.startsWith('meaningful-stall-recovery-'));
+  assert.equal(recovery?.payload.stallMode, 'PROVIDER_ONLY');
+  assert.equal(recovery?.payload.timeoutMs, 30_000);
+  seeded.db.close();
+});
+
+test('real workspace progress resets the provider-only progress window durably', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-provider-only-reset',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  seeded.repositories.resourceSelections.create(
+    createExecutionResourceSelection(execution.identity.executionId, {
+      capability: 'IMPLEMENTATION',
+      phase: 'IMPLEMENT',
+      modelFamily: 'gemini-3.8-flash-high',
+      agentBackend: 'antigravity-worker',
+      transport: 'PROVIDER_NATIVE',
+      resourceId: 'antigravity-primary',
+      resourceTier: 'SUBSCRIPTION',
+      modelRank: 10,
+      resourceSequence: 10,
+      resourceState: 'ACTIVE',
+      selectionReason: 'STATIC_POLICY',
+      bindingId: 'antigravity-flash-high',
+    }),
+  );
+  const workspace = new FakeWorkspace();
+  workspace.progressFingerprints.set(execution.identity.executionId, 'workspace-1');
+  const provider = new FakeProvider();
+  provider.launchSnapshot = { ...provider.launchSnapshot, progressFingerprint: 'tool-1' };
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-1' };
+  let clock = Date.now();
+  const worker = new ExecutionWorker(seeded.repositories, workspace, [], {
+    ownerId: 'worker-provider-only-reset',
+    providerFactory: () => provider,
+    requireResourceSelection: true,
+    meaningfulProgressTimeoutMs: 120_000,
+    providerOnlyProgressTimeoutMs: 30_000,
+    maxStallRecoveries: 0,
+    now: () => new Date(clock),
+  });
+
+  assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+  clock += 20_000;
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-2' };
+  assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+
+  clock += 20_000;
+  workspace.progressFingerprints.set(execution.identity.executionId, 'workspace-2');
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-3' };
+  const reset = await worker.runExecution(execution.identity.executionId);
+  assert.equal(reset.status, 'RUNNING');
+  assert.equal(provider.interruptCalls, 0);
+
+  clock += 20_000;
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-4' };
+  assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+  clock += 11_000;
+  provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-5' };
+  const stalled = await worker.runExecution(execution.identity.executionId);
+  assert.equal(stalled.status, 'FAILED');
+  const evidence = seeded.repositories.evidence.listByExecution(execution.identity.executionId);
+  const recovery = evidence.find((item) => item.name.startsWith('meaningful-stall-recovery-'));
+  assert.equal(recovery?.payload.stallMode, 'PROVIDER_ONLY');
+  assert.equal(recovery?.payload.timeoutMs, 30_000);
+  seeded.db.close();
+});
+
 test('meaningful-progress stall recovery finalizes a terminal race in the same execution cycle', async () => {
   const seeded = seed();
   const execution = createExecution(seeded.repositories, {

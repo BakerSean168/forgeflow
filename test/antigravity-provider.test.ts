@@ -313,6 +313,85 @@ test('Antigravity systemd request binds literal Plan workspace identity before l
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+
+test('Antigravity progress fingerprint ignores liveness-only stream growth and advances on tool activity', async () => {
+  const value = fixture('wait');
+  const provider = new AntigravityExecutionProvider(options(value, 'gemini-3.8-flash-high'));
+  const launched = await provider.launch(input(value, 'IMPLEMENT'));
+  const sessionId = launched.providerSessionId!;
+  const stdout = path.join(value.stateRoot, 'exec-ant', 'stdout.ndjson');
+  const stderr = path.join(value.stateRoot, 'exec-ant', 'stderr.log');
+  const initial = (await provider.inspect(sessionId)).progressFingerprint;
+  assert.ok(initial);
+
+  fs.appendFileSync(
+    stdout,
+    JSON.stringify({
+      event: 'step_update',
+      step_update: {
+        conversation_id: 'conversation-test',
+        state: 'DONE',
+        step_index: 1,
+        step_type: 'agent_response',
+      },
+    }) + '\n',
+  );
+  const afterReasoning = (await provider.inspect(sessionId)).progressFingerprint;
+  assert.equal(afterReasoning, initial);
+
+  fs.appendFileSync(stderr, 'transient diagnostic stream growth\n');
+  const afterStderr = (await provider.inspect(sessionId)).progressFingerprint;
+  assert.equal(afterStderr, initial);
+
+  fs.appendFileSync(
+    stdout,
+    JSON.stringify({
+      event: 'step_update',
+      step_update: {
+        conversation_id: 'conversation-test',
+        state: 'ACTIVE',
+        step_index: 2,
+        step_type: 'tool',
+      },
+    }) + '\n',
+  );
+  const toolActive = (await provider.inspect(sessionId)).progressFingerprint;
+  assert.notEqual(toolActive, initial);
+
+  fs.appendFileSync(
+    stdout,
+    JSON.stringify({
+      event: 'step_update',
+      step_update: {
+        conversation_id: 'conversation-test',
+        state: 'DONE',
+        step_index: 3,
+        step_type: 'system_message',
+      },
+    }) + '\n',
+  );
+  const afterSystem = (await provider.inspect(sessionId)).progressFingerprint;
+  assert.equal(afterSystem, toolActive);
+
+  fs.appendFileSync(
+    stdout,
+    JSON.stringify({
+      event: 'step_update',
+      step_update: {
+        conversation_id: 'conversation-test',
+        state: 'DONE',
+        step_index: 2,
+        step_type: 'tool',
+      },
+    }) + '\n',
+  );
+  const toolDone = (await provider.inspect(sessionId)).progressFingerprint;
+  assert.notEqual(toolDone, toolActive);
+
+  await provider.cancel(sessionId);
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('Antigravity cancellation is durable and terminates the detached process group', async () => {
   const value = fixture('wait');
   const provider = new AntigravityExecutionProvider(options(value, 'gemini-3.8-flash-high'));

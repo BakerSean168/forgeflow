@@ -40,6 +40,7 @@ export interface ExecutionWorkerOptions {
   resourceFeedback?: ExecutionResourceFeedbackPort;
   requireResourceSelection?: boolean;
   meaningfulProgressTimeoutMs?: number;
+  providerOnlyProgressTimeoutMs?: number;
   opportunisticMeaningfulProgressTimeoutMs?: number;
   maxStallRecoveries?: number;
   opportunisticMaxStallRecoveries?: number;
@@ -138,6 +139,7 @@ export class ExecutionWorker {
   readonly resourceFeedback?: ExecutionResourceFeedbackPort;
   readonly requireResourceSelection: boolean;
   readonly meaningfulProgressTimeoutMs: number;
+  readonly providerOnlyProgressTimeoutMs: number;
   readonly opportunisticMeaningfulProgressTimeoutMs: number;
   readonly maxStallRecoveries: number;
   readonly opportunisticMaxStallRecoveries: number;
@@ -163,6 +165,7 @@ export class ExecutionWorker {
     this.leaseTtlMs = options.leaseTtlMs ?? 30_000;
     this.maxExecutionsPerCycle = options.maxExecutionsPerCycle ?? 20;
     this.meaningfulProgressTimeoutMs = options.meaningfulProgressTimeoutMs ?? 15 * 60_000;
+    this.providerOnlyProgressTimeoutMs = options.providerOnlyProgressTimeoutMs ?? 10 * 60_000;
     this.opportunisticMeaningfulProgressTimeoutMs =
       options.opportunisticMeaningfulProgressTimeoutMs ?? 5 * 60_000;
     this.maxStallRecoveries = options.maxStallRecoveries ?? 2;
@@ -185,6 +188,12 @@ export class ExecutionWorker {
       this.meaningfulProgressTimeoutMs > 24 * 60 * 60_000
     )
       throw new ForgeFlowError('EXECUTION_MEANINGFUL_PROGRESS_TIMEOUT_INVALID');
+    if (
+      !Number.isInteger(this.providerOnlyProgressTimeoutMs) ||
+      this.providerOnlyProgressTimeoutMs < 30_000 ||
+      this.providerOnlyProgressTimeoutMs > 24 * 60 * 60_000
+    )
+      throw new ForgeFlowError('EXECUTION_PROVIDER_ONLY_PROGRESS_TIMEOUT_INVALID');
     if (
       !Number.isInteger(this.opportunisticMeaningfulProgressTimeoutMs) ||
       this.opportunisticMeaningfulProgressTimeoutMs < 30_000 ||
@@ -1338,6 +1347,47 @@ export class ExecutionWorker {
       .update(effectiveProviderFingerprint)
       .digest('hex');
     const latest = existing.at(-1);
+    const now = this.now();
+    const nowMs = now.getTime();
+    const currentSessionProgress = existing.filter(
+      (item) => item.payload.providerSessionId === snapshot.providerSessionId,
+    );
+    let workspaceProgressAt: number | undefined;
+    let priorWorkspaceFingerprint: string | undefined;
+    for (const item of currentSessionProgress) {
+      const observedWorkspace = item.payload.workspaceFingerprint;
+      if (typeof observedWorkspace !== 'string' || observedWorkspace.length === 0) continue;
+      if (priorWorkspaceFingerprint === undefined || observedWorkspace !== priorWorkspaceFingerprint) {
+        const observedAt = Date.parse(
+          typeof item.payload.observedAt === 'string' ? item.payload.observedAt : item.createdAt,
+        );
+        if (Number.isFinite(observedAt)) workspaceProgressAt = observedAt;
+        priorWorkspaceFingerprint = observedWorkspace;
+      }
+    }
+    const latestSessionProgress = currentSessionProgress.at(-1);
+    const workspaceChanged =
+      !latestSessionProgress || latestSessionProgress.payload.workspaceFingerprint !== workspaceFingerprint;
+    if (workspaceChanged) workspaceProgressAt = nowMs;
+
+    if (
+      !workspaceOnlyProgress &&
+      workspaceProgressAt !== undefined &&
+      Number.isFinite(workspaceProgressAt) &&
+      nowMs - workspaceProgressAt >= this.providerOnlyProgressTimeoutMs
+    )
+      return await this.recoverMeaningfulProgressStall(
+        provider,
+        execution,
+        session,
+        snapshot,
+        selectedResource,
+        this.providerOnlyProgressTimeoutMs,
+        fingerprint,
+        new Date(workspaceProgressAt).toISOString(),
+        'PROVIDER_ONLY',
+      );
+
     if (
       !latest ||
       latest.payload.fingerprint !== fingerprint ||
@@ -1357,7 +1407,7 @@ export class ExecutionWorker {
           progressMode: workspaceOnlyProgress ? 'WORKSPACE_ONLY' : 'WORKSPACE_OR_PROVIDER',
           providerSessionId: snapshot.providerSessionId,
           providerStatus: snapshot.status,
-          observedAt: this.now().toISOString(),
+          observedAt: now.toISOString(),
         },
       });
       return undefined;
@@ -1365,9 +1415,8 @@ export class ExecutionWorker {
     const lastProgressAt = Date.parse(
       typeof latest.payload.observedAt === 'string' ? latest.payload.observedAt : latest.createdAt,
     );
-    const now = this.now().getTime();
     const meaningfulProgressTimeoutMs = this.progressTimeoutFor(selectedResource);
-    if (!Number.isFinite(lastProgressAt) || now - lastProgressAt < meaningfulProgressTimeoutMs)
+    if (!Number.isFinite(lastProgressAt) || nowMs - lastProgressAt < meaningfulProgressTimeoutMs)
       return undefined;
     return await this.recoverMeaningfulProgressStall(
       provider,
@@ -1378,6 +1427,7 @@ export class ExecutionWorker {
       meaningfulProgressTimeoutMs,
       fingerprint,
       latest.createdAt,
+      'COMBINED',
     );
   }
 
@@ -1402,6 +1452,7 @@ export class ExecutionWorker {
     timeoutMs: number,
     fingerprint: string,
     stalledSince: string,
+    stallMode: 'COMBINED' | 'PROVIDER_ONLY' = 'COMBINED',
   ): Promise<ExecutionWorkerResult> {
     const previousProviderSessionId = session.providerSessionId;
     if (!previousProviderSessionId) throw new ForgeFlowError('PROVIDER_SESSION_ID_REQUIRED');
@@ -1416,6 +1467,7 @@ export class ExecutionWorker {
       previousProviderSessionId,
       providerStatus: snapshot.status,
       timeoutMs,
+      stallMode,
     };
 
     if (recoveries.length < maxStallRecoveries && provider.replace && provider.interrupt) {

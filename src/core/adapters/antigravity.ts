@@ -796,15 +796,25 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
     meta: AntigravityExecutionMeta,
     status: ProviderSessionStatus,
   ): string {
-    const directory = this.executionDirectory(meta.executionId);
-    const parts: string[] = [status];
-    for (const name of ['stdout.ndjson', 'stderr.log']) {
-      const stat = fs.statSync(path.join(directory, name), { throwIfNoEntry: false });
-      parts.push(
-        stat?.isFile() ? `${name}:${stat.size}:${Math.trunc(stat.mtimeMs)}` : `${name}:missing`,
-      );
+    const stdoutFile = path.join(this.executionDirectory(meta.executionId), 'stdout.ndjson');
+    let lastToolStep: string | undefined;
+    for (const event of events(stdoutFile)) {
+      if (event.event !== 'step_update') continue;
+      const update = record(event.step_update);
+      if (update.step_type !== 'tool') continue;
+      const stepIndex = number(update.step_index);
+      const state = typeof update.state === 'string' ? update.state.trim() : '';
+      if (stepIndex === undefined || !Number.isInteger(stepIndex) || stepIndex < 0 || !state) continue;
+      lastToolStep = `${stepIndex}:${state.slice(0, 100)}`;
     }
-    return createHash('sha256').update(parts.join('|')).digest('hex');
+    // Provider liveness, streamed reasoning text, system messages and stderr growth are
+    // not meaningful execution progress. Only concrete tool-step advancement (plus the
+    // independently observed provider status) may refresh the stall window.
+    return createHash('sha256')
+      .update(status)
+      .update('|')
+      .update(lastToolStep ?? 'tool:none')
+      .digest('hex');
   }
 
   private systemdUnit(executionId: string): string {
