@@ -754,7 +754,6 @@ export class ExecutionWorker {
         remoteProviderStatus = cleaned.status;
         if (
           cleaned.status !== 'CANCELLED' &&
-          cleaned.status !== 'PAUSED' &&
           !TERMINAL_PROVIDER_STATUSES.has(cleaned.status)
         )
           return {

@@ -2279,6 +2279,12 @@ test('terminal provider cleanup deletes a successful provider session without re
   });
   succeedImplementationSession(seeded.repositories, execution, descriptor, 'successful-result-sha');
   const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'CANCELLED',
+    observedAt: now(26),
+  };
   const worker = new ExecutionWorker(
     seeded.repositories,
     workspace,
@@ -2365,6 +2371,12 @@ test('terminal provider cleanup supports a retired literal-worktree compatibilit
   seeded.repositories.plans.updateStatus(seeded.plan.planId, 'SUCCEEDED');
   workspace.prepareCancellationError = new ForgeFlowError('WORKTREE_NOT_FOUND');
   const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'CANCELLED',
+    observedAt: now(26),
+  };
   const worker = new ExecutionWorker(
     seeded.repositories,
     workspace,
@@ -2387,6 +2399,55 @@ test('terminal provider cleanup supports a retired literal-worktree compatibilit
     'provider-session-cleanup',
   );
   assert.equal(proof?.payload.retiredWorkspaceCompatibility, true);
+  seeded.db.close();
+});
+
+test('terminal provider cleanup refuses PAUSED because writer handoff requires remote deletion', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-terminal-provider-cleanup-paused',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const descriptor = await workspace.provision({
+    executionId: execution.identity.executionId,
+    planId: seeded.plan.planId,
+    projectKey: seeded.plan.projectKey,
+    workItemId: seeded.item.workItemId,
+    repositoryPath: seeded.plan.repositoryPath,
+    sourceRevision: execution.identity.sourceRevision!,
+    phase: 'IMPLEMENT',
+  });
+  succeedImplementationSession(seeded.repositories, execution, descriptor, 'successful-result-sha');
+  const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'PAUSED',
+    observedAt: now(26),
+  };
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-terminal-provider-cleanup-paused' },
+  );
+  const blocked = await worker.cleanupProviderSession(
+    execution.identity.executionId,
+    'terminal-provider-cleanup-paused-1',
+    'writer handoff requires remote provider deletion',
+  );
+  assert.equal(blocked.status, 'WAITING');
+  assert.equal(blocked.code, 'PROVIDER_CANCEL_NOT_QUIESCED');
+  assert.equal(
+    seeded.repositories.evidence.find(
+      execution.identity.executionId,
+      'RECOVERY',
+      'provider-session-cleanup',
+    ),
+    undefined,
+  );
   seeded.db.close();
 });
 

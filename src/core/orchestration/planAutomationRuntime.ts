@@ -26,6 +26,11 @@ import type {
 
 export interface ExecutionRunnerPort {
   runExecution(executionId: string): Promise<ExecutionWorkerResult>;
+  cleanupProviderSession?(
+    executionId: string,
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<ExecutionWorkerResult>;
 }
 
 export interface PlanResourceSelectionPolicy {
@@ -142,6 +147,10 @@ const FINALIZATION_RECOVERY_CODES = new Set([
   'WORKSPACE_IMPLEMENTATION_EVIDENCE_MISMATCH',
 ]);
 const REVIEW_RECOVERY_EVIDENCE_NAME = 'operator-review-recovery';
+const PROVIDER_CLEANUP_EVIDENCE_NAMES = [
+  'provider-session-cleanup',
+  'operator-provider-cancellation-cleanup',
+] as const;
 
 function routeUnavailableFailure(execution: Execution): boolean {
   const detail = execution.errorCode ?? '';
@@ -652,6 +661,8 @@ export class PlanAutomationRuntime {
     let parentExecutionId: string;
     let sourceRevision: string;
     let attempts: number;
+    const cleanupBarrier = await this.ensureProviderCleanupBeforeRetry(candidate);
+    if (cleanupBarrier) return cleanupBarrier;
     if (candidate.identity.phase === 'IMPLEMENT') {
       const implementationAttempts = candidates.filter(
         (execution) => execution.identity.phase === 'IMPLEMENT',
@@ -940,7 +951,7 @@ export class PlanAutomationRuntime {
       candidate.status === 'BLOCKED' ||
       candidate.status === 'CANCELLED'
     ) {
-      return this.retryOrFailImplementation(plan, item, candidate, candidates, policy);
+      return await this.retryOrFailImplementation(plan, item, candidate, candidates, policy);
     }
     if (candidate.status !== 'SUCCEEDED' || !candidate.resultRevision)
       return this.failPlan(plan, item, 'IMPLEMENTATION_RESULT_INVALID');
@@ -1088,19 +1099,71 @@ export class PlanAutomationRuntime {
     return result.value;
   }
 
-  private retryOrFailImplementation(
+  private async ensureProviderCleanupBeforeRetry(
+    candidate: Execution,
+  ): Promise<PlanAutomationResult | undefined> {
+    const session = this.repositories.sessions.getOptional(candidate.identity.executionId);
+    if (!session?.providerSessionId) return undefined;
+    const cleaned = PROVIDER_CLEANUP_EVIDENCE_NAMES.some((name) =>
+      Boolean(
+        this.repositories.evidence.find(
+          candidate.identity.executionId,
+          'RECOVERY',
+          name,
+        ),
+      ),
+    );
+    if (cleaned) return undefined;
+    if (!this.runner.cleanupProviderSession)
+      return {
+        planId: candidate.identity.planId,
+        workItemId: candidate.identity.workItemId,
+        executionId: candidate.identity.executionId,
+        status: 'WAITING',
+        code: 'IMPLEMENTATION_RETRY_PROVIDER_CLEANUP_REQUIRED',
+      };
+    const result = await this.runner.cleanupProviderSession(
+      candidate.identity.executionId,
+      'implementation-retry-provider-cleanup:' + candidate.identity.executionId,
+      'Quiesce and delete the previous provider session before literal-worktree writer handoff.',
+    );
+    if (result.status !== 'SUCCEEDED')
+      return {
+        planId: candidate.identity.planId,
+        workItemId: candidate.identity.workItemId,
+        executionId: candidate.identity.executionId,
+        status: 'WAITING',
+        code: result.code,
+      };
+    const proof = PROVIDER_CLEANUP_EVIDENCE_NAMES.some((name) =>
+      Boolean(
+        this.repositories.evidence.find(
+          candidate.identity.executionId,
+          'RECOVERY',
+          name,
+        ),
+      ),
+    );
+    if (!proof)
+      throw new ForgeFlowError('IMPLEMENTATION_RETRY_PROVIDER_CLEANUP_PROOF_MISSING');
+    return undefined;
+  }
+
+  private async retryOrFailImplementation(
     plan: Plan,
     item: WorkItem,
     candidate: Execution,
     candidates: Execution[],
     policy: NormalizedPolicy,
-  ): PlanAutomationResult {
+  ): Promise<PlanAutomationResult> {
     if (
       !candidate.retryable &&
       !routeUnavailableFailure(candidate) &&
       !this.resourceRetryAllowed(candidate)
     )
       return this.failPlan(plan, item, 'IMPLEMENTATION_NOT_RETRYABLE');
+    const cleanupBarrier = await this.ensureProviderCleanupBeforeRetry(candidate);
+    if (cleanupBarrier) return cleanupBarrier;
     if (candidate.identity.phase === 'IMPLEMENT') {
       const implementationAttempts = candidates.filter(
         (execution) => execution.identity.phase === 'IMPLEMENT',

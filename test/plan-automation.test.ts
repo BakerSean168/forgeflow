@@ -176,6 +176,7 @@ class AlreadyContainedAutomationWorkspace extends AutomationWorkspace {
 class ScriptedRunner implements ExecutionRunnerPort {
   readonly runCounts = new Map<string, number>();
   readonly implementationRoutes: string[] = [];
+  readonly cleanupCalls: string[] = [];
   implementationFailures = 0;
   reviewFailures: Array<{ code: string; retryable: boolean }> = [];
   reviewVerdicts: Array<'PASS' | 'FAIL' | 'INVALID'> = ['PASS'];
@@ -185,6 +186,31 @@ class ScriptedRunner implements ExecutionRunnerPort {
     readonly repositories: ForgeFlowRepositories,
     readonly workspace: AutomationWorkspace,
   ) {}
+
+  async cleanupProviderSession(
+    executionId: string,
+    _idempotencyKey: string,
+    _reason: string,
+  ): Promise<ExecutionWorkerResult> {
+    this.cleanupCalls.push(executionId);
+    if (!this.repositories.evidence.find(executionId, 'RECOVERY', 'provider-session-cleanup')) {
+      const execution = this.repositories.executions.get(executionId);
+      const session = this.repositories.sessions.get(executionId);
+      this.repositories.evidence.append({
+        executionId,
+        kind: 'RECOVERY',
+        name: 'provider-session-cleanup',
+        sourceRevision: execution.identity.sourceRevision,
+        payload: {
+          mode: 'test-provider-session-cleanup',
+          provider: session.provider,
+          providerSessionId: session.providerSessionId,
+          remoteProviderStatus: 'CANCELLED',
+        },
+      });
+    }
+    return { executionId, status: 'SUCCEEDED', code: 'EXECUTION_PROVIDER_SESSION_CLEANED' };
+  }
 
   async runExecution(executionId: string): Promise<ExecutionWorkerResult> {
     const execution = this.repositories.executions.get(executionId);
@@ -1099,6 +1125,14 @@ test('plan automation switches from unavailable Luna to the next implementation 
   );
   assert.equal(implementations[0]?.status, 'FAILED');
   assert.equal(implementations[1]?.status, 'SUCCEEDED');
+  assert.deepEqual(runner.cleanupCalls, [implementations[0]!.identity.executionId]);
+  assert.ok(
+    seeded.repositories.evidence.find(
+      implementations[0]!.identity.executionId,
+      'RECOVERY',
+      'provider-session-cleanup',
+    ),
+  );
   seeded.db.close();
 });
 
