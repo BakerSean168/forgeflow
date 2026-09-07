@@ -1627,7 +1627,8 @@ test('FREE resource selections use the shorter opportunistic meaningful-progress
     requireResourceSelection: true,
     meaningfulProgressTimeoutMs: 120_000,
     opportunisticMeaningfulProgressTimeoutMs: 30_000,
-    maxStallRecoveries: 0,
+    maxStallRecoveries: 2,
+    opportunisticMaxStallRecoveries: 0,
     now: () => new Date(clock),
   });
 
@@ -1636,6 +1637,8 @@ test('FREE resource selections use the shorter opportunistic meaningful-progress
   const failed = await worker.runExecution(execution.identity.executionId);
   assert.equal(failed.status, 'FAILED');
   assert.equal(failed.code, 'PROVIDER_MEANINGFUL_PROGRESS_STALLED');
+  assert.equal(provider.replaceCalls, 0);
+  assert.equal(provider.interruptCalls, 1);
   const recovery = seeded.repositories.evidence
     .listByExecution(execution.identity.executionId)
     .find((item) => item.name.startsWith('meaningful-stall-recovery-'));

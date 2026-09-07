@@ -201,6 +201,8 @@ test('autonomous execution polling does not await slow runtime-admission probes'
     appSource,
     /await automation\.reconcileRuntimeAdmission\(\);\s*return await automation\.plans\.runOnce\(\)/,
   );
+  assert.match(forgeFlowEnv, /FORGEFLOW_OPPORTUNISTIC_MEANINGFUL_PROGRESS_TIMEOUT_MS=300000/);
+  assert.match(forgeFlowEnv, /FORGEFLOW_OPPORTUNISTIC_MAX_STALL_RECOVERIES=0/);
 });
 
 test('literal worktree Git object access is read-minimized and revoked after Plan cleanup', () => {

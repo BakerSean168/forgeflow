@@ -1177,6 +1177,13 @@ async function buildExecutionAutomation(
       10,
       'EXECUTION_STALL_RECOVERY_LIMIT_INVALID',
     ),
+    opportunisticMaxStallRecoveries: integerValue(
+      env.FORGEFLOW_OPPORTUNISTIC_MAX_STALL_RECOVERIES,
+      0,
+      0,
+      10,
+      'EXECUTION_OPPORTUNISTIC_STALL_RECOVERY_LIMIT_INVALID',
+    ),
     ...(resourceSelectorEnabled
       ? {
           providerFactory,

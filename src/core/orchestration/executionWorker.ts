@@ -41,6 +41,7 @@ export interface ExecutionWorkerOptions {
   meaningfulProgressTimeoutMs?: number;
   opportunisticMeaningfulProgressTimeoutMs?: number;
   maxStallRecoveries?: number;
+  opportunisticMaxStallRecoveries?: number;
   now?: () => Date;
 }
 
@@ -132,6 +133,7 @@ export class ExecutionWorker {
   readonly meaningfulProgressTimeoutMs: number;
   readonly opportunisticMeaningfulProgressTimeoutMs: number;
   readonly maxStallRecoveries: number;
+  readonly opportunisticMaxStallRecoveries: number;
   readonly now: () => Date;
 
   constructor(
@@ -157,6 +159,7 @@ export class ExecutionWorker {
     this.opportunisticMeaningfulProgressTimeoutMs =
       options.opportunisticMeaningfulProgressTimeoutMs ?? 5 * 60_000;
     this.maxStallRecoveries = options.maxStallRecoveries ?? 2;
+    this.opportunisticMaxStallRecoveries = options.opportunisticMaxStallRecoveries ?? 0;
     this.now = options.now ?? (() => new Date());
     if (this.leaseTtlMs < 1_000 || this.leaseTtlMs > 5 * 60_000)
       throw new ForgeFlowError('EXECUTION_LEASE_TTL_INVALID');
@@ -187,6 +190,12 @@ export class ExecutionWorker {
       this.maxStallRecoveries > 10
     )
       throw new ForgeFlowError('EXECUTION_STALL_RECOVERY_LIMIT_INVALID');
+    if (
+      !Number.isInteger(this.opportunisticMaxStallRecoveries) ||
+      this.opportunisticMaxStallRecoveries < 0 ||
+      this.opportunisticMaxStallRecoveries > 10
+    )
+      throw new ForgeFlowError('EXECUTION_OPPORTUNISTIC_STALL_RECOVERY_LIMIT_INVALID');
   }
 
   private resolveProvider(
@@ -1218,6 +1227,12 @@ export class ExecutionWorker {
       : this.meaningfulProgressTimeoutMs;
   }
 
+  private stallRecoveryBudgetFor(selectedResource: ExecutionResourceSelection | undefined): number {
+    return selectedResource?.resourceTier === 'FREE' || selectedResource?.resourceTier === 'PROMOTIONAL'
+      ? Math.min(this.opportunisticMaxStallRecoveries, this.maxStallRecoveries)
+      : this.maxStallRecoveries;
+  }
+
   private async recoverMeaningfulProgressStall(
     provider: ExecutionProviderPort,
     execution: Execution,
@@ -1231,6 +1246,7 @@ export class ExecutionWorker {
     const previousProviderSessionId = session.providerSessionId;
     if (!previousProviderSessionId) throw new ForgeFlowError('PROVIDER_SESSION_ID_REQUIRED');
     const recoveries = this.stallRecoveryEvidence(execution.identity.executionId);
+    const maxStallRecoveries = this.stallRecoveryBudgetFor(selectedResource);
     const recoveryNumber = recoveries.length + 1;
     const evidenceName = MEANINGFUL_STALL_RECOVERY_PREFIX + String(recoveryNumber).padStart(4, '0');
     const basePayload = {
@@ -1242,7 +1258,7 @@ export class ExecutionWorker {
       timeoutMs,
     };
 
-    if (recoveries.length < this.maxStallRecoveries && provider.replace && provider.interrupt) {
+    if (recoveries.length < maxStallRecoveries && provider.replace && provider.interrupt) {
       let stopped = snapshot;
       if (snapshot.status !== 'PAUSED')
         stopped = await provider.interrupt(previousProviderSessionId);
