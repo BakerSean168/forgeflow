@@ -366,7 +366,8 @@ test('cancellation access is limited to the current writer or a quiescent SAFETY
         gid,
       ),
     (error: unknown) =>
-      error instanceof ForgeFlowError && error.code === 'WORKTREE_CANCEL_ACCESS_REQUIRES_SAFETY_HOLD',
+      error instanceof ForgeFlowError &&
+      error.code === 'WORKTREE_CANCEL_ACCESS_REQUIRES_TERMINAL_OR_SAFETY_HOLD',
   );
   const held = value.repositories.plans.compareAndSetStatus(value.plan.planId, 'READY', 'SAFETY_HOLD');
   assert.equal(held.status, 'updated');
@@ -378,6 +379,33 @@ test('cancellation access is limited to the current writer or a quiescent SAFETY
   );
   assert.equal(recovered.ownerExecutionId, undefined);
 
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('quiescent FAILED root permits bounded cancellation access without reactivating the Plan', async () => {
+  const value = fixture();
+  const worktree = await value.manager.ensureWorkItem({
+    projectKey: 'project-gamma',
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  value.repositories.plans.updateStatus(value.plan.planId, 'RUNNING');
+  value.repositories.plans.updateStatus(value.plan.planId, 'FAILED');
+  const uid = process.getuid?.() ?? 1000;
+  const gid = process.getgid?.() ?? 1000;
+
+  const recovered = await value.manager.prepareCancellationAccess(
+    worktree.worktreeId,
+    'exec-terminal-failed-cleanup',
+    uid,
+    gid,
+  );
+
+  assert.equal(recovered.ownerExecutionId, undefined);
+  assert.equal(value.repositories.plans.getPlan(value.plan.planId).status, 'FAILED');
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });
 });

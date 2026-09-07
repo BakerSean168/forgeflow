@@ -300,6 +300,192 @@ test('terminal Plan cleanup must succeed before the project lease can hand off',
   db.close();
 });
 
+test('operator cleanup of a terminal FAILED root preserves failure truth while releasing residual execution state and lease', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const calls: string[] = [];
+  const runtime = new ProjectPlanQueueRuntime(repositories, {
+    retire: async (planId) => {
+      calls.push('retire:' + planId);
+      assert.equal(repositories.plans.getPlan(planId).status, 'FAILED');
+    },
+  });
+  createRoot(repositories, 'plan-failed-cleanup');
+  const graph = repositories.plans.createGraphVersion({
+    planId: 'plan-failed-cleanup',
+    reason: 'terminal failed cleanup fixture',
+  }).value!;
+  const item = repositories.plans.appendGraphWorkItem({
+    graphVersionId: graph.graphVersionId,
+    itemKey: 'failed-item',
+    title: 'Failed item',
+    objective: 'leave a failed writer that still needs cleanup',
+    acceptanceCriteria: ['failure truth is preserved while resources are retired'],
+    dependencies: [],
+  }).value!;
+  runtime.scheduleRootPlan('plan-failed-cleanup');
+  repositories.plans.updateStatus('plan-failed-cleanup', 'RUNNING');
+  repositories.plans.updateWorkItemStatus(item.workItemId, 'RUNNING');
+  const execution = repositories.executions.create({
+    idempotencyKey: 'terminal-failed-execution',
+    identity: {
+      executionId: 'terminal-failed-execution',
+      planId: 'plan-failed-cleanup',
+      workItemId: item.workItemId,
+      phase: 'IMPLEMENT',
+      attempt: 1,
+      route: 'implementation',
+      sourceRevision: 'base-sha',
+    },
+    objective: 'fail after creating residual workspace state',
+  }).value!;
+  repositories.executions.updateStatus(execution.identity.executionId, 'RUNNING');
+  repositories.executions.recordResult(execution.identity.executionId, {
+    status: 'FAILED',
+    errorCode: 'WORKTREE_GIT_LINKAGE_VIOLATED',
+    retryable: false,
+  });
+  repositories.plans.updateStatus('plan-failed-cleanup', 'FAILED');
+  runtime.setExecutionCancellation({
+    cancelExecution: async (executionId) => {
+      calls.push('cancel:' + executionId);
+      repositories.executions.updateStatus(executionId, 'CANCELLED');
+      return { status: 'SUCCEEDED', code: 'EXECUTION_OPERATOR_CANCELLED' };
+    },
+  });
+
+  const result = await runtime.cancelActive(
+    'plan-failed-cleanup',
+    'operator-clean-terminal-failed',
+    'release residual resources without rewriting failed plan truth',
+  );
+
+  assert.equal(result.code, 'PROJECT_PLAN_FAILED_CLEANED_UP');
+  assert.deepEqual(calls, ['cancel:terminal-failed-execution', 'retire:plan-failed-cleanup']);
+  assert.equal(repositories.plans.getPlan('plan-failed-cleanup').status, 'FAILED');
+  assert.equal(repositories.plans.getWorkItem(item.workItemId).status, 'CANCELLED');
+  const cleanedExecution = repositories.executions.get(execution.identity.executionId);
+  assert.equal(cleanedExecution.status, 'CANCELLED');
+  assert.equal(cleanedExecution.errorCode, 'WORKTREE_GIT_LINKAGE_VIOLATED');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    undefined,
+  );
+  const repeated = await runtime.cancelActive(
+    'plan-failed-cleanup',
+    'operator-clean-terminal-failed',
+    'release residual resources without rewriting failed plan truth',
+  );
+  assert.equal(repeated.code, 'PROJECT_PLAN_FAILED_ALREADY_CLEANED_UP');
+  db.close();
+});
+
+test('queue reconcile quiesces terminal FAILED residual state before retiring and handing off', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const calls: string[] = [];
+  const runtime = new ProjectPlanQueueRuntime(repositories, {
+    activate: async (planId) => calls.push('activate:' + planId),
+    retire: async (planId) => {
+      calls.push('retire:' + planId);
+      assert.equal(repositories.plans.getPlan(planId).status, 'FAILED');
+    },
+  });
+  createRoot(repositories, 'plan-failed-reconcile');
+  createRoot(repositories, 'plan-after-failed-reconcile');
+  const graph = repositories.plans.createGraphVersion({
+    planId: 'plan-failed-reconcile',
+    reason: 'terminal failed reconcile fixture',
+  }).value!;
+  const item = repositories.plans.appendGraphWorkItem({
+    graphVersionId: graph.graphVersionId,
+    itemKey: 'failed-reconcile-item',
+    title: 'Failed reconcile item',
+    objective: 'prove autonomous terminal cleanup before handoff',
+    acceptanceCriteria: ['next root activates only after residual state is quiescent'],
+    dependencies: [],
+  }).value!;
+  runtime.scheduleRootPlan('plan-failed-reconcile');
+  runtime.scheduleRootPlan('plan-after-failed-reconcile');
+  repositories.plans.updateStatus('plan-failed-reconcile', 'RUNNING');
+  repositories.plans.updateWorkItemStatus(item.workItemId, 'RUNNING');
+  const execution = repositories.executions.create({
+    idempotencyKey: 'terminal-failed-reconcile-execution',
+    identity: {
+      executionId: 'terminal-failed-reconcile-execution',
+      planId: 'plan-failed-reconcile',
+      workItemId: item.workItemId,
+      phase: 'IMPLEMENT',
+      attempt: 1,
+      route: 'implementation',
+      sourceRevision: 'base-sha',
+    },
+    objective: 'leave residual failed execution state',
+  }).value!;
+  repositories.executions.updateStatus(execution.identity.executionId, 'RUNNING');
+  repositories.executions.recordResult(execution.identity.executionId, {
+    status: 'FAILED',
+    errorCode: 'WORKTREE_GIT_LINKAGE_VIOLATED',
+    retryable: false,
+  });
+  repositories.plans.updateStatus('plan-failed-reconcile', 'FAILED');
+  runtime.setExecutionCancellation({
+    cancelExecution: async (executionId) => {
+      calls.push('cancel:' + executionId);
+      repositories.executions.updateStatus(executionId, 'CANCELLED');
+      return { status: 'SUCCEEDED', code: 'EXECUTION_OPERATOR_CANCELLED' };
+    },
+  });
+
+  const result = await runtime.reconcile();
+
+  assert.equal(result[0]?.code, 'PROJECT_PLAN_FAILED_CLEANED_UP_HANDOFF');
+  assert.equal(result[0]?.releasedPlanId, 'plan-failed-reconcile');
+  assert.equal(result[0]?.activatedPlanId, 'plan-after-failed-reconcile');
+  assert.deepEqual(calls, [
+    'cancel:terminal-failed-reconcile-execution',
+    'retire:plan-failed-reconcile',
+    'activate:plan-after-failed-reconcile',
+  ]);
+  assert.equal(repositories.plans.getPlan('plan-failed-reconcile').status, 'FAILED');
+  assert.equal(repositories.plans.getWorkItem(item.workItemId).status, 'CANCELLED');
+  assert.equal(repositories.executions.get(execution.identity.executionId).status, 'CANCELLED');
+  assert.equal(repositories.plans.getPlan('plan-after-failed-reconcile').status, 'READY');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-after-failed-reconcile',
+  );
+  db.close();
+});
+
+test('operator cleanup does not reinterpret a SUCCEEDED terminal Plan as cancellation', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const runtime = new ProjectPlanQueueRuntime(repositories, {
+    retire: async () => undefined,
+  });
+  createRoot(repositories, 'plan-succeeded-cancel-refused');
+  runtime.scheduleRootPlan('plan-succeeded-cancel-refused');
+  finish(repositories, 'plan-succeeded-cancel-refused');
+
+  await assert.rejects(
+    () =>
+      runtime.cancelActive(
+        'plan-succeeded-cancel-refused',
+        'operator-cancel-succeeded',
+        'must not rewrite successful plan truth',
+      ),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'PROJECT_PLAN_CANCEL_TERMINAL',
+  );
+  assert.equal(repositories.plans.getPlan('plan-succeeded-cancel-refused').status, 'SUCCEEDED');
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    'plan-succeeded-cancel-refused',
+  );
+  db.close();
+});
+
 test('operator cancellation retires an active root Plan and hands off only after cleanup', async () => {
   const db = openDatabase(':memory:', { environment: 'test' });
   const repositories = createRepositories(db);

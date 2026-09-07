@@ -123,11 +123,25 @@ export class ProjectPlanQueueRuntime {
           continue;
         }
         const plan = this.repositories.plans.getPlan(activePlanId);
+        const failedTerminalCleanup = plan.status === 'FAILED';
         if (!isTerminalPlanStatus(plan.status)) {
           if (plan.status !== 'SAFETY_HOLD' && this.lifecycle)
             await this.lifecycle.activate(activePlanId);
           this.ensureSupervisorActive(activePlanId);
           continue;
+        }
+        if (failedTerminalCleanup) {
+          const activeDescendant = this.firstNonTerminalDescendant(activePlanId);
+          if (activeDescendant)
+            throw new ForgeFlowError(
+              'PROJECT_PLAN_TERMINAL_DESCENDANT_ACTIVE',
+              'Terminal root Plan still has an active descendant: ' + activeDescendant,
+            );
+          await this.quiescePlanContents(
+            activePlanId,
+            'terminal-failed-cleanup:' + activePlanId,
+            'Clean residual execution and workspace state for a terminal FAILED Plan before lease release.',
+          );
         }
         if (this.lifecycle) await this.lifecycle.retire(activePlanId);
         this.retireSupervisor(activePlanId);
@@ -140,7 +154,17 @@ export class ProjectPlanQueueRuntime {
           if (this.lifecycle) await this.lifecycle.activate(handoff.activatedPlanId);
           this.ensureSupervisorActive(handoff.activatedPlanId);
         }
-        results.push(this.handoffResult(lease.projectKey, handoff));
+        const result = this.handoffResult(lease.projectKey, handoff);
+        results.push(
+          failedTerminalCleanup
+            ? {
+                ...result,
+                code: handoff.activatedPlanId
+                  ? 'PROJECT_PLAN_FAILED_CLEANED_UP_HANDOFF'
+                  : 'PROJECT_PLAN_FAILED_CLEANED_UP',
+              }
+            : result,
+        );
       } catch (error) {
         results.push({
           projectKey: lease.projectKey,
@@ -186,6 +210,15 @@ export class ProjectPlanQueueRuntime {
         ...this.cancelledState(planId),
       };
     }
+    if (plan.status === 'FAILED' && (!lease || lease.activeRootPlanId !== planId)) {
+      return {
+        projectKey: plan.projectKey,
+        planId,
+        rootPlanId: planId,
+        code: 'PROJECT_PLAN_FAILED_ALREADY_CLEANED_UP',
+        ...this.cancelledState(planId),
+      };
+    }
     if (!lease) throw new ForgeFlowError('PROJECT_PLAN_LEASE_NOT_FOUND');
     if (lease.activeRootPlanId !== planId)
       throw new ForgeFlowError('PROJECT_PLAN_LEASE_OWNER_MISMATCH');
@@ -197,6 +230,7 @@ export class ProjectPlanQueueRuntime {
         'Cancel descendant Plan first: ' + activeDescendant,
       );
 
+    const failedTerminalCleanup = plan.status === 'FAILED';
     const quiesced = await this.quiescePlanContents(planId, idempotencyKey, reason);
     plan = this.repositories.plans.getPlan(planId);
     if (this.lifecycle) await this.lifecycle.retire(planId);
@@ -222,6 +256,13 @@ export class ProjectPlanQueueRuntime {
       }
     }
 
+    const completionCode = failedTerminalCleanup
+      ? handoff.activatedPlanId
+        ? 'PROJECT_PLAN_FAILED_CLEANED_UP_HANDOFF'
+        : 'PROJECT_PLAN_FAILED_CLEANED_UP'
+      : handoff.activatedPlanId
+        ? 'PROJECT_PLAN_CANCELLED_HANDOFF'
+        : 'PROJECT_PLAN_CANCELLED';
     return {
       ...this.handoffResult(plan.projectKey, handoff),
       planId,
@@ -230,9 +271,11 @@ export class ProjectPlanQueueRuntime {
       ...(activationErrorCode
         ? {
             activationErrorCode,
-            code: 'PROJECT_PLAN_CANCELLED_NEXT_ACTIVATION_DEFERRED',
+            code: failedTerminalCleanup
+              ? 'PROJECT_PLAN_FAILED_CLEANUP_NEXT_ACTIVATION_DEFERRED'
+              : 'PROJECT_PLAN_CANCELLED_NEXT_ACTIVATION_DEFERRED',
           }
-        : { code: handoff.activatedPlanId ? 'PROJECT_PLAN_CANCELLED_HANDOFF' : 'PROJECT_PLAN_CANCELLED' }),
+        : { code: completionCode }),
     };
   }
 
@@ -266,12 +309,13 @@ export class ProjectPlanQueueRuntime {
         'PROJECT_PLAN_CANCEL_DESCENDANT_ACTIVE',
         'Cancel descendant Plan first: ' + activeDescendant,
       );
+    const failedTerminalCleanup = plan.status === 'FAILED';
     const quiesced = await this.quiescePlanContents(planId, idempotencyKey, reason);
     return {
       projectKey: plan.projectKey,
       planId,
       rootPlanId,
-      code: 'CHILD_PLAN_CANCELLED',
+      code: failedTerminalCleanup ? 'CHILD_PLAN_FAILED_CLEANED_UP' : 'CHILD_PLAN_CANCELLED',
       ...quiesced,
     };
   }
@@ -318,7 +362,8 @@ export class ProjectPlanQueueRuntime {
   }> {
     let plan = this.repositories.plans.getPlan(planId);
     const rootPlanId = this.rootPlanIdFor(planId);
-    if (plan.status !== 'CANCELLED') {
+    const preserveFailedPlan = plan.status === 'FAILED';
+    if (plan.status !== 'CANCELLED' && !preserveFailedPlan) {
       if (isTerminalPlanStatus(plan.status))
         throw new ForgeFlowError('PROJECT_PLAN_CANCEL_TERMINAL');
       if (plan.status !== 'SAFETY_HOLD') {
@@ -418,7 +463,9 @@ export class ProjectPlanQueueRuntime {
     }
 
     plan = this.repositories.plans.getPlan(planId);
-    if (plan.status !== 'CANCELLED') {
+    if (preserveFailedPlan) {
+      if (plan.status !== 'FAILED') throw new ForgeFlowError('PROJECT_PLAN_FAILED_CLEANUP_STALE');
+    } else if (plan.status !== 'CANCELLED') {
       if (plan.status !== 'SAFETY_HOLD') throw new ForgeFlowError('PROJECT_PLAN_CANCEL_STALE');
       const cancelled = this.repositories.plans.compareAndSetStatus(
         plan.planId,

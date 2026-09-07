@@ -321,8 +321,10 @@ export class PlanWorktreeManager {
       );
     else
       failClosed(
-        rootPlan.status === 'SAFETY_HOLD',
-        'WORKTREE_CANCEL_ACCESS_REQUIRES_SAFETY_HOLD',
+        rootPlan.status === 'SAFETY_HOLD' ||
+          rootPlan.status === 'FAILED' ||
+          rootPlan.status === 'CANCELLED',
+        'WORKTREE_CANCEL_ACCESS_REQUIRES_TERMINAL_OR_SAFETY_HOLD',
       );
     failClosed(current.role !== 'INTEGRATION', 'WORKTREE_INTEGRATION_CONTROLLER_ONLY');
     // Cancellation may be the first controller operation after a worker-created
