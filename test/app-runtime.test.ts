@@ -6,6 +6,11 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { buildControlPlane } from '../src/app.js';
+import {
+  AUTONOMOUS_ACCEPTANCE_EVENT,
+  AUTONOMOUS_ACCEPTANCE_REQUIRED_EXTERNAL_CHECKS,
+  releaseAcceptanceAggregateId,
+} from '../src/core/orchestration/releaseAcceptance.js';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -151,6 +156,57 @@ test('health binds release provenance to the booted artifact and rejects identit
     assert.equal(health.json().releaseProvenance.status, 'HEALTHY');
     assert.equal(health.json().releaseProvenance.sourceSha, sourceA);
     assert.equal(health.json().releaseProvenance.artifactSha256, artifactA);
+    assert.deepEqual(health.json().autonomousLifecycleAcceptance, {
+      status: 'MISSING',
+      sourceSha: sourceA,
+      artifactSha256: artifactA,
+    });
+
+    const attestedAt = new Date().toISOString();
+    runtime.repositories.events.appendNew({
+      aggregateId: releaseAcceptanceAggregateId(sourceA),
+      aggregateType: 'MAINTENANCE',
+      type: AUTONOMOUS_ACCEPTANCE_EVENT,
+      payload: {
+        version: 1,
+        sourceSha: sourceA,
+        artifactSha256: artifactA,
+        planId: 'plan-release-acceptance',
+        projectKey: 'forgeflow-smoke',
+        canonicalHead: 'e'.repeat(40),
+        logicalBaseRevision: '1'.repeat(40),
+        finalRevision: '2'.repeat(40),
+        wave: 1,
+        implementationStartDeltaMs: 9,
+        workItemIds: ['work-a', 'work-b'],
+        acceptedRevisions: ['3'.repeat(40), '4'.repeat(40)],
+        implementationExecutionIds: ['impl-a', 'impl-b'],
+        reviewerExecutionIds: ['reviewer-a', 'reviewer-b'],
+        reviewIds: ['review-a', 'review-b'],
+        providerSessionCount: 4,
+        worktreeCount: 5,
+        leaseVersion: 7,
+        activationFailureCount: 0,
+        externalChecks: [...AUTONOMOUS_ACCEPTANCE_REQUIRED_EXTERNAL_CHECKS].sort(),
+      },
+      occurredAt: attestedAt,
+      correlationId: 'plan-release-acceptance',
+    });
+    health = await runtime.app.inject({ method: 'GET', url: '/api/health' });
+    assert.deepEqual(health.json().autonomousLifecycleAcceptance, {
+      status: 'ATTESTED',
+      sourceSha: sourceA,
+      artifactSha256: artifactA,
+      planId: 'plan-release-acceptance',
+      projectKey: 'forgeflow-smoke',
+      finalRevision: '2'.repeat(40),
+      attestedAt,
+    });
+    const acceptance = await runtime.app.inject({
+      method: 'GET',
+      url: '/api/v1/release-acceptance/autonomous-lifecycle',
+    });
+    assert.deepEqual(acceptance.json(), health.json().autonomousLifecycleAcceptance);
 
     write('PENDING', sourceB, artifactB);
     health = await runtime.app.inject({ method: 'GET', url: '/api/health' });

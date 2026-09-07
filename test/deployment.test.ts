@@ -264,5 +264,8 @@ test('autonomous lifecycle smoke is explicit, public-API driven, and checks term
   assert.match(autonomousLifecycleSmoke, /PROVIDER_PROCESS_LEAK/);
   assert.match(autonomousLifecycleSmoke, /CANONICAL_REPOSITORY_MUTATED/);
   assert.match(autonomousLifecycleSmoke, /SMOKE_PLAN_SAFETY_HOLD/);
+  assert.match(autonomousLifecycleSmoke, /release-acceptance\/autonomous-lifecycle/);
+  assert.match(appSource, /autonomousLifecycleAcceptance:/);
+  assert.match(appSource, /release-acceptance\/autonomous-lifecycle/);
   assert.doesNotMatch(autonomousLifecycleSmoke, /forgeflow\.sqlite|better-sqlite3|node:sqlite/);
 });

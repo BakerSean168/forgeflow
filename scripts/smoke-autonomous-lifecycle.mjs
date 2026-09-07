@@ -33,6 +33,8 @@ let completed = false;
 let canonicalHeadBefore;
 let canonicalStatusBefore;
 let baseRevision;
+let releaseSourceSha;
+let releaseArtifactSha256;
 let lastProgressSignature = '';
 
 function integerEnv(name, fallback, minimum, maximum) {
@@ -295,6 +297,14 @@ async function main() {
     fail('SMOKE_AUTONOMOUS_POLLING_REQUIRED');
   if (health.planScheduling?.literalWorktreesEnabled !== true)
     fail('SMOKE_LITERAL_WORKTREES_REQUIRED');
+  if (health.releaseProvenance?.status !== 'HEALTHY')
+    fail('SMOKE_HEALTHY_RELEASE_PROVENANCE_REQUIRED');
+  releaseSourceSha = health.releaseProvenance.sourceSha;
+  releaseArtifactSha256 = health.releaseProvenance.artifactSha256;
+  if (!/^[0-9a-f]{40}$/.test(releaseSourceSha ?? ''))
+    fail('SMOKE_RELEASE_SOURCE_SHA_INVALID');
+  if (!/^[0-9a-f]{64}$/.test(releaseArtifactSha256 ?? ''))
+    fail('SMOKE_RELEASE_ARTIFACT_SHA_INVALID');
   const improvement = health.improvementRuntime ?? {};
   if (
     improvement.selfChangeEnabled ||
@@ -515,6 +525,33 @@ async function main() {
       statusAfter: canonicalStatusAfter,
     });
 
+  const attestationResult = await api('/api/v1/release-acceptance/autonomous-lifecycle', {
+    method: 'POST',
+    body: JSON.stringify({
+      planId,
+      sourceSha: releaseSourceSha,
+      artifactSha256: releaseArtifactSha256,
+      canonicalHead: canonicalHeadBefore,
+      externalChecks: [
+        'canonical-checkout-unchanged',
+        'final-history-contains-candidates',
+        'final-tree-verified',
+        'openhands-conversations-absent',
+        'plan-refs-absent',
+        'provider-processes-absent',
+      ],
+    }),
+  });
+  if (attestationResult.status !== 'ATTESTED')
+    fail('SMOKE_RELEASE_ATTESTATION_NOT_PERSISTED');
+  if (
+    attestationResult.attestation?.sourceSha !== releaseSourceSha ||
+    attestationResult.attestation?.artifactSha256 !== releaseArtifactSha256 ||
+    attestationResult.attestation?.planId !== planId ||
+    attestationResult.attestation?.finalRevision !== finalRevision
+  )
+    fail('SMOKE_RELEASE_ATTESTATION_MISMATCH');
+
   completed = true;
   console.log(
     JSON.stringify(
@@ -543,6 +580,11 @@ async function main() {
         activationFailureCount: (finalView.activationEvents ?? []).filter(
           (event) => event.type === 'PLAN_ACTIVATION_FAILED',
         ).length,
+        releaseAcceptance: {
+          sourceSha: releaseSourceSha,
+          artifactSha256: releaseArtifactSha256,
+          attestedAt: attestationResult.attestedAt,
+        },
       },
       null,
       2,

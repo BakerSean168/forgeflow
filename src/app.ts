@@ -64,6 +64,12 @@ import {
 import { ExecutionWorker, type ExecutionWorkerRoute } from './core/orchestration/executionWorker.js';
 import { MaintenanceImprovementRuntime } from './core/orchestration/maintenanceRuntime.js';
 import { ProjectPlanQueueRuntime } from './core/orchestration/projectPlanQueueRuntime.js';
+import {
+  AUTONOMOUS_ACCEPTANCE_EVENT,
+  decodeAutonomousLifecycleAttestation,
+  releaseAcceptanceAggregateId,
+  validateAutonomousLifecycleAcceptance,
+} from './core/orchestration/releaseAcceptance.js';
 import type { ExecutionProviderPort, WorkspaceProviderPort } from './core/orchestration/contracts.js';
 import {
   ResourceSelector,
@@ -1380,6 +1386,43 @@ export async function buildControlPlane(
     : undefined;
   const testTelemetryBaseUrl =
     options.environment === 'test' || env.NODE_ENV === 'test' ? 'http://127.0.0.1:4000' : undefined;
+  const autonomousLifecycleAcceptanceProjection = () => {
+    const release = releaseProvenance();
+    if (release.status !== 'HEALTHY')
+      return { status: 'UNAVAILABLE' as const, releaseStatus: release.status };
+    const aggregateId = releaseAcceptanceAggregateId(release.sourceSha);
+    const candidates = repositories.events
+      .listRecentByAggregate(aggregateId, 100)
+      .filter((event) => event.type === AUTONOMOUS_ACCEPTANCE_EVENT)
+      .reverse();
+    for (const event of candidates) {
+      try {
+        const attestation = decodeAutonomousLifecycleAttestation(event.payload);
+        if (attestation.artifactSha256 !== release.artifactSha256) continue;
+        return {
+          status: 'ATTESTED' as const,
+          sourceSha: attestation.sourceSha,
+          artifactSha256: attestation.artifactSha256,
+          planId: attestation.planId,
+          projectKey: attestation.projectKey,
+          finalRevision: attestation.finalRevision,
+          attestedAt: event.occurredAt,
+        };
+      } catch {
+        return {
+          status: 'INVALID' as const,
+          sourceSha: release.sourceSha,
+          artifactSha256: release.artifactSha256,
+        };
+      }
+    }
+    return {
+      status: 'MISSING' as const,
+      sourceSha: release.sourceSha,
+      artifactSha256: release.artifactSha256,
+    };
+  };
+
   const executionTelemetry = new LiteLlmExecutionTelemetry({
     baseUrl: requiredText(
       env.FORGEFLOW_LITELLM_BASE_URL ?? testTelemetryBaseUrl,
@@ -1945,6 +1988,7 @@ export async function buildControlPlane(
     mode: 'autonomous-engineering',
     database: boot.dbFile,
     releaseProvenance: releaseProvenance(),
+    autonomousLifecycleAcceptance: autonomousLifecycleAcceptanceProjection(),
     workspaceStorage: workspaceStorage(),
     hostCacheMaintenance: hostCacheMaintenance(),
     planScheduling: {
@@ -2017,6 +2061,143 @@ export async function buildControlPlane(
       requireDelivery: automation?.requireDelivery ?? false,
     },
   }));
+
+  app.get('/api/v1/release-acceptance/autonomous-lifecycle', async () =>
+    autonomousLifecycleAcceptanceProjection(),
+  );
+
+  app.post('/api/v1/release-acceptance/autonomous-lifecycle', async (request, reply) => {
+    const body = bodyRecord(request.body);
+    const planId = requiredText(body.planId, 'RELEASE_ACCEPTANCE_PLAN_REQUIRED');
+    const sourceSha = requiredText(body.sourceSha, 'RELEASE_ACCEPTANCE_SOURCE_SHA_INVALID');
+    const artifactSha256 = requiredText(
+      body.artifactSha256,
+      'RELEASE_ACCEPTANCE_ARTIFACT_SHA_INVALID',
+    );
+    const canonicalHead = requiredText(
+      body.canonicalHead,
+      'RELEASE_ACCEPTANCE_CANONICAL_SHA_INVALID',
+    );
+    if (
+      !Array.isArray(body.externalChecks) ||
+      !body.externalChecks.every((value) => typeof value === 'string')
+    )
+      throw new ForgeFlowError('RELEASE_ACCEPTANCE_EXTERNAL_CHECKS_INCOMPLETE');
+
+    const plan = repositories.plans.getPlan(planId);
+    const workItems = repositories.plans.listWorkItems(planId);
+    const executions = repositories.executions.listByPlan(planId);
+    const reviews = repositories.reviews.listByPlan(planId);
+    const sessions = repositories.sessions.listByPlan(planId);
+    const worktrees = repositories.planWorktrees.listByPlan(planId);
+    const activationFailureCount = repositories.events
+      .listRecentByAggregate(planId, 5_000)
+      .filter((event) => event.type === 'PLAN_ACTIVATION_FAILED').length;
+    const release = releaseProvenance();
+    const attestation = validateAutonomousLifecycleAcceptance({
+      release:
+        release.status === 'HEALTHY'
+          ? {
+              status: 'HEALTHY',
+              sourceSha: release.sourceSha,
+              artifactSha256: release.artifactSha256,
+            }
+          : { status: release.status },
+      expectedRelease: { sourceSha, artifactSha256 },
+      canonicalHead,
+      externalChecks: body.externalChecks,
+      plan: {
+        planId: plan.planId,
+        projectKey: plan.projectKey,
+        baseRevision: plan.baseRevision,
+        currentRevision: plan.currentRevision,
+        status: plan.status,
+      },
+      workItems: workItems.map((item) => ({
+        workItemId: item.workItemId,
+        itemKey: item.itemKey,
+        status: item.status,
+        ...(item.wave ? { wave: item.wave } : {}),
+        ...(item.integrationBaseRevision
+          ? { integrationBaseRevision: item.integrationBaseRevision }
+          : {}),
+        ...(item.exactAcceptedRevision
+          ? { exactAcceptedRevision: item.exactAcceptedRevision }
+          : {}),
+      })),
+      executions: executions.map((execution) => ({
+        executionId: execution.identity.executionId,
+        ...(execution.identity.workItemId ? { workItemId: execution.identity.workItemId } : {}),
+        phase: execution.identity.phase,
+        status: execution.status,
+        ...(execution.identity.sourceRevision
+          ? { sourceRevision: execution.identity.sourceRevision }
+          : {}),
+        ...(execution.resultRevision ? { resultRevision: execution.resultRevision } : {}),
+        createdAt: execution.createdAt,
+      })),
+      reviews: reviews.map((review) => ({
+        reviewId: review.reviewId,
+        workItemId: review.workItemId,
+        implementationExecutionId: review.implementationExecutionId,
+        ...(review.reviewerExecutionId ? { reviewerExecutionId: review.reviewerExecutionId } : {}),
+        ...(review.reviewedSha ? { reviewedSha: review.reviewedSha } : {}),
+        status: review.status,
+        ...(review.verdict ? { verdict: review.verdict } : {}),
+      })),
+      providerSessions: sessions
+        .filter((session) => Boolean(session.providerSessionId))
+        .map((session) => ({
+          executionId: session.executionId,
+          providerSessionId: session.providerSessionId!,
+          cleanupProven: Boolean(
+            repositories.evidence.find(
+              session.executionId,
+              'RECOVERY',
+              'provider-session-cleanup',
+            ) ||
+              repositories.evidence.find(
+                session.executionId,
+                'RECOVERY',
+                'operator-provider-cancellation-cleanup',
+              ),
+          ),
+        })),
+      worktrees: worktrees.map((worktree) => ({ state: worktree.state })),
+      lease: repositories.projectPlans.getLease(plan.projectKey),
+      activationFailureCount,
+    });
+
+    const aggregateId = releaseAcceptanceAggregateId(attestation.sourceSha);
+    const prior = repositories.events
+      .listRecentByAggregate(aggregateId, 100)
+      .filter((event) => event.type === AUTONOMOUS_ACCEPTANCE_EVENT)
+      .find((event) => {
+        try {
+          const existing = decodeAutonomousLifecycleAttestation(event.payload);
+          return existing.planId === attestation.planId;
+        } catch {
+          return false;
+        }
+      });
+    if (prior) {
+      const existing = decodeAutonomousLifecycleAttestation(prior.payload);
+      if (JSON.stringify(existing) !== JSON.stringify(attestation))
+        throw new ForgeFlowError('RELEASE_ACCEPTANCE_ATTESTATION_CONFLICT');
+      return { status: 'ATTESTED', attestation: existing, attestedAt: prior.occurredAt };
+    }
+
+    const event = repositories.events.appendNew({
+      aggregateId,
+      aggregateType: 'MAINTENANCE',
+      type: AUTONOMOUS_ACCEPTANCE_EVENT,
+      payload: attestation,
+      occurredAt: new Date().toISOString(),
+      correlationId: plan.planId,
+    });
+    reply.code(201);
+    return { status: 'ATTESTED', attestation, attestedAt: event.occurredAt };
+  });
 
   app.get('/api/v1/maintenance/programs', async () => ({
     items: improvementRegistry.listPrograms(),
