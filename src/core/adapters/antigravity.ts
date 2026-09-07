@@ -374,6 +374,7 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
         phase: input.phase,
         workspaceRoot: this.workspaceHostRoot,
         workspace,
+        sourceRepositoryPath: path.resolve(input.workspace.sourceRepositoryPath),
         home: this.home,
         binary: this.binary,
         sandboxWrapper: this.sandboxWrapper,
@@ -418,6 +419,9 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
         this.workspaceHostRoot,
         '--workspace',
         workspace,
+        ...(this.role === 'REVIEW'
+          ? ['--source-git-dir', path.join(path.resolve(input.workspace.sourceRepositoryPath), '.git')]
+          : []),
         '--home',
         this.home,
         '--binary',

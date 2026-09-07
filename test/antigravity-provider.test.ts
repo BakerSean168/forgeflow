@@ -54,14 +54,17 @@ exec "$@"
     `#!/bin/sh
 set -eu
 binary=''
+source_git=''
 read_only=0
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
   if [ "$1" = "--binary" ]; then shift; binary="$1"
+  elif [ "$1" = "--source-git-dir" ]; then shift; source_git="$1"
   elif [ "$1" = "--read-only-workspace" ]; then read_only=1
   fi
   shift
 done
 [ "$read_only" -eq 0 ] || touch ${JSON.stringify(path.join(root, 'read-only-workspace-requested'))}
+[ -z "$source_git" ] || printf '%s' "$source_git" > ${JSON.stringify(path.join(root, 'source-git-dir-requested'))}
 [ "$#" -gt 0 ] && shift
 exec "$binary" "$@"
 `,
@@ -177,6 +180,7 @@ test('Antigravity implementation requires a clean committed workspace and writes
   assert.equal(launched.providerSessionId, 'antigravity:exec-ant');
   const completed = await terminal(provider, launched.providerSessionId!);
   assert.equal(fs.existsSync(path.join(value.root, 'read-only-workspace-requested')), false);
+  assert.equal(fs.existsSync(path.join(value.root, 'source-git-dir-requested')), false);
   assert.equal(completed.status, 'SUCCEEDED');
   assert.match(completed.finalResponse ?? '', /Implemented bounded objective/);
   assert.equal(git(value.repository, ['status', '--porcelain']), '');
@@ -202,6 +206,10 @@ test('Antigravity review remains independent and writes exact-SHA structured evi
   const launched = await provider.launch(input(value, 'REVIEW'));
   const completed = await terminal(provider, launched.providerSessionId!);
   assert.equal(fs.existsSync(path.join(value.root, 'read-only-workspace-requested')), true);
+  assert.equal(
+    fs.readFileSync(path.join(value.root, 'source-git-dir-requested'), 'utf8'),
+    path.join(value.repository, '.git'),
+  );
   assert.equal(provider.independentReview, true);
   assert.equal(completed.status, 'SUCCEEDED');
   assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.sourceRevision);
@@ -273,6 +281,7 @@ test('Antigravity systemd request binds literal Plan workspace identity before l
   assert.equal(request.phase, 'REVIEW');
   assert.equal(request.workspace, literal);
   assert.equal(request.workspaceRoot, path.join(value.root, 'workspaces'));
+  assert.equal(request.sourceRepositoryPath, requestInput.workspace.sourceRepositoryPath);
 
   const metaFile = path.join(value.stateRoot, 'exec-ant', 'meta.json');
   const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));

@@ -252,9 +252,16 @@ test('provider tools use the ForgeFlow execution/evidence contract', () => {
   assert.match(antigravityRunner, /request\.projectKey/);
   assert.match(antigravityRunner, /request\.planId/);
   assert.match(antigravityRunner, /request\.phase/);
+  assert.match(antigravityRunner, /request\.sourceRepositoryPath/);
+  assert.match(antigravityRunner, /reviewSourceGitDir/);
+  assert.match(antigravityRunner, /--source-git-dir/);
   assert.match(antigravityRunner, /request\.phase === 'REVIEW'.*--read-only-workspace/s);
   const antigravitySandbox = read('scripts/run-antigravity-sandbox.sh');
   assert.match(antigravitySandbox, /--read-only-workspace/);
+  assert.match(antigravitySandbox, /--source-git-dir/);
+  assert.match(antigravitySandbox, /source Git metadata is review-only/);
+  assert.match(antigravitySandbox, /GIT_OPTIONAL_LOCKS=0/);
+  assert.match(antigravitySandbox, /mount --bind \"\$stash\/source-git\" \"\$source_git_dir\"/);
   assert.match(antigravitySandbox, /remount,bind,ro/);
 });
 

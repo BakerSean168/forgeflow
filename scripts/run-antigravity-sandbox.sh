@@ -3,6 +3,7 @@ set -euo pipefail
 
 workspace_root=''
 workspace=''
+source_git_dir=''
 home=''
 binary=''
 uid=''
@@ -15,6 +16,7 @@ while (($#)); do
   case "$1" in
     --workspace-root) workspace_root="$2"; shift 2 ;;
     --workspace) workspace="$2"; shift 2 ;;
+    --source-git-dir) source_git_dir="$2"; shift 2 ;;
     --home) home="$2"; shift 2 ;;
     --binary) binary="$2"; shift 2 ;;
     --uid) uid="$2"; shift 2 ;;
@@ -42,6 +44,24 @@ workspace_root="$(realpath -e "$workspace_root")"
 workspace="$(realpath -e "$workspace")"
 home="$(realpath -e "$home")"
 binary="$(realpath -e "$binary")"
+if [[ "$read_only_workspace" == true ]]; then
+  if [[ -z "$source_git_dir" ]]; then
+    echo 'read-only review requires source Git metadata' >&2
+    exit 70
+  fi
+  source_git_dir="$(realpath -e "$source_git_dir")"
+  case "$source_git_dir" in
+    "$home"/*/.git) ;;
+    *) echo 'source Git metadata escapes Antigravity home scope' >&2; exit 71 ;;
+  esac
+  if [[ ! -d "$source_git_dir" || -L "$source_git_dir" ]]; then
+    echo 'source Git metadata is not a safe directory' >&2
+    exit 72
+  fi
+elif [[ -n "$source_git_dir" ]]; then
+  echo 'source Git metadata is review-only' >&2
+  exit 73
+fi
 case "$workspace" in
   "$workspace_root"/*) ;;
   *) echo 'workspace escapes configured workspace root' >&2; exit 65 ;;
@@ -55,8 +75,10 @@ fi
 
 stash="$(mktemp -d /run/forgeflow-antigravity.XXXXXX)"
 mkdir -p "$stash/workspace" "$stash/auth"
+if [[ "$read_only_workspace" == true ]]; then mkdir -p "$stash/source-git"; fi
 touch "$stash/agy"
 mount --bind "$workspace" "$stash/workspace"
+if [[ "$read_only_workspace" == true ]]; then mount --bind "$source_git_dir" "$stash/source-git"; fi
 
 # Build a private writable Antigravity state from the minimum consumer-auth files.
 # The host credential directory is never mounted into the agent namespace, so token
@@ -101,6 +123,13 @@ chown "$uid:$gid" "$home" "$home/.gemini" "$home/.local" "$home/.local/bin"
 mount --bind "$stash/auth" "$home/.gemini/antigravity-cli"
 mount --bind "$stash/agy" "$home/.local/bin/agy"
 mount -o remount,bind,ro "$home/.local/bin/agy"
+if [[ "$read_only_workspace" == true ]]; then
+  # Restore only the exact reviewed repository's Git metadata. The source working tree
+  # remains hidden with the rest of /home, and Git metadata is kernel-enforced read-only.
+  mkdir -p "$source_git_dir"
+  mount --bind "$stash/source-git" "$source_git_dir"
+  mount -o remount,bind,ro "$source_git_dir"
+fi
 
 # Hide every other ForgeFlow workspace. Re-bind exactly one execution workspace at
 # the same absolute path so tools that honor cwd cannot escape into sibling runs.
@@ -129,13 +158,19 @@ esac
 umount "$stash/workspace"
 umount "$stash/auth"
 umount "$stash/agy"
+if [[ "$read_only_workspace" == true ]]; then umount "$stash/source-git"; fi
 rmdir "$stash/workspace" "$stash/auth"
+if [[ "$read_only_workspace" == true ]]; then rmdir "$stash/source-git"; fi
 rm -f "$stash/agy"
 rmdir "$stash"
 
 export HOME="$home"
 export USER="$user"
 export LOGNAME="$user"
+if [[ "$read_only_workspace" == true ]]; then
+  # Read-only review Git commands must never refresh/write the linked-worktree index.
+  export GIT_OPTIONAL_LOCKS=0
+fi
 # Keep native-agent output writable by the OpenHands execution group.
 umask 0002
 exec /usr/bin/setpriv \

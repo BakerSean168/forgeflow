@@ -74,7 +74,51 @@ if ((requestStat.mode & 0o077) !== 0 || (stdinStat.mode & 0o077) !== 0)
 
 const request = record(JSON.parse(fs.readFileSync(requestFile, 'utf8')));
 const workspace = path.resolve(String(request.workspace ?? ''));
+const sourceRepository = path.resolve(String(request.sourceRepositoryPath ?? ''));
 const args = Array.isArray(request.args) ? request.args : [];
+
+
+function reviewSourceGitDir() {
+  if (request.phase !== 'REVIEW') return undefined;
+  const sourceStat = fs.lstatSync(sourceRepository, { throwIfNoEntry: false });
+  if (
+    !sourceStat?.isDirectory() ||
+    sourceStat.isSymbolicLink() ||
+    fs.realpathSync(sourceRepository) !== sourceRepository
+  ) fail('ANTIGRAVITY_UNIT_SOURCE_REPOSITORY_INVALID');
+  const sourceGitDir = path.join(sourceRepository, '.git');
+  const gitDirStat = fs.lstatSync(sourceGitDir, { throwIfNoEntry: false });
+  if (!gitDirStat?.isDirectory() || gitDirStat.isSymbolicLink())
+    fail('ANTIGRAVITY_UNIT_SOURCE_GIT_INVALID');
+
+  const gitfile = path.join(workspace, '.git');
+  const gitfileStat = fs.lstatSync(gitfile, { throwIfNoEntry: false });
+  if (!gitfileStat?.isFile() || gitfileStat.isSymbolicLink())
+    fail('ANTIGRAVITY_UNIT_WORKTREE_GITFILE_INVALID');
+  const match = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(fs.readFileSync(gitfile, 'utf8'));
+  if (!match || !path.isAbsolute(match[1])) fail('ANTIGRAVITY_UNIT_WORKTREE_GITFILE_INVALID');
+  const admin = path.resolve(match[1]);
+  const relativeAdmin = path.relative(sourceGitDir, admin).split(path.sep).filter(Boolean);
+  if (
+    !inside(admin, sourceGitDir) ||
+    relativeAdmin.length !== 2 ||
+    relativeAdmin[0] !== 'worktrees' ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,240}$/.test(relativeAdmin[1])
+  ) fail('ANTIGRAVITY_UNIT_WORKTREE_GITDIR_INVALID');
+  const adminStat = fs.lstatSync(admin, { throwIfNoEntry: false });
+  if (!adminStat?.isDirectory() || adminStat.isSymbolicLink())
+    fail('ANTIGRAVITY_UNIT_WORKTREE_GITDIR_INVALID');
+  const commondirFile = path.join(admin, 'commondir');
+  const commonStat = fs.lstatSync(commondirFile, { throwIfNoEntry: false });
+  if (!commonStat?.isFile() || commonStat.isSymbolicLink())
+    fail('ANTIGRAVITY_UNIT_WORKTREE_COMMONDIR_INVALID');
+  const common = fs.realpathSync(
+    path.resolve(admin, fs.readFileSync(commondirFile, 'utf8').trim()),
+  );
+  if (common !== fs.realpathSync(sourceGitDir))
+    fail('ANTIGRAVITY_UNIT_WORKTREE_COMMONDIR_INVALID');
+  return sourceGitDir;
+}
 
 function refComponent(value) {
   const source = String(value ?? '').trim();
@@ -133,6 +177,7 @@ function expectedManagedWorkspace() {
 }
 
 const expectedWorkspace = expectedManagedWorkspace();
+const reviewGitDir = reviewSourceGitDir();
 const modelIndex = args.indexOf('--model');
 const model = modelIndex >= 0 ? args[modelIndex + 1] : undefined;
 if (
@@ -140,6 +185,7 @@ if (
   request.executionId !== executionId ||
   typeof request.projectKey !== 'string' ||
   typeof request.planId !== 'string' ||
+  typeof request.sourceRepositoryPath !== 'string' ||
   !['IMPLEMENT', 'IMPLEMENT_FIX', 'REVIEW'].includes(request.phase) ||
   path.resolve(String(request.workspaceRoot ?? '')) !== workspaceRoot ||
   workspace !== expectedWorkspace ||
@@ -189,6 +235,7 @@ const child = spawn(
     workspaceRoot,
     '--workspace',
     workspace,
+    ...(reviewGitDir ? ['--source-git-dir', reviewGitDir] : []),
     '--home',
     canonicalHome,
     '--binary',
