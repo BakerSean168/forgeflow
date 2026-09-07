@@ -695,7 +695,13 @@ export class PlanWorktreeManager {
     if (current.state === 'RETIRED') return current;
     const listed = await this.worktreeAt(current.repositoryPath, current.hostPath);
     if (listed) {
-      await this.restoreWorktreeAdminSourceAccess(current);
+      try {
+        await this.restoreWorktreeAdminSourceAccess(current);
+      } catch (error) {
+        if (!(error instanceof ForgeFlowError) || error.code !== 'WORKTREE_GIT_LINKAGE_VIOLATED')
+          throw error;
+        await this.rebuildCorruptedWorktree(current, current.currentRevision);
+      }
       await this.verifyRegistered(
         current,
         current.currentRevision,
@@ -987,6 +993,7 @@ export class PlanWorktreeManager {
         '--quiet',
         branchRef,
       ]);
+      const shortBranch = branchRef.replace(/^refs\/heads\//, '');
       if (branchExists) {
         const branchHead = await this.git(record.repositoryPath, [
           'rev-parse',
@@ -1002,10 +1009,9 @@ export class PlanWorktreeManager {
           'forgeflow:' + record.worktreeId,
           '--',
           record.hostPath,
-          branchRef,
+          shortBranch,
         ]);
       } else {
-        const shortBranch = branchRef.replace(/^refs\/heads\//, '');
         await this.git(record.repositoryPath, [
           'worktree',
           'add',
@@ -1196,16 +1202,59 @@ export class PlanWorktreeManager {
 
   private async restoreWorktreeAdminSourceAccess(worktree: PlanWorktree): Promise<void> {
     const common = await this.canonicalCommonDir(worktree.repositoryPath);
-    const adminRaw = await this.gitInWorktree(worktree.repositoryPath, worktree.hostPath, [
-      'rev-parse',
-      '--git-dir',
-    ]);
-    const admin = fs.realpathSync(
-      path.isAbsolute(adminRaw) ? adminRaw : path.resolve(worktree.hostPath, adminRaw),
-    );
-    failClosed(inside(admin, common), 'WORKTREE_ADMIN_DIR_UNSAFE');
+    const { admin } = this.worktreeGitfileIdentity(worktree, common);
     const identity = this.repositoryIdentity(worktree.repositoryPath);
     this.restoreSourceTreeNoFollow(admin, identity.uid, identity.gid);
+  }
+
+  private async rebuildCorruptedWorktree(
+    worktree: PlanWorktree,
+    expectedRevision: string,
+  ): Promise<void> {
+    failClosed(
+      inside(worktree.hostPath, this.managedHostRoot) &&
+        path.resolve(worktree.hostPath) !== path.resolve(this.managedHostRoot),
+      'WORKTREE_RECOVERY_PATH_UNSAFE',
+    );
+    await this.assertCommit(worktree.repositoryPath, expectedRevision);
+    const listed = await this.worktreeAt(worktree.repositoryPath, worktree.hostPath);
+    failClosed(Boolean(listed), 'WORKTREE_REGISTRY_FILESYSTEM_MISSING');
+    if (worktree.role === 'REVIEW') {
+      failClosed(listed!.detached && !listed!.branch, 'WORKTREE_GIT_LINKAGE_VIOLATED');
+      failClosed(listed!.head === expectedRevision, 'WORKTREE_GIT_LINKAGE_VIOLATED');
+    } else {
+      failClosed(listed!.branch === worktree.branchRef, 'WORKTREE_GIT_LINKAGE_VIOLATED');
+    }
+    failClosed(
+      listed!.lockedReason === 'forgeflow:' + worktree.worktreeId,
+      'WORKTREE_LOCK_MISMATCH',
+    );
+
+    const parent = path.dirname(worktree.hostPath);
+    const managedReal = fs.realpathSync(this.managedHostRoot);
+    const parentReal = fs.realpathSync(parent);
+    failClosed(inside(parentReal, managedReal), 'WORKTREE_RECOVERY_PATH_UNSAFE');
+    if (fs.existsSync(worktree.hostPath)) {
+      const stat = fs.lstatSync(worktree.hostPath);
+      failClosed(stat.isDirectory() && !stat.isSymbolicLink(), 'WORKTREE_RECOVERY_PATH_UNSAFE');
+      const identity = this.repositoryIdentity(worktree.repositoryPath);
+      this.chownTreeNoFollow(worktree.hostPath, identity.uid, identity.gid);
+      await this.git(worktree.repositoryPath, ['worktree', 'unlock', '--', worktree.hostPath]);
+      fs.rmSync(worktree.hostPath, { recursive: true, force: true });
+    }
+    await this.git(worktree.repositoryPath, ['worktree', 'prune', '--expire', 'now']);
+    failClosed(
+      !(await this.worktreeAt(worktree.repositoryPath, worktree.hostPath)),
+      'WORKTREE_RECOVERY_REGISTRY_STALE',
+    );
+    if (worktree.branchRef)
+      await this.git(worktree.repositoryPath, ['update-ref', worktree.branchRef, expectedRevision]);
+    await this.createPhysicalWorktree(
+      worktree,
+      expectedRevision,
+      worktree.branchRef,
+      worktree.role === 'REVIEW',
+    );
   }
 
   private worktreeGitfileIdentity(
@@ -1358,7 +1407,14 @@ export class PlanWorktreeManager {
     expectedRevision: string,
   ): Promise<void> {
     const identity = this.repositoryIdentity(worktree.repositoryPath);
-    await this.restoreWorktreeAdminSourceAccess(worktree);
+    try {
+      await this.restoreWorktreeAdminSourceAccess(worktree);
+    } catch (error) {
+      if (!(error instanceof ForgeFlowError) || error.code !== 'WORKTREE_GIT_LINKAGE_VIOLATED')
+        throw error;
+      await this.rebuildCorruptedWorktree(worktree, expectedRevision);
+      return;
+    }
     if (fs.existsSync(worktree.hostPath))
       this.chownTreeNoFollow(worktree.hostPath, identity.uid, identity.gid);
     await this.gitAsSourceInWorktree(worktree.repositoryPath, worktree.hostPath, [

@@ -838,6 +838,51 @@ test('cancelled execution abandonment repairs source access to worktree admin me
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+test('cancelled execution abandonment rebuilds a corrupted literal worktree from canonical durable state', async () => {
+  const value = fixture();
+  let worktree = await value.manager.ensureWorkItem({
+    projectKey: 'project-gamma',
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-corrupt-linkage-rebuild',
+    value.revision,
+  );
+  worktree = await value.manager.attachWriter(worktree.worktreeId, 'exec-corrupt-linkage-rebuild');
+  const gitfile = path.join(worktree.hostPath, '.git');
+  fs.chmodSync(gitfile, 0o644);
+  fs.rmSync(gitfile);
+  fs.mkdirSync(gitfile);
+  fs.writeFileSync(path.join(worktree.hostPath, 'untrusted.txt'), 'must not survive rebuild\n');
+
+  const abandoned = await value.manager.abandonExecutionWorktree(
+    worktree.worktreeId,
+    'exec-corrupt-linkage-rebuild',
+    value.revision,
+  );
+
+  assert.equal(abandoned.ownerExecutionId, undefined);
+  assert.equal(abandoned.state, 'QUIESCENT');
+  assert.equal(abandoned.currentRevision, value.revision);
+  assert.equal(fs.lstatSync(path.join(worktree.hostPath, '.git')).isFile(), true);
+  assert.equal(fs.existsSync(path.join(worktree.hostPath, 'untrusted.txt')), false);
+  assert.equal(git(worktree.hostPath, ['rev-parse', 'HEAD']), value.revision);
+  assert.equal(git(worktree.hostPath, ['status', '--porcelain=v1']), '');
+  assert.equal(
+    git(value.repository, ['rev-parse', worktree.branchRef!]),
+    value.revision,
+  );
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('cancelled execution abandonment resets unaccepted work and releases literal writer ownership', async () => {
   const value = fixture();
   let worktree = await value.manager.ensureWorkItem({
