@@ -11,7 +11,7 @@ Environment=FORGEFLOW_ANTIGRAVITY_STATE_ROOT=/var/lib/forgeflow/antigravity
 Environment=FORGEFLOW_WORKSPACE_HOST_ROOT=/var/lib/forgeflow/workspaces
 Environment=FORGEFLOW_ANTIGRAVITY_HOME=/home/dev
 Environment=FORGEFLOW_ANTIGRAVITY_BIN=/home/dev/.local/bin/agy
-Environment=FORGEFLOW_ANTIGRAVITY_SANDBOX_WRAPPER=/home/dev/projects/forgeflow/scripts/run-antigravity-sandbox.sh
+Environment=FORGEFLOW_ANTIGRAVITY_SANDBOX_WRAPPER=/usr/local/libexec/forgeflow-antigravity-sandbox.sh
 Environment=FORGEFLOW_ANTIGRAVITY_UID=1001
 Environment=FORGEFLOW_ANTIGRAVITY_GID=1002
 Environment=FORGEFLOW_WORKSPACE_GID=10001

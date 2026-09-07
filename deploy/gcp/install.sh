@@ -94,6 +94,7 @@ install -o root -g root -m 0644 "$repo_root/deploy/gcp/forgeflow-self-promote.se
 install -o root -g root -m 0644 "$repo_root/deploy/gcp/forgeflow-self-promote.path" /etc/systemd/system/forgeflow-self-promote.path
 install -o root -g root -m 0755 "$repo_root/scripts/prune-host-cache.sh" /usr/local/libexec/forgeflow-prune-host-cache.sh
 install -o root -g root -m 0755 "$repo_root/scripts/run-antigravity-unit.mjs" /usr/local/libexec/forgeflow-antigravity-unit.mjs
+install -o root -g root -m 0755 "$repo_root/scripts/run-antigravity-sandbox.sh" /usr/local/libexec/forgeflow-antigravity-sandbox.sh
 install -o root -g root -m 0755 "$repo_root/scripts/artifact-digest.sh" /usr/local/libexec/forgeflow-artifact-digest.sh
 install -o root -g root -m 0755 "$repo_root/scripts/self-promote-gcp.sh" /usr/local/libexec/forgeflow-self-promote.sh
 systemctl daemon-reload

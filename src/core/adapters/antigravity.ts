@@ -367,6 +367,10 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
       atomicJson(path.join(directory, 'request.json'), {
         version: 1,
         executionId,
+        projectKey: input.projectKey,
+        planId: input.planId,
+        workItemId: input.workItemId ?? null,
+        phase: input.phase,
         workspaceRoot: this.workspaceHostRoot,
         workspace,
         home: this.home,

@@ -74,13 +74,73 @@ if ((requestStat.mode & 0o077) !== 0 || (stdinStat.mode & 0o077) !== 0)
 
 const request = record(JSON.parse(fs.readFileSync(requestFile, 'utf8')));
 const workspace = path.resolve(String(request.workspace ?? ''));
-const expectedWorkspace = path.join(workspaceRoot, 'forgeflow', 'executions', executionId, 'repo');
 const args = Array.isArray(request.args) ? request.args : [];
+
+function refComponent(value) {
+  const source = String(value ?? '').trim();
+  if (
+    Buffer.byteLength(source, 'utf8') <= 120 &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(source) &&
+    source !== '.' &&
+    source !== '..' &&
+    !source.endsWith('.lock') &&
+    !source.includes('..')
+  ) return source;
+  const encoded = 'x' + Buffer.from(source, 'utf8').toString('hex');
+  if (!source || encoded.length > 241) fail('ANTIGRAVITY_UNIT_WORKSPACE_IDENTITY_INVALID');
+  return encoded;
+}
+
+function expectedManagedWorkspace() {
+  const legacy = path.join(workspaceRoot, 'forgeflow', 'executions', executionId, 'repo');
+  if (workspace === legacy) return legacy;
+
+  const projectKey = String(request.projectKey ?? '').trim();
+  const planId = String(request.planId ?? '').trim();
+  const phase = String(request.phase ?? '').trim();
+  const workItemId = request.workItemId === null ? undefined : String(request.workItemId ?? '').trim();
+  if (!projectKey || !planId || !['IMPLEMENT', 'IMPLEMENT_FIX', 'REVIEW'].includes(phase))
+    fail('ANTIGRAVITY_UNIT_WORKSPACE_IDENTITY_INVALID');
+  // Validate the concrete Plan identity even when a child Plan shares its root Plan's
+  // literal-worktree family. The root component is then independently constrained by
+  // the managed path shape below rather than guessed from the child Plan id.
+  refComponent(planId);
+  const relative = path.relative(workspaceRoot, workspace);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative))
+    fail('ANTIGRAVITY_UNIT_WORKSPACE_POLICY_INVALID');
+  const parts = relative.split(path.sep);
+  if (
+    parts.length !== 7 ||
+    parts[0] !== 'forgeflow' ||
+    parts[1] !== 'plans' ||
+    parts[2] !== refComponent(projectKey) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,240}$/.test(parts[3]) ||
+    parts[3] === '.' ||
+    parts[3] === '..' ||
+    parts[3].includes('..') ||
+    parts[3].endsWith('.lock') ||
+    parts[6] !== 'repo'
+  ) fail('ANTIGRAVITY_UNIT_WORKSPACE_POLICY_INVALID');
+
+  if (phase === 'REVIEW') {
+    if (parts[4] !== 'reviews' || parts[5] !== refComponent(executionId))
+      fail('ANTIGRAVITY_UNIT_WORKSPACE_POLICY_INVALID');
+  } else {
+    if (!workItemId || parts[4] !== 'items' || parts[5] !== refComponent(workItemId))
+      fail('ANTIGRAVITY_UNIT_WORKSPACE_POLICY_INVALID');
+  }
+  return path.join(workspaceRoot, ...parts);
+}
+
+const expectedWorkspace = expectedManagedWorkspace();
 const modelIndex = args.indexOf('--model');
 const model = modelIndex >= 0 ? args[modelIndex + 1] : undefined;
 if (
   request.version !== 1 ||
   request.executionId !== executionId ||
+  typeof request.projectKey !== 'string' ||
+  typeof request.planId !== 'string' ||
+  !['IMPLEMENT', 'IMPLEMENT_FIX', 'REVIEW'].includes(request.phase) ||
   path.resolve(String(request.workspaceRoot ?? '')) !== workspaceRoot ||
   workspace !== expectedWorkspace ||
   !inside(workspace, workspaceRoot) ||

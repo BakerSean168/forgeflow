@@ -14,6 +14,7 @@ const release = read('scripts/release-gcp.sh');
 const pin = read('scripts/pin-release-ref.sh');
 const cache = read('scripts/prune-host-cache.sh');
 const antigravityUnit = read('deploy/gcp/forgeflow-antigravity@.service');
+const antigravityRunner = read('scripts/run-antigravity-unit.mjs');
 const selfPromoteUnit = read('deploy/gcp/forgeflow-self-promote.service');
 const selfPromotePath = read('deploy/gcp/forgeflow-self-promote.path');
 const selfPromoteScript = read('scripts/self-promote-gcp.sh');
@@ -32,8 +33,10 @@ test('ForgeFlow service is standalone, headless, and fail-closed around host wri
   assert.match(service, /UMask=0077/);
   assert.match(service, /FORGEFLOW_PORT=8420/);
   assert.doesNotMatch(appSource, /model-control-plane\/scripts\/run-antigravity-sandbox\.sh/);
-  assert.doesNotMatch(read('scripts/run-antigravity-unit.mjs'), /model-control-plane\/scripts\/run-antigravity-sandbox\.sh/);
-  assert.match(appSource, /scripts\/run-antigravity-sandbox\.sh/);
+  assert.doesNotMatch(antigravityRunner, /model-control-plane\/scripts\/run-antigravity-sandbox\.sh/);
+  assert.match(appSource, /\/usr\/local\/libexec\/forgeflow-antigravity-sandbox\.sh/);
+  assert.match(antigravityUnit, /FORGEFLOW_ANTIGRAVITY_SANDBOX_WRAPPER=\/usr\/local\/libexec\/forgeflow-antigravity-sandbox\.sh/);
+  assert.match(installer, /run-antigravity-sandbox\.sh.*\/usr\/local\/libexec\/forgeflow-antigravity-sandbox\.sh/);
   assert.match(service, /FORGEFLOW_DB=\/var\/lib\/forgeflow\/forgeflow\.sqlite/);
   assert.match(service, /FORGEFLOW_RESOURCE_SELECTOR_ENABLED=true/);
   assert.match(service, /FORGEFLOW_SINGLE_ACTIVE_PLAN_ENABLED=true/);
@@ -144,6 +147,12 @@ test('exact-SHA release is rooted in refs/forgeflow and validates v1 health', ()
   assert.match(release, /FORGEFLOW_ADVANCE_RELEASE_REF_ON_SUCCESS/);
   assert.match(release, /release source override must fast-forward the approved release/);
   assert.match(release, /release artifact digest does not match the approved canary/);
+  assert.match(release, /sync_antigravity_runtime/);
+  assert.match(release, /worktree\/scripts\/run-antigravity-unit\.mjs/);
+  assert.match(release, /worktree\/scripts\/run-antigravity-sandbox\.sh/);
+  assert.match(release, /cmp -s .*forgeflow-antigravity-unit\.mjs/);
+  assert.match(release, /systemctl daemon-reload/);
+  assert.ok(release.indexOf('sync_antigravity_runtime') < release.indexOf('write_provenance PENDING'));
   assert.match(release, /ForgeFlow verified release promotion/);
   assert.match(release, /FORGEFLOW_RELEASE_PROVENANCE_FILE/);
   assert.match(release, /sudo install -o root -g root -m 0600 .*provenance_file/);
@@ -235,6 +244,14 @@ test('provider tools use the ForgeFlow execution/evidence contract', () => {
   assert.match(launcher, /exec \"\$DSH_BIN\" --profile acp/);
   assert.doesNotMatch(launcher, /exec .*dsh-acp-server/);
   assert.match(antigravityUnit, /forgeflow-antigravity-unit\.mjs/);
+  assert.match(antigravityRunner, /parts\[1\] !== 'plans'/);
+  assert.match(antigravityRunner, /parts\[4\] !== 'reviews'/);
+  assert.match(antigravityRunner, /parts\[4\] !== 'items'/);
+  assert.match(antigravityRunner, /refComponent\(workItemId\)/);
+  assert.match(antigravityRunner, /refComponent\(executionId\)/);
+  assert.match(antigravityRunner, /request\.projectKey/);
+  assert.match(antigravityRunner, /request\.planId/);
+  assert.match(antigravityRunner, /request\.phase/);
 });
 
 test('checked-in deployment scripts are syntactically valid', () => {

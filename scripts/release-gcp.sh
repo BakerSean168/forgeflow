@@ -75,6 +75,35 @@ if [[ -n "$expected_artifact_sha256" && "$artifact_sha256" != "$expected_artifac
   exit 1
 fi
 
+sync_antigravity_runtime() {
+  # Antigravity executes outside forgeflow.service. Keep its root-owned systemd
+  # runner and mount sandbox byte-identical to this exact detached release SHA;
+  # otherwise release provenance could claim a source revision while a stale
+  # /usr/local/libexec helper actually executes provider work.
+  if [[ ! -f /etc/systemd/system/forgeflow-antigravity@.service ]]; then
+    return 0
+  fi
+  sudo install -d -o root -g root -m 0755 /usr/local/libexec
+  sudo install -o root -g root -m 0755 \
+    "$worktree/scripts/run-antigravity-unit.mjs" \
+    /usr/local/libexec/forgeflow-antigravity-unit.mjs
+  sudo install -o root -g root -m 0755 \
+    "$worktree/scripts/run-antigravity-sandbox.sh" \
+    /usr/local/libexec/forgeflow-antigravity-sandbox.sh
+  sudo install -o root -g root -m 0644 \
+    "$worktree/deploy/gcp/forgeflow-antigravity@.service" \
+    /etc/systemd/system/forgeflow-antigravity@.service
+  cmp -s "$worktree/scripts/run-antigravity-unit.mjs" /usr/local/libexec/forgeflow-antigravity-unit.mjs || {
+    echo "Antigravity unit helper drifted during release" >&2
+    exit 1
+  }
+  cmp -s "$worktree/scripts/run-antigravity-sandbox.sh" /usr/local/libexec/forgeflow-antigravity-sandbox.sh || {
+    echo "Antigravity sandbox helper drifted during release" >&2
+    exit 1
+  }
+  sudo systemctl daemon-reload
+}
+
 write_provenance() {
   local state="$1"
   local temp
@@ -112,6 +141,7 @@ else
   mv "$candidate" "$live"
 fi
 
+sync_antigravity_runtime
 write_provenance PENDING
 
 if systemctl cat "$service" >/dev/null 2>&1; then

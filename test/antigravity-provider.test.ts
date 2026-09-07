@@ -207,6 +207,45 @@ test('Antigravity review remains independent and writes exact-SHA structured evi
   assert.ok(evidence.checks.some((item: any) => item.status === 'PASS'));
 });
 
+test('Antigravity systemd request binds literal Plan workspace identity before launch', async () => {
+  const value = fixture('review');
+  const literal = path.join(
+    value.root,
+    'workspaces',
+    'forgeflow',
+    'plans',
+    'project-alpha',
+    'plan-root',
+    'reviews',
+    'exec-ant',
+    'repo',
+  );
+  fs.mkdirSync(path.dirname(literal), { recursive: true });
+  fs.renameSync(value.repository, literal);
+  value.repository = literal;
+  const systemctl = executable(path.join(value.root, 'fake-systemctl.sh'), '#!/bin/sh\nexit 0\n');
+  const provider = new AntigravityReviewProvider({
+    ...options(value, 'gemini-3.1-pro-high'),
+    systemdUnitTemplate: 'forgeflow-antigravity@%i.service',
+    systemctlBinary: systemctl,
+  });
+  const requestInput = input(value, 'REVIEW');
+  requestInput.workspace.executionPath =
+    '/workspace/forgeflow/plans/project-alpha/plan-root/reviews/exec-ant/repo';
+  const launched = await provider.launch(requestInput);
+  assert.equal(launched.status, 'RUNNING');
+  const request = JSON.parse(
+    fs.readFileSync(path.join(value.stateRoot, 'exec-ant', 'request.json'), 'utf8'),
+  );
+  assert.equal(request.projectKey, 'project-alpha');
+  assert.equal(request.planId, 'plan-ant');
+  assert.equal(request.workItemId, 'work-ant');
+  assert.equal(request.phase, 'REVIEW');
+  assert.equal(request.workspace, literal);
+  assert.equal(request.workspaceRoot, path.join(value.root, 'workspaces'));
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('Antigravity cancellation is durable and terminates the detached process group', async () => {
   const value = fixture('wait');
   const provider = new AntigravityExecutionProvider(options(value, 'gemini-3.8-flash-high'));
