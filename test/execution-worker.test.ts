@@ -1783,7 +1783,7 @@ test('provider-only tool progress cannot extend a static workspace beyond the bo
   clock += 10_000;
   provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-3' };
   assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
-  clock += 11_000;
+  clock += 21_000;
   provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-4' };
   const stalled = await worker.runExecution(execution.identity.executionId);
   assert.equal(stalled.status, 'FAILED');
@@ -2529,6 +2529,61 @@ test('terminal provider cleanup supports a retired literal-worktree compatibilit
   seeded.db.close();
 });
 
+test('terminal provider cleanup defers corrupted literal-worktree recovery until remote deletion is proven', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-terminal-provider-cleanup-linkage',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const descriptor = await workspace.provision({
+    executionId: execution.identity.executionId,
+    planId: seeded.plan.planId,
+    projectKey: seeded.plan.projectKey,
+    workItemId: seeded.item.workItemId,
+    repositoryPath: seeded.plan.repositoryPath,
+    sourceRevision: execution.identity.sourceRevision!,
+    phase: 'IMPLEMENT',
+  });
+  succeedImplementationSession(seeded.repositories, execution, descriptor, 'successful-result-sha');
+  workspace.prepareCancellationError = new ForgeFlowError('WORKTREE_GIT_LINKAGE_VIOLATED');
+  const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'CANCELLED',
+    observedAt: now(26),
+  };
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-terminal-provider-cleanup-linkage' },
+  );
+
+  const cleaned = await worker.cleanupProviderSession(
+    execution.identity.executionId,
+    'terminal-provider-cleanup-linkage-1',
+    'delete the terminal provider before durable worktree reconstruction',
+  );
+
+  assert.equal(cleaned.status, 'SUCCEEDED');
+  assert.equal(cleaned.code, 'EXECUTION_PROVIDER_SESSION_CLEANED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(workspace.abandonCalls, 0);
+  assert.equal(seeded.repositories.executions.get(execution.identity.executionId).status, 'SUCCEEDED');
+  const proof = seeded.repositories.evidence.find(
+    execution.identity.executionId,
+    'RECOVERY',
+    'provider-session-cleanup',
+  );
+  assert.equal(proof?.payload.deferredWorkspaceRecovery, true);
+  assert.equal(proof?.payload.remoteProviderStatus, 'CANCELLED');
+  seeded.db.close();
+});
+
 test('terminal provider cleanup refuses PAUSED because writer handoff requires remote deletion', async () => {
   const seeded = seed();
   const execution = createExecution(seeded.repositories, {
@@ -2639,6 +2694,12 @@ test('execution worker operator cancel quiesces a running provider before durabl
   });
   const workspace = new FakeWorkspace();
   const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'CANCELLED',
+    observedAt: now(26),
+  };
   const worker = new ExecutionWorker(
     seeded.repositories,
     workspace,
@@ -2671,9 +2732,133 @@ test('execution worker operator cancel quiesces a running provider before durabl
       (item) =>
         item.kind === 'RECOVERY' &&
         item.payload.mode === 'operator-execution-cancel' &&
-        item.payload.remoteProviderStatus === 'PAUSED',
+        item.payload.remoteProviderStatus === 'CANCELLED',
     ),
   );
+  seeded.db.close();
+});
+
+test('execution worker operator cancel deletes a terminal provider before rebuilding corrupted literal-worktree linkage', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-operator-cancel-terminal-linkage',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'CANCELLED',
+    observedAt: now(26),
+  };
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-operator-cancel-terminal-linkage' },
+  );
+  await worker.runExecution(execution.identity.executionId);
+  seeded.repositories.executions.recordResult(execution.identity.executionId, {
+    status: 'FAILED',
+    errorCode: 'WORKTREE_GIT_LINKAGE_VIOLATED',
+    retryable: false,
+  });
+  workspace.prepareCancellationError = new ForgeFlowError('WORKTREE_GIT_LINKAGE_VIOLATED');
+
+  const cancelled = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-terminal-linkage-1',
+    'recover the terminal literal writer only after remote deletion proof',
+  );
+
+  assert.equal(cancelled.status, 'SUCCEEDED');
+  assert.equal(cancelled.code, 'EXECUTION_OPERATOR_CANCELLED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(workspace.abandonCalls, 1);
+  assert.equal(seeded.repositories.executions.get(execution.identity.executionId).status, 'CANCELLED');
+  const cleanup = seeded.repositories.evidence.find(
+    execution.identity.executionId,
+    'RECOVERY',
+    'operator-provider-cancellation-cleanup',
+  );
+  assert.equal(cleanup?.payload.deferredWorkspaceRecovery, true);
+  assert.equal(cleanup?.payload.remoteProviderStatus, 'CANCELLED');
+  seeded.db.close();
+});
+
+test('execution worker operator cancel refuses PAUSED when provider cancellation can prove deletion', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-operator-cancel-paused',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'PAUSED',
+    observedAt: now(26),
+  };
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-operator-cancel-paused' },
+  );
+  await worker.runExecution(execution.identity.executionId);
+
+  const refused = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-paused-1',
+    'paused is not remote deletion proof',
+  );
+  assert.equal(refused.status, 'WAITING');
+  assert.equal(refused.code, 'PROVIDER_CANCEL_NOT_QUIESCED');
+  assert.equal(provider.cancelCalls, 1);
+  assert.equal(workspace.abandonCalls, 0);
+  assert.equal(seeded.repositories.executions.get(execution.identity.executionId).status, 'RUNNING');
+  seeded.db.close();
+});
+
+test('execution worker operator cancel never bypasses corrupted linkage for an active writer', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-operator-cancel-active-linkage',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'CANCELLED',
+    observedAt: now(26),
+  };
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-operator-cancel-active-linkage' },
+  );
+  await worker.runExecution(execution.identity.executionId);
+  workspace.prepareCancellationError = new ForgeFlowError('WORKTREE_GIT_LINKAGE_VIOLATED');
+
+  const refused = await worker.cancelExecution(
+    execution.identity.executionId,
+    'operator-cancel-active-linkage-1',
+    'active writer linkage damage must remain fail closed',
+  );
+  assert.equal(refused.status, 'FAILED');
+  assert.equal(refused.code, 'WORKTREE_GIT_LINKAGE_VIOLATED');
+  assert.equal(provider.cancelCalls, 0);
+  assert.equal(workspace.abandonCalls, 0);
+  assert.equal(seeded.repositories.executions.get(execution.identity.executionId).status, 'RUNNING');
   seeded.db.close();
 });
 
@@ -2799,6 +2984,12 @@ test('execution worker preserves an immutable terminal provider result while can
   });
   const workspace = new FakeWorkspace();
   const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'CANCELLED',
+    observedAt: now(26),
+  };
   const worker = new ExecutionWorker(
     seeded.repositories,
     workspace,
@@ -2847,6 +3038,12 @@ test('execution worker backfills remote provider cleanup for an already-CANCELLE
   });
   const workspace = new FakeWorkspace();
   const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'CANCELLED',
+    observedAt: now(26),
+  };
   const worker = new ExecutionWorker(
     seeded.repositories,
     workspace,
@@ -2900,6 +3097,12 @@ test('execution worker retries cancelled workspace cleanup without re-cancelling
   });
   const workspace = new FakeWorkspace();
   const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'CANCELLED',
+    observedAt: now(26),
+  };
   const worker = new ExecutionWorker(
     seeded.repositories,
     workspace,

@@ -727,6 +727,7 @@ export class ExecutionWorker {
         };
       let remoteProviderStatus = session.providerStatus;
       let retiredWorkspaceCompatibility = false;
+      let deferredWorkspaceRecovery = false;
       const alreadyQuiescent =
         session.providerStatus === 'PAUSED' ||
         session.providerStatus === 'WAITING_FOR_CONFIRMATION' ||
@@ -751,7 +752,16 @@ export class ExecutionWorker {
               this.retiredWorkspaceProviderCleanupAllowed(execution, session)
             )
               retiredWorkspaceCompatibility = true;
-            else throw error;
+            else if (
+              error instanceof ForgeFlowError &&
+              error.code === 'WORKTREE_GIT_LINKAGE_VIOLATED'
+            ) {
+              // The durable execution is already terminal. Do not rebuild a literal
+              // worktree while its remote provider could still write. First obtain
+              // terminal provider cleanup proof; normal retirement/abandonment may
+              // then rebuild the corrupted physical worktree from durable provenance.
+              deferredWorkspaceRecovery = true;
+            } else throw error;
           }
         }
         const cleaned = await resolved.provider.cancel(providerSessionId);
@@ -786,6 +796,7 @@ export class ExecutionWorker {
           reason: reason.trim(),
           idempotencyDigest: createHash('sha256').update(idempotencyKey.trim()).digest('hex'),
           ...(retiredWorkspaceCompatibility ? { retiredWorkspaceCompatibility: true } : {}),
+          ...(deferredWorkspaceRecovery ? { deferredWorkspaceRecovery: true } : {}),
         },
       });
       return {
@@ -828,6 +839,7 @@ export class ExecutionWorker {
         return { executionId, status: 'SKIPPED', code: 'EXECUTION_ALREADY_SUCCEEDED' };
 
       let remoteProviderStatus: string | undefined = session?.providerStatus;
+      let deferredWorkspaceRecovery = false;
       const providerSessionId = session?.providerSessionId;
       const providerCleanupEvidenceName = LEGACY_PROVIDER_CANCELLATION_CLEANUP_EVIDENCE_NAME;
       const cancellationEvidenceName =
@@ -869,8 +881,21 @@ export class ExecutionWorker {
               providerSessionId,
             };
         } else {
-          if (this.workspace.prepareCancellationAccess)
-            await this.workspace.prepareCancellationAccess(session.workspace);
+          if (this.workspace.prepareCancellationAccess) {
+            try {
+              await this.workspace.prepareCancellationAccess(session.workspace);
+            } catch (error) {
+              const executionAlreadyTerminal =
+                execution.status !== 'QUEUED' && execution.status !== 'RUNNING';
+              if (
+                executionAlreadyTerminal &&
+                error instanceof ForgeFlowError &&
+                error.code === 'WORKTREE_GIT_LINKAGE_VIOLATED'
+              )
+                deferredWorkspaceRecovery = true;
+              else throw error;
+            }
+          }
           const cancelled = await resolved.provider.cancel(providerSessionId);
           if (
             cancelled.providerSessionId !== providerSessionId ||
@@ -880,7 +905,6 @@ export class ExecutionWorker {
           remoteProviderStatus = cancelled.status;
           if (
             cancelled.status !== 'CANCELLED' &&
-            cancelled.status !== 'PAUSED' &&
             !TERMINAL_PROVIDER_STATUSES.has(cancelled.status)
           ) {
             this.recordActiveProviderStatus(executionId, session, cancelled);
@@ -902,6 +926,7 @@ export class ExecutionWorker {
             provider: resolved.provider.provider,
             providerSessionId,
             remoteProviderStatus: remoteProviderStatus ?? session.providerStatus,
+            ...(deferredWorkspaceRecovery ? { deferredWorkspaceRecovery: true } : {}),
           },
         });
         return undefined;
