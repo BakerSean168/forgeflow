@@ -52,7 +52,7 @@ function fixture() {
     acceptanceCriteria: ['tests pass'],
     dependencies: [],
     parallelSafe: true,
-    writeScopes: ['src/item'],
+    writeScopes: ['src/item.txt'],
   }).value!;
   repositories.projectPlans.scheduleRootPlan(plan.planId);
   repositories.plans.compareAndSetStatus(plan.planId, 'READY', 'RUNNING');
@@ -213,6 +213,59 @@ test('literal workspace completes implementation, exact-SHA review and Plan inte
   );
   assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.revision);
   assert.equal(fs.existsSync(path.join(value.repository, 'src/item.txt')), false);
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('literal workspace rejects implementation commits outside the declared WorkItem write scope', async () => {
+  const value = fixture();
+  const implementation = createExecution(
+    value,
+    'exec-literal-out-of-scope',
+    'IMPLEMENT',
+    value.revision,
+  );
+  const workspace = await value.adapter.provision({
+    executionId: implementation.identity.executionId,
+    planId: value.plan.planId,
+    projectKey: value.plan.projectKey,
+    workItemId: value.item.workItemId,
+    repositoryPath: value.repository,
+    sourceRevision: value.revision,
+    phase: 'IMPLEMENT',
+  });
+  fs.mkdirSync(path.join(workspace.hostPath, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspace.hostPath, 'src/item.txt'), 'allowed\n');
+  fs.writeFileSync(path.join(workspace.hostPath, 'README.md'), 'out of scope\n');
+  git(workspace.hostPath, ['add', 'src/item.txt', 'README.md']);
+  git(workspace.hostPath, ['commit', '-m', 'feat: mix scoped and unscoped changes']);
+  const candidate = git(workspace.hostPath, ['rev-parse', 'HEAD']);
+  fs.writeFileSync(
+    path.join(workspace.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE),
+    JSON.stringify({
+      version: 1,
+      executionId: implementation.identity.executionId,
+      phase: 'IMPLEMENT',
+      sourceRevision: value.revision,
+      resultRevision: candidate,
+      outcome: 'CHANGED',
+      summary: 'attempted out-of-scope change',
+      tests: [{ command: 'test', status: 'PASS', exitCode: 0 }],
+    }) + '\n',
+  );
+
+  await assert.rejects(
+    () => value.adapter.verifyImplementation(workspace),
+    (error: unknown) =>
+      error instanceof ForgeFlowError && error.code === 'WORKSPACE_WRITE_SCOPE_VIOLATED',
+  );
+  assert.equal(
+    value.repositories.planWorktrees.findForWorkItem(value.plan.planId, value.item.workItemId)
+      ?.ownerExecutionId,
+    implementation.identity.executionId,
+  );
+  assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.revision);
 
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });

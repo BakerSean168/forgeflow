@@ -288,6 +288,10 @@ export class PlanWorktreeManager {
     const current = this.repositories.planWorktrees.get(worktreeIdValue);
     await this.ensurePlanActivated(current.rootPlanId);
     failClosed(current.role !== 'INTEGRATION', 'WORKTREE_INTEGRATION_CONTROLLER_ONLY');
+    // A worker Git process may atomically replace admin files such as index. Restore
+    // canonical source access before proving linkage, then re-grant bounded worker
+    // access with source-continuity defaults for future replacements.
+    await this.restoreWorktreeAdminSourceAccess(current);
     await this.verifyRegistered(
       current,
       current.currentRevision,
@@ -321,6 +325,10 @@ export class PlanWorktreeManager {
         'WORKTREE_CANCEL_ACCESS_REQUIRES_SAFETY_HOLD',
       );
     failClosed(current.role !== 'INTEGRATION', 'WORKTREE_INTEGRATION_CONTROLLER_ONLY');
+    // Cancellation may be the first controller operation after a worker-created
+    // admin-file replacement. The ownership/SAFETY_HOLD checks above fence this
+    // repair to the exact durable worktree before any provider teardown occurs.
+    await this.restoreWorktreeAdminSourceAccess(current);
     await this.verifyRegistered(
       current,
       current.currentRevision,
@@ -348,7 +356,7 @@ export class PlanWorktreeManager {
       await this.grantObjectStoreAcl(objects, uid);
       const { admin } = this.worktreeGitfileIdentity(current, common);
       await this.grantTraverseAcl(common, admin, uid);
-      await this.grantRecursiveAcl(admin, uid);
+      await this.grantRecursiveAcl(admin, uid, source.uid);
       if (current.branchRef) {
         const plan = worktreeRefComponent(current.rootPlanId);
         const allowedPrefix = 'refs/heads/forgeflow/' + plan + '/';
@@ -1352,8 +1360,14 @@ export class PlanWorktreeManager {
     }
   }
 
-  private async grantRecursiveAcl(target: string, uid: number): Promise<void> {
+  private async grantRecursiveAcl(
+    target: string,
+    uid: number,
+    preserveUid?: number,
+  ): Promise<void> {
     await this.execAcl(['-R', '-m', `u:${uid}:rwX`, '--', target]);
+    if (preserveUid !== undefined && preserveUid !== uid)
+      await this.execAcl(['-R', '-m', `u:${preserveUid}:rwX`, '--', target]);
     const directories: string[] = [];
     const visit = (directory: string): void => {
       const stat = fs.lstatSync(directory);
@@ -1366,6 +1380,8 @@ export class PlanWorktreeManager {
     };
     visit(target);
     await this.grantDirectoryAcl(directories, uid, true);
+    if (preserveUid !== undefined && preserveUid !== uid)
+      await this.grantDirectoryAcl(directories, preserveUid, true);
   }
 
   private async grantObjectStoreAcl(objects: string, uid: number): Promise<void> {

@@ -71,6 +71,21 @@ function inside(candidate: string, root: string): boolean {
   return value === boundary || value.startsWith(boundary + path.sep);
 }
 
+function changedFileWithinScope(file: string, scope: string): boolean {
+  const normalizedFile = file.replace(/\\/g, '/').replace(/^\.\//, '');
+  const normalizedScope = scope.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+  if (
+    !normalizedFile ||
+    !normalizedScope ||
+    normalizedFile.startsWith('/') ||
+    normalizedScope.startsWith('/') ||
+    normalizedFile.split('/').includes('..') ||
+    normalizedScope.split('/').includes('..')
+  )
+    return false;
+  return normalizedFile === normalizedScope || normalizedFile.startsWith(normalizedScope + '/');
+}
+
 function readJson(file: string, code: string): Record<string, unknown> {
   const stat = fs.lstatSync(file, { throwIfNoEntry: false });
   if (!stat?.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > MAX_EVIDENCE_BYTES)
@@ -419,6 +434,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
       (!satisfiedWithoutChange && changedFiles.length === 0)
     )
       throw new ForgeFlowError('WORKSPACE_CHANGED_FILES_INVALID');
+    this.assertDeclaredWriteScope(descriptor, changedFiles);
     const diffStat = satisfiedWithoutChange
       ? ''
       : await this.git(descriptor.hostPath, [
@@ -667,6 +683,24 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
     const record = this.repositories.planWorktrees.findByPath(descriptor.hostPath);
     if (!record || record.state === 'RETIRED') throw new ForgeFlowError('WORKTREE_NOT_FOUND');
     await this.manager.assertExecutionWorktreeLinked(record.worktreeId);
+  }
+
+  private assertDeclaredWriteScope(
+    descriptor: WorkspaceDescriptor,
+    changedFiles: readonly string[],
+  ): void {
+    if (changedFiles.length === 0) return;
+    const execution = this.repositories.executions.get(descriptor.executionId);
+    const workItemId = execution.identity.workItemId;
+    if (!workItemId) return;
+    const item = this.repositories.plans.getWorkItem(workItemId);
+    if (item.writeScopes.length === 0) return;
+    failClosed(
+      changedFiles.every((file) =>
+        item.writeScopes.some((scope) => changedFileWithinScope(file, scope)),
+      ),
+      'WORKSPACE_WRITE_SCOPE_VIOLATED',
+    );
   }
 
   private validateWorkspace(workspace: WorkspaceDescriptor): WorkspaceDescriptor {

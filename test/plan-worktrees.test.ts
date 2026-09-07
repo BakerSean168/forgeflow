@@ -872,6 +872,27 @@ test('schema v9 migrates additively to durable protected-ref snapshots', () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('worker admin ACL defaults preserve canonical source access across Git file replacement', async () => {
+  const value = fixture();
+  const admin = path.join(value.root, 'acl-admin');
+  fs.mkdirSync(admin, { mode: 0o770 });
+  fs.writeFileSync(path.join(admin, 'index'), 'index\n');
+  const sourceUid = process.getuid?.() ?? 1000;
+  const syntheticWorkerUid = sourceUid + 50_000;
+  const internal = value.manager as unknown as {
+    grantRecursiveAcl(target: string, uid: number, preserveUid?: number): Promise<void>;
+  };
+
+  await internal.grantRecursiveAcl(admin, syntheticWorkerUid, sourceUid);
+
+  const acl = execFileSync('getfacl', ['-n', '-p', admin], { encoding: 'utf8' });
+  assert.match(acl, new RegExp(`^default:user:${sourceUid}:rwx$`, 'm'));
+  assert.match(acl, new RegExp(`^default:user:${syntheticWorkerUid}:rwx$`, 'm'));
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('cancelled execution abandonment repairs source access to worktree admin metadata', async () => {
   const value = fixture();
   let worktree = await value.manager.ensureWorkItem({
