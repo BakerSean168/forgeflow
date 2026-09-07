@@ -232,8 +232,24 @@ test('Antigravity systemd request binds literal Plan workspace identity before l
   const requestInput = input(value, 'REVIEW');
   requestInput.workspace.executionPath =
     '/workspace/forgeflow/plans/project-alpha/plan-root/reviews/exec-ant/repo';
+  requestInput.workspace.evidenceHostPath = path.join(
+    path.dirname(literal),
+    '.executions',
+    'exec-ant',
+    'completion-evidence.json',
+  );
+  requestInput.workspace.evidenceExecutionPath =
+    '/workspace/forgeflow/plans/project-alpha/plan-root/reviews/exec-ant/.executions/exec-ant/completion-evidence.json';
   const launched = await provider.launch(requestInput);
   assert.equal(launched.status, 'RUNNING');
+  const recovered = await provider.recover({
+    executionId: 'exec-ant',
+    createdAt: new Date().toISOString(),
+    projectKey: 'project-alpha',
+    phase: 'REVIEW',
+    expectedWorkspacePath: requestInput.workspace.executionPath,
+  });
+  assert.equal(recovered?.providerSessionId, 'antigravity:exec-ant');
   const request = JSON.parse(
     fs.readFileSync(path.join(value.stateRoot, 'exec-ant', 'request.json'), 'utf8'),
   );
@@ -243,6 +259,24 @@ test('Antigravity systemd request binds literal Plan workspace identity before l
   assert.equal(request.phase, 'REVIEW');
   assert.equal(request.workspace, literal);
   assert.equal(request.workspaceRoot, path.join(value.root, 'workspaces'));
+
+  const metaFile = path.join(value.stateRoot, 'exec-ant', 'meta.json');
+  const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+  fs.mkdirSync(path.join(path.dirname(literal), '.executions', 'other'), { recursive: true });
+  meta.evidenceHostPath = path.join(
+    path.dirname(literal),
+    '.executions',
+    'other',
+    'completion-evidence.json',
+  );
+  fs.writeFileSync(metaFile, JSON.stringify(meta));
+  await assert.rejects(
+    () => provider.inspect('antigravity:exec-ant'),
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      (error as { code?: string }).code === 'ANTIGRAVITY_META_INVALID',
+  );
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 

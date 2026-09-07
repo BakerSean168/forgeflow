@@ -850,6 +850,16 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
     const evidenceHostPath = path.resolve(
       requiredText(value.evidenceHostPath, 'ANTIGRAVITY_META_INVALID'),
     );
+    const workspaceParent = path.dirname(workspaceHostPath);
+    const legacyEvidencePath = path.join(workspaceParent, 'completion-evidence.json');
+    const literalEvidencePath = path.join(
+      workspaceParent,
+      '.executions',
+      safeId(executionId),
+      'completion-evidence.json',
+    );
+    const evidencePathValid =
+      evidenceHostPath === legacyEvidencePath || evidenceHostPath === literalEvidencePath;
     if (
       value.version !== 1 ||
       value.executionId !== executionId ||
@@ -860,8 +870,7 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
       (value.role !== 'IMPLEMENTATION' && value.role !== 'REVIEW') ||
       !inside(workspaceHostPath, this.workspaceHostRoot) ||
       !inside(evidenceHostPath, this.workspaceHostRoot) ||
-      path.dirname(evidenceHostPath) !== path.dirname(workspaceHostPath) ||
-      path.basename(evidenceHostPath) !== 'completion-evidence.json' ||
+      !evidencePathValid ||
       typeof value.startedAt !== 'string' ||
       Number.isNaN(Date.parse(value.startedAt))
     ) {
