@@ -332,6 +332,12 @@ export class PlanWorktreeManager {
     );
     const current = this.repositories.planWorktrees.get(worktreeIdValue);
     const rootPlan = this.repositories.plans.getPlan(current.rootPlanId);
+    const execution = this.repositories.executions.get(executionId);
+    const executionPlan = this.repositories.plans.getPlan(execution.identity.planId);
+    failClosed(
+      this.rootPlanIdFor(executionPlan.planId) === current.rootPlanId,
+      'WORKTREE_CANCEL_ACCESS_PLAN_MISMATCH',
+    );
     if (current.ownerExecutionId)
       failClosed(
         current.ownerExecutionId === executionId,
@@ -340,8 +346,8 @@ export class PlanWorktreeManager {
     else
       failClosed(
         rootPlan.status === 'SAFETY_HOLD' ||
-          rootPlan.status === 'FAILED' ||
-          rootPlan.status === 'CANCELLED',
+          isTerminalPlanStatus(rootPlan.status) ||
+          isTerminalPlanStatus(executionPlan.status),
         'WORKTREE_CANCEL_ACCESS_REQUIRES_TERMINAL_OR_SAFETY_HOLD',
       );
     failClosed(current.role !== 'INTEGRATION', 'WORKTREE_INTEGRATION_CONTROLLER_ONLY');

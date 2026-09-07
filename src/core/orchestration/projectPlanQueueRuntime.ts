@@ -19,6 +19,11 @@ export interface ProjectPlanExecutionCancellationPort {
     idempotencyKey: string,
     reason: string,
   ): Promise<{ status: string; code: string }>;
+  cleanupProviderSession?(
+    executionId: string,
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<{ status: string; code: string }>;
 }
 
 export interface ProjectPlanCancellationResult extends ProjectPlanQueueRuntimeResult {
@@ -130,19 +135,23 @@ export class ProjectPlanQueueRuntime {
           this.ensureSupervisorActive(activePlanId);
           continue;
         }
-        if (failedTerminalCleanup) {
-          const activeDescendant = this.firstNonTerminalDescendant(activePlanId);
-          if (activeDescendant)
-            throw new ForgeFlowError(
-              'PROJECT_PLAN_TERMINAL_DESCENDANT_ACTIVE',
-              'Terminal root Plan still has an active descendant: ' + activeDescendant,
-            );
+        const activeDescendant = this.firstNonTerminalDescendant(activePlanId);
+        if (activeDescendant)
+          throw new ForgeFlowError(
+            'PROJECT_PLAN_TERMINAL_DESCENDANT_ACTIVE',
+            'Terminal root Plan still has an active descendant: ' + activeDescendant,
+          );
+        if (failedTerminalCleanup)
           await this.quiescePlanContents(
             activePlanId,
             'terminal-failed-cleanup:' + activePlanId,
             'Clean residual execution and workspace state for a terminal FAILED Plan before lease release.',
           );
-        }
+        await this.cleanupTerminalProviderSessions(
+          activePlanId,
+          'terminal-provider-cleanup:' + activePlanId,
+          'Clean every terminal provider session before worktree retirement and project lease release.',
+        );
         if (this.lifecycle) await this.lifecycle.retire(activePlanId);
         this.retireSupervisor(activePlanId);
         const handoff = this.repositories.projectPlans.releaseAndActivateNext(
@@ -233,6 +242,11 @@ export class ProjectPlanQueueRuntime {
     const failedTerminalCleanup = plan.status === 'FAILED';
     const quiesced = await this.quiescePlanContents(planId, idempotencyKey, reason);
     plan = this.repositories.plans.getPlan(planId);
+    await this.cleanupTerminalProviderSessions(
+      planId,
+      'plan-terminal-provider-cleanup:' + idempotencyKey,
+      'Clean terminal provider sessions before operator-triggered root retirement. ' + reason.trim(),
+    );
     if (this.lifecycle) await this.lifecycle.retire(planId);
 
     const currentLease = this.repositories.projectPlans.getLease(plan.projectKey);
@@ -295,6 +309,11 @@ export class ProjectPlanQueueRuntime {
     if (!lease || lease.activeRootPlanId !== rootPlanId)
       throw new ForgeFlowError('CHILD_PLAN_ROOT_LEASE_REQUIRED');
     if (plan.status === 'CANCELLED') {
+      await this.cleanupTerminalProviderSessions(
+        planId,
+        'child-terminal-provider-cleanup:' + idempotencyKey,
+        'Retry terminal child provider cleanup after child cancellation. ' + reason.trim(),
+      );
       return {
         projectKey: plan.projectKey,
         planId,
@@ -311,6 +330,11 @@ export class ProjectPlanQueueRuntime {
       );
     const failedTerminalCleanup = plan.status === 'FAILED';
     const quiesced = await this.quiescePlanContents(planId, idempotencyKey, reason);
+    await this.cleanupTerminalProviderSessions(
+      planId,
+      'child-terminal-provider-cleanup:' + idempotencyKey,
+      'Clean terminal child provider sessions after child cancellation. ' + reason.trim(),
+    );
     return {
       projectKey: plan.projectKey,
       planId,
@@ -349,6 +373,78 @@ export class ProjectPlanQueueRuntime {
         .map((review) => review.reviewId)
         .sort(),
     };
+  }
+
+  private async cleanupTerminalProviderSessions(
+    planId: string,
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<void> {
+    const planIds = this.planSubtreeIds(planId);
+    const pending = planIds.flatMap((currentPlanId) =>
+      this.repositories.executions.listByPlan(currentPlanId).filter((execution) => {
+        const session = this.repositories.sessions.getOptional(execution.identity.executionId);
+        if (!session?.providerSessionId) return false;
+        return !(
+          this.repositories.evidence.find(
+            execution.identity.executionId,
+            'RECOVERY',
+            'provider-session-cleanup',
+          ) ||
+          this.repositories.evidence.find(
+            execution.identity.executionId,
+            'RECOVERY',
+            'operator-provider-cancellation-cleanup',
+          )
+        );
+      }),
+    );
+    if (pending.length === 0) return;
+    if (!this.executionCancellation?.cleanupProviderSession)
+      throw new ForgeFlowError('PROJECT_PLAN_PROVIDER_CLEANUP_RUNTIME_REQUIRED');
+    const digest = createHash('sha256').update(idempotencyKey.trim()).digest('hex').slice(0, 32);
+    for (const execution of pending) {
+      const result = await this.executionCancellation.cleanupProviderSession(
+        execution.identity.executionId,
+        'provider-cleanup:' + digest + ':' + execution.identity.executionId,
+        reason.trim(),
+      );
+      if (result.status !== 'SUCCEEDED')
+        throw new ForgeFlowError(result.code || 'PROJECT_PLAN_PROVIDER_CLEANUP_FAILED');
+    }
+    const remaining = planIds.flatMap((currentPlanId) =>
+      this.repositories.executions.listByPlan(currentPlanId).filter((execution) => {
+        const session = this.repositories.sessions.getOptional(execution.identity.executionId);
+        if (!session?.providerSessionId) return false;
+        return !(
+          this.repositories.evidence.find(
+            execution.identity.executionId,
+            'RECOVERY',
+            'provider-session-cleanup',
+          ) ||
+          this.repositories.evidence.find(
+            execution.identity.executionId,
+            'RECOVERY',
+            'operator-provider-cancellation-cleanup',
+          )
+        );
+      }),
+    );
+    if (remaining.length > 0) throw new ForgeFlowError('PROJECT_PLAN_PROVIDER_CLEANUP_INCOMPLETE');
+  }
+
+  private planSubtreeIds(planId: string): string[] {
+    const result: string[] = [];
+    const stack = [planId];
+    const seen = new Set<string>();
+    while (stack.length > 0) {
+      const current = stack.shift()!;
+      if (seen.has(current)) continue;
+      seen.add(current);
+      result.push(current);
+      stack.push(...this.repositories.relationships.getChildren(current));
+    }
+    return result;
   }
 
   private async quiescePlanContents(

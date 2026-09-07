@@ -70,6 +70,9 @@ const EVIDENCE_FINALIZATION_NAME = 'evidence-verified-provider-finalization';
 const MEANINGFUL_PROGRESS_PREFIX = 'meaningful-progress-';
 const MEANINGFUL_STALL_RECOVERY_PREFIX = 'meaningful-stall-recovery-';
 const WORKSPACE_PROGRESS_DEGRADED_NAME = 'workspace-progress-probe-degraded';
+const PROVIDER_SESSION_CLEANUP_EVIDENCE_NAME = 'provider-session-cleanup';
+const LEGACY_PROVIDER_CANCELLATION_CLEANUP_EVIDENCE_NAME =
+  'operator-provider-cancellation-cleanup';
 
 function errorCode(error: unknown): string {
   if (error instanceof ForgeFlowError) return error.code;
@@ -647,6 +650,125 @@ export class ExecutionWorker {
     }
   }
 
+  async cleanupProviderSession(
+    executionId: string,
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<ExecutionWorkerResult> {
+    const claim = this.repositories.executions.claimLease(
+      executionId,
+      this.ownerId,
+      this.leaseTtlMs,
+    );
+    if (!claim.value || claim.status === 'rejected')
+      return { executionId, status: 'SKIPPED', code: claim.reason ?? 'EXECUTION_LEASE_HELD' };
+    try {
+      if (!idempotencyKey.trim() || idempotencyKey.length > 1_000)
+        throw new ForgeFlowError('EXECUTION_PROVIDER_CLEANUP_IDEMPOTENCY_REQUIRED');
+      if (!reason.trim() || reason.length > 2_000)
+        throw new ForgeFlowError('EXECUTION_PROVIDER_CLEANUP_REASON_INVALID');
+      const execution = this.repositories.executions.get(executionId);
+      if (execution.status === 'QUEUED' || execution.status === 'RUNNING')
+        return {
+          executionId,
+          status: 'WAITING',
+          code: 'EXECUTION_PROVIDER_CLEANUP_REQUIRES_TERMINAL',
+        };
+      const session = this.repositories.sessions.getOptional(executionId);
+      const providerSessionId = session?.providerSessionId;
+      if (!session || !providerSessionId)
+        return { executionId, status: 'SUCCEEDED', code: 'EXECUTION_PROVIDER_SESSION_NOT_CREATED' };
+      if (
+        this.repositories.evidence.find(
+          executionId,
+          'RECOVERY',
+          PROVIDER_SESSION_CLEANUP_EVIDENCE_NAME,
+        ) ||
+        this.repositories.evidence.find(
+          executionId,
+          'RECOVERY',
+          LEGACY_PROVIDER_CANCELLATION_CLEANUP_EVIDENCE_NAME,
+        )
+      )
+        return {
+          executionId,
+          status: 'SUCCEEDED',
+          code: 'EXECUTION_PROVIDER_SESSION_ALREADY_CLEANED',
+          providerSessionId,
+        };
+
+      const resolved = this.resolveProvider(execution);
+      if (!resolved)
+        return {
+          executionId,
+          status: 'WAITING',
+          code: 'EXECUTION_RESOURCE_SELECTION_UNAVAILABLE',
+          providerSessionId,
+        };
+      let remoteProviderStatus = session.providerStatus;
+      const alreadyQuiescent =
+        session.providerStatus === 'PAUSED' ||
+        session.providerStatus === 'WAITING_FOR_CONFIRMATION' ||
+        session.providerStatus === 'CANCELLED' ||
+        TERMINAL_PROVIDER_STATUSES.has(session.providerStatus);
+      if (!resolved.provider.cancel) {
+        if (!alreadyQuiescent)
+          return {
+            executionId,
+            status: 'WAITING',
+            code: 'PROVIDER_CANCEL_UNSUPPORTED',
+            providerSessionId,
+          };
+      } else {
+        if (this.workspace.prepareCancellationAccess)
+          await this.workspace.prepareCancellationAccess(session.workspace);
+        const cleaned = await resolved.provider.cancel(providerSessionId);
+        if (
+          cleaned.providerSessionId !== providerSessionId ||
+          cleaned.provider !== resolved.provider.provider
+        )
+          throw new ForgeFlowError('PROVIDER_CANCEL_PROVENANCE_MISMATCH');
+        remoteProviderStatus = cleaned.status;
+        if (
+          cleaned.status !== 'CANCELLED' &&
+          cleaned.status !== 'PAUSED' &&
+          !TERMINAL_PROVIDER_STATUSES.has(cleaned.status)
+        )
+          return {
+            executionId,
+            status: 'WAITING',
+            code: 'PROVIDER_CANCEL_NOT_QUIESCED',
+            providerSessionId,
+          };
+      }
+      this.repositories.evidence.append({
+        executionId,
+        kind: 'RECOVERY',
+        name: PROVIDER_SESSION_CLEANUP_EVIDENCE_NAME,
+        sourceRevision: execution.identity.sourceRevision,
+        payload: {
+          mode: 'terminal-provider-session-cleanup',
+          provider: resolved.provider.provider,
+          providerSessionId,
+          remoteProviderStatus,
+          executionStatus: execution.status,
+          reason: reason.trim(),
+          idempotencyDigest: createHash('sha256').update(idempotencyKey.trim()).digest('hex'),
+        },
+      });
+      return {
+        executionId,
+        status: 'SUCCEEDED',
+        code: 'EXECUTION_PROVIDER_SESSION_CLEANED',
+        providerSessionId,
+      };
+    } catch (error) {
+      return { executionId, status: 'FAILED', code: errorCode(error) };
+    } finally {
+      this.repositories.executions.releaseLease(executionId, this.ownerId, claim.value.leaseToken);
+    }
+  }
+
   async cancelExecution(
     executionId: string,
     idempotencyKey: string,
@@ -675,7 +797,7 @@ export class ExecutionWorker {
 
       let remoteProviderStatus: string | undefined = session?.providerStatus;
       const providerSessionId = session?.providerSessionId;
-      const providerCleanupEvidenceName = 'operator-provider-cancellation-cleanup';
+      const providerCleanupEvidenceName = LEGACY_PROVIDER_CANCELLATION_CLEANUP_EVIDENCE_NAME;
       const cancellationEvidenceName =
         'operator-execution-cancel-' +
         createHash('sha256').update(idempotencyKey.trim()).digest('hex').slice(0, 40);

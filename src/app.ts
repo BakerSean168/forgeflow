@@ -1456,6 +1456,8 @@ export async function buildControlPlane(
     projectPlanQueue.setExecutionCancellation({
       cancelExecution: async (executionId, idempotencyKey, reason) =>
         await automation.worker.cancelExecution(executionId, idempotencyKey, reason),
+      cleanupProviderSession: async (executionId, idempotencyKey, reason) =>
+        await automation.worker.cleanupProviderSession(executionId, idempotencyKey, reason),
     });
   }
   if (projectPlanQueue) {

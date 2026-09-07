@@ -530,6 +530,13 @@ test('quiescent FAILED root permits bounded cancellation access without reactiva
     repositoryPath: value.repository,
     baseRevision: value.revision,
   });
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-terminal-failed-cleanup',
+    value.revision,
+  );
   value.repositories.plans.updateStatus(value.plan.planId, 'RUNNING');
   value.repositories.plans.updateStatus(value.plan.planId, 'FAILED');
   const uid = process.getuid?.() ?? 1000;
@@ -544,6 +551,40 @@ test('quiescent FAILED root permits bounded cancellation access without reactiva
 
   assert.equal(recovered.ownerExecutionId, undefined);
   assert.equal(value.repositories.plans.getPlan(value.plan.planId).status, 'FAILED');
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('quiescent SUCCEEDED root permits bounded provider cleanup access before retirement', async () => {
+  const value = fixture();
+  const worktree = await value.manager.ensureWorkItem({
+    projectKey: 'project-gamma',
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-terminal-success-cleanup',
+    value.revision,
+  );
+  value.repositories.plans.updateStatus(value.plan.planId, 'RUNNING');
+  value.repositories.plans.updateStatus(value.plan.planId, 'SUCCEEDED');
+  const uid = process.getuid?.() ?? 1000;
+  const gid = process.getgid?.() ?? 1000;
+
+  const recovered = await value.manager.prepareCancellationAccess(
+    worktree.worktreeId,
+    'exec-terminal-success-cleanup',
+    uid,
+    gid,
+  );
+
+  assert.equal(recovered.ownerExecutionId, undefined);
+  assert.equal(value.repositories.plans.getPlan(value.plan.planId).status, 'SUCCEEDED');
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });
 });

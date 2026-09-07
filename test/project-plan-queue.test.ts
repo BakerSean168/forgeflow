@@ -119,6 +119,232 @@ test('single-active-plan scheduler keeps later root plans queued and hands off F
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('terminal SUCCEEDED root cleans provider sessions across its Plan subtree before retirement and lease release', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const calls: string[] = [];
+  const runtime = new ProjectPlanQueueRuntime(repositories, {
+    retire: async (planId) => {
+      calls.push('retire:' + planId);
+      for (const executionId of ['root-success-execution', 'child-success-execution'])
+        assert.ok(
+          repositories.evidence.find(executionId, 'RECOVERY', 'provider-session-cleanup'),
+        );
+    },
+  });
+  runtime.setExecutionCancellation({
+    cancelExecution: async () => {
+      throw new ForgeFlowError('UNEXPECTED_EXECUTION_CANCEL');
+    },
+    cleanupProviderSession: async (executionId) => {
+      calls.push('cleanup:' + executionId);
+      const execution = repositories.executions.get(executionId);
+      repositories.evidence.append({
+        executionId,
+        kind: 'RECOVERY',
+        name: 'provider-session-cleanup',
+        sourceRevision: execution.identity.sourceRevision,
+        payload: { mode: 'terminal-provider-session-cleanup' },
+      });
+      return { status: 'SUCCEEDED', code: 'EXECUTION_PROVIDER_SESSION_CLEANED' };
+    },
+  });
+
+  const root = createRoot(repositories, 'plan-success-provider-cleanup');
+  runtime.scheduleRootPlan(root.planId);
+  const rootGraph = repositories.plans.createGraphVersion({
+    planId: root.planId,
+    reason: 'root success cleanup graph',
+  }).value!;
+  const rootItem = repositories.plans.appendGraphWorkItem({
+    graphVersionId: rootGraph.graphVersionId,
+    itemKey: 'root-item',
+    title: 'Root item',
+    objective: 'root success execution',
+    acceptanceCriteria: ['succeeds'],
+    dependencies: [],
+  }).value!;
+  const child = repositories.plans.createChildPlan({
+    parentPlanId: root.planId,
+    childPlanId: 'plan-success-provider-cleanup-child',
+    repositoryPath: root.repositoryPath,
+    objective: 'child success execution',
+    relation: 'FOLLOW_UP',
+  }).plan;
+  const childGraph = repositories.plans.createGraphVersion({
+    planId: child.planId,
+    reason: 'child success cleanup graph',
+  }).value!;
+  const childItem = repositories.plans.appendGraphWorkItem({
+    graphVersionId: childGraph.graphVersionId,
+    itemKey: 'child-item',
+    title: 'Child item',
+    objective: 'child success execution',
+    acceptanceCriteria: ['succeeds'],
+    dependencies: [],
+  }).value!;
+
+  const seedSuccessfulSession = (executionId: string, planId: string, workItemId: string) => {
+    const execution = repositories.executions.create({
+      idempotencyKey: executionId,
+      identity: {
+        executionId,
+        planId,
+        workItemId,
+        phase: 'IMPLEMENT',
+        attempt: 1,
+        route: 'implementation',
+        sourceRevision: 'base-sha',
+      },
+      objective: 'successful terminal execution',
+    }).value!;
+    repositories.sessions.create({
+      executionId,
+      phase: 'IMPLEMENT',
+      provider: 'fake-implementation',
+      workspace: {
+        executionId,
+        hostPath: '/managed/' + executionId + '/repo',
+        executionPath: '/workspace/' + executionId + '/repo',
+        evidenceHostPath: '/managed/' + executionId + '/completion-evidence.json',
+        evidenceExecutionPath: '/workspace/' + executionId + '/completion-evidence.json',
+        sourceRepositoryPath: root.repositoryPath,
+        sourceRevision: 'base-sha',
+        createdAt: new Date().toISOString(),
+      },
+      sourceRevision: 'base-sha',
+    });
+    repositories.sessions.attachProviderSession(executionId, 'provider-' + executionId);
+    repositories.sessions.complete(executionId, {
+      status: 'SUCCEEDED',
+      completedAt: new Date().toISOString(),
+    });
+    repositories.executions.updateStatus(executionId, 'RUNNING');
+    repositories.executions.recordResult(executionId, {
+      status: 'SUCCEEDED',
+      resultRevision: 'result-' + executionId,
+      resultSummary: 'success',
+    });
+  };
+
+  repositories.plans.updateStatus(root.planId, 'RUNNING');
+  repositories.plans.updateWorkItemStatus(rootItem.workItemId, 'RUNNING');
+  seedSuccessfulSession('root-success-execution', root.planId, rootItem.workItemId);
+  repositories.plans.updateWorkItemStatus(rootItem.workItemId, 'SUCCEEDED');
+  repositories.plans.updateStatus(child.planId, 'READY');
+  repositories.plans.updateStatus(child.planId, 'RUNNING');
+  repositories.plans.updateWorkItemStatus(childItem.workItemId, 'RUNNING');
+  seedSuccessfulSession('child-success-execution', child.planId, childItem.workItemId);
+  repositories.plans.updateWorkItemStatus(childItem.workItemId, 'SUCCEEDED');
+  repositories.plans.updateStatus(child.planId, 'SUCCEEDED');
+  repositories.plans.updateStatus(root.planId, 'SUCCEEDED');
+
+  const result = await runtime.reconcile();
+
+  assert.equal(result[0]?.code, 'PROJECT_PLAN_LEASE_RELEASED');
+  assert.deepEqual(calls, [
+    'cleanup:root-success-execution',
+    'cleanup:child-success-execution',
+    'retire:plan-success-provider-cleanup',
+  ]);
+  assert.equal(
+    repositories.executions.get('root-success-execution').status,
+    'SUCCEEDED',
+  );
+  assert.equal(
+    repositories.executions.get('child-success-execution').status,
+    'SUCCEEDED',
+  );
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    undefined,
+  );
+  db.close();
+});
+
+test('terminal provider cleanup failure blocks worktree retirement and project lease release', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const calls: string[] = [];
+  const runtime = new ProjectPlanQueueRuntime(repositories, {
+    retire: async (planId) => calls.push('retire:' + planId),
+  });
+  runtime.setExecutionCancellation({
+    cancelExecution: async () => {
+      throw new ForgeFlowError('UNEXPECTED_EXECUTION_CANCEL');
+    },
+    cleanupProviderSession: async (executionId) => {
+      calls.push('cleanup:' + executionId);
+      return { status: 'WAITING', code: 'PROVIDER_CANCEL_NOT_QUIESCED' };
+    },
+  });
+  const plan = createRoot(repositories, 'plan-success-provider-cleanup-blocked');
+  runtime.scheduleRootPlan(plan.planId);
+  const graph = repositories.plans.createGraphVersion({
+    planId: plan.planId,
+    reason: 'blocked provider cleanup graph',
+  }).value!;
+  const item = repositories.plans.appendGraphWorkItem({
+    graphVersionId: graph.graphVersionId,
+    itemKey: 'blocked-item',
+    title: 'Blocked item',
+    objective: 'prove provider cleanup blocks release',
+    acceptanceCriteria: ['lease stays held'],
+    dependencies: [],
+  }).value!;
+  const executionId = 'blocked-success-execution';
+  repositories.executions.create({
+    idempotencyKey: executionId,
+    identity: {
+      executionId,
+      planId: plan.planId,
+      workItemId: item.workItemId,
+      phase: 'IMPLEMENT',
+      attempt: 1,
+      route: 'implementation',
+      sourceRevision: 'base-sha',
+    },
+    objective: 'successful execution with leaked provider session',
+  });
+  repositories.sessions.create({
+    executionId,
+    phase: 'IMPLEMENT',
+    provider: 'fake-implementation',
+    workspace: {
+      executionId,
+      hostPath: '/managed/' + executionId + '/repo',
+      executionPath: '/workspace/' + executionId + '/repo',
+      evidenceHostPath: '/managed/' + executionId + '/completion-evidence.json',
+      evidenceExecutionPath: '/workspace/' + executionId + '/completion-evidence.json',
+      sourceRepositoryPath: plan.repositoryPath,
+      sourceRevision: 'base-sha',
+      createdAt: new Date().toISOString(),
+    },
+    sourceRevision: 'base-sha',
+  });
+  repositories.sessions.attachProviderSession(executionId, 'provider-' + executionId);
+  repositories.executions.updateStatus(executionId, 'RUNNING');
+  repositories.executions.recordResult(executionId, {
+    status: 'SUCCEEDED',
+    resultRevision: 'blocked-result-sha',
+  });
+  repositories.plans.updateStatus(plan.planId, 'RUNNING');
+  repositories.plans.updateWorkItemStatus(item.workItemId, 'RUNNING');
+  repositories.plans.updateWorkItemStatus(item.workItemId, 'SUCCEEDED');
+  repositories.plans.updateStatus(plan.planId, 'SUCCEEDED');
+
+  const result = await runtime.reconcile();
+
+  assert.equal(result[0]?.code, 'PROVIDER_CANCEL_NOT_QUIESCED');
+  assert.deepEqual(calls, ['cleanup:' + executionId]);
+  assert.equal(
+    repositories.projectPlans.getLease('project-gamma')?.activeRootPlanId,
+    plan.planId,
+  );
+  assert.equal(repositories.plans.getPlan(plan.planId).status, 'SUCCEEDED');
+  db.close();
+});
+
 test('project lease is version fenced, repository bound and cannot be double acquired', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-plan-fence-'));
   const dbFile = path.join(root, 'forgeflow.sqlite');

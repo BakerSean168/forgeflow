@@ -2260,6 +2260,124 @@ test('execution worker refuses non-independent review routes and releases a held
 });
 
 
+test('terminal provider cleanup deletes a successful provider session without rewriting execution truth', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-terminal-provider-cleanup-success',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const descriptor = await workspace.provision({
+    executionId: execution.identity.executionId,
+    planId: seeded.plan.planId,
+    projectKey: seeded.plan.projectKey,
+    workItemId: seeded.item.workItemId,
+    repositoryPath: seeded.plan.repositoryPath,
+    sourceRevision: execution.identity.sourceRevision!,
+    phase: 'IMPLEMENT',
+  });
+  succeedImplementationSession(seeded.repositories, execution, descriptor, 'successful-result-sha');
+  const provider = new FakeProvider();
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-terminal-provider-cleanup-success' },
+  );
+
+  const before = seeded.repositories.executions.get(execution.identity.executionId);
+  const cleaned = await worker.cleanupProviderSession(
+    execution.identity.executionId,
+    'terminal-provider-cleanup-success-1',
+    'terminal Plan release barrier',
+  );
+
+  assert.equal(cleaned.status, 'SUCCEEDED');
+  assert.equal(cleaned.code, 'EXECUTION_PROVIDER_SESSION_CLEANED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
+  assert.equal(workspace.abandonCalls, 0);
+  assert.equal(provider.cancelCalls, 1);
+  const after = seeded.repositories.executions.get(execution.identity.executionId);
+  assert.equal(after.status, 'SUCCEEDED');
+  assert.equal(after.resultRevision, 'successful-result-sha');
+  assert.equal(after.errorCode, before.errorCode);
+  assert.equal(
+    seeded.repositories.sessions.get(execution.identity.executionId).providerStatus,
+    'SUCCEEDED',
+  );
+  const proof = seeded.repositories.evidence.find(
+    execution.identity.executionId,
+    'RECOVERY',
+    'provider-session-cleanup',
+  );
+  assert.equal(proof?.payload.mode, 'terminal-provider-session-cleanup');
+  assert.equal(proof?.payload.executionStatus, 'SUCCEEDED');
+
+  const repeated = await worker.cleanupProviderSession(
+    execution.identity.executionId,
+    'terminal-provider-cleanup-success-1',
+    'terminal Plan release barrier',
+  );
+  assert.equal(repeated.status, 'SUCCEEDED');
+  assert.equal(repeated.code, 'EXECUTION_PROVIDER_SESSION_ALREADY_CLEANED');
+  assert.equal(workspace.prepareCancellationCalls, 1);
+  assert.equal(provider.cancelCalls, 1);
+  seeded.db.close();
+});
+
+test('terminal provider cleanup fails closed while a remote provider session remains active', async () => {
+  const seeded = seed();
+  const execution = createExecution(seeded.repositories, {
+    executionId: 'exec-terminal-provider-cleanup-live',
+    planId: seeded.plan.planId,
+    workItemId: seeded.item.workItemId,
+  });
+  const workspace = new FakeWorkspace();
+  const descriptor = await workspace.provision({
+    executionId: execution.identity.executionId,
+    planId: seeded.plan.planId,
+    projectKey: seeded.plan.projectKey,
+    workItemId: seeded.item.workItemId,
+    repositoryPath: seeded.plan.repositoryPath,
+    sourceRevision: execution.identity.sourceRevision!,
+    phase: 'IMPLEMENT',
+  });
+  succeedImplementationSession(seeded.repositories, execution, descriptor, 'successful-result-sha');
+  const provider = new FakeProvider();
+  provider.cancelSnapshot = {
+    provider: provider.provider,
+    providerSessionId: 'provider-session-1',
+    status: 'RUNNING',
+    observedAt: now(26),
+  };
+  const worker = new ExecutionWorker(
+    seeded.repositories,
+    workspace,
+    [{ route: 'implementation', provider }],
+    { ownerId: 'worker-terminal-provider-cleanup-live' },
+  );
+
+  const blocked = await worker.cleanupProviderSession(
+    execution.identity.executionId,
+    'terminal-provider-cleanup-live-1',
+    'must not release while remote provider still owns resources',
+  );
+
+  assert.equal(blocked.status, 'WAITING');
+  assert.equal(blocked.code, 'PROVIDER_CANCEL_NOT_QUIESCED');
+  assert.equal(seeded.repositories.executions.get(execution.identity.executionId).status, 'SUCCEEDED');
+  assert.equal(
+    seeded.repositories.evidence.find(
+      execution.identity.executionId,
+      'RECOVERY',
+      'provider-session-cleanup',
+    ),
+    undefined,
+  );
+  seeded.db.close();
+});
+
 test('execution worker operator cancel quiesces a running provider before durable cancellation', async () => {
   const seeded = seed();
   const execution = createExecution(seeded.repositories, {
