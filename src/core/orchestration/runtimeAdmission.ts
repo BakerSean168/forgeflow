@@ -12,12 +12,18 @@ export type RuntimeAdmissionStatus = RuntimeAdmissionRecord;
 export function runtimeAdmissionKey(candidate: ResourceSelectionCandidate): string {
   const profile = candidate.profile;
   return [
+    profile.phase,
     profile.agentBackend,
     profile.transport,
     profile.resourceId,
     profile.bindingId ?? candidate.binding.bindingId,
     profile.routeModel ?? profile.modelFamily,
   ].join('|');
+}
+
+export function runtimeAdmissionPhase(status: RuntimeAdmissionStatus): 'IMPLEMENT' | 'REVIEW' | undefined {
+  const phase = status.admissionKey.split('|', 1)[0];
+  return phase === 'IMPLEMENT' || phase === 'REVIEW' ? phase : undefined;
 }
 
 export function createRuntimeAdmissionStatus(
@@ -148,10 +154,10 @@ export class RuntimeAdmissionRegistry implements ResourceCandidateReadinessPort 
       ready: values.filter((item) => item.ready).length,
       unready: values.filter((item) => !item.ready).length,
       implementationReady: values.filter(
-        (item) => item.ready && /(?:dsh|zcode|codex)-acp/.test(item.agentBackend),
+        (item) => item.ready && runtimeAdmissionPhase(item) === 'IMPLEMENT',
       ).length,
       reviewReady: values.filter(
-        (item) => item.ready && /(?:codex|claude)-acp/.test(item.agentBackend),
+        (item) => item.ready && runtimeAdmissionPhase(item) === 'REVIEW',
       ).length,
     };
   }

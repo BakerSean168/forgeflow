@@ -1900,7 +1900,9 @@ test('ACP runtime admission TTL survives restart without duplicate provider prob
     assert.equal(providerRequests, 1);
     const endpoint = await second.app.inject({ method: 'GET', url: '/api/v1/runtime-admission' });
     assert.equal(endpoint.statusCode, 200);
+    assert.equal(endpoint.json().items[0].phase, 'IMPLEMENT');
     assert.equal(endpoint.json().items[0].errorCode, errorCode);
+    assert.equal(endpoint.json().durableCache.items[0].phase, 'IMPLEMENT');
     assert.equal(endpoint.json().durableCache.items[0].errorCode, errorCode);
     assert.deepEqual(endpoint.json().durableCache.summary, { checked: 1, ready: 0, unready: 1 });
     assert.equal(JSON.stringify(endpoint.json()).includes('private runtime admission diagnostic'), false);
@@ -1930,6 +1932,7 @@ test('ACP runtime admission TTL survives restart without duplicate provider prob
     });
     assert.deepEqual(endpoint.json().items, []);
     assert.deepEqual(endpoint.json().durableCache.summary, { checked: 1, ready: 0, unready: 1 });
+    assert.equal(endpoint.json().durableCache.items[0].phase, 'IMPLEMENT');
     assert.equal(endpoint.json().durableCache.items[0].resourceId, 'durable-runtime-provider');
     assert.equal(endpoint.json().durableCache.items[0].errorCode, errorCode);
     assert.equal('admissionKey' in endpoint.json().durableCache.items[0], false);

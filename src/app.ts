@@ -81,6 +81,7 @@ import {
   createRuntimeAdmissionStatus,
   requiresAcpRuntimeAdmission,
   runtimeAdmissionKey,
+  runtimeAdmissionPhase,
 } from './core/orchestration/runtimeAdmission.js';
 import {
   PlanAutomationRuntime,
@@ -2356,6 +2357,7 @@ export async function buildControlPlane(
   app.get('/api/v1/runtime-admission', async () => {
     const runtime = requireAutomation();
     const project = (item: import('./core/domain/resourceRouting.js').RuntimeAdmissionRecord) => ({
+      phase: runtimeAdmissionPhase(item) ?? null,
       agentBackend: item.agentBackend,
       transport: item.transport,
       resourceId: item.resourceId,

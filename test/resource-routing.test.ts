@@ -889,3 +889,50 @@ test('durable runtime admission cache preserves scoped invalidation and retentio
   );
   db.close();
 });
+
+test('runtime admission identity and readiness summary are phase-scoped instead of backend-inferred', () => {
+  const resources = [
+    resource({
+      resourceId: 'shared-codex-resource',
+      resourceTier: 'METERED',
+      resourceSequence: 1,
+      bindings: [
+        binding('luna-binding', 'gpt-5.6-luna', { agentBackend: 'codex-acp' }),
+        binding('sol-binding', 'gpt-5.6-sol', { agentBackend: 'codex-acp' }),
+      ],
+    }),
+  ];
+  const implementation = selectExecutableProfile(resources, { phase: 'IMPLEMENT' });
+  const review = selectExecutableProfile(resources, { phase: 'REVIEW' });
+  assert.equal(implementation.status, 'SELECTED');
+  assert.equal(review.status, 'SELECTED');
+  if (implementation.status !== 'SELECTED' || review.status !== 'SELECTED') return;
+
+  assert.match(runtimeAdmissionKey(implementation.candidate), /^IMPLEMENT\|/);
+  assert.match(runtimeAdmissionKey(review.candidate), /^REVIEW\|/);
+  assert.notEqual(runtimeAdmissionKey(implementation.candidate), runtimeAdmissionKey(review.candidate));
+
+  const registry = new RuntimeAdmissionRegistry();
+  registry.record(implementation.candidate, { ready: true, checkedAt: NOW });
+  registry.record(review.candidate, {
+    ready: false,
+    checkedAt: NOW,
+    errorCode: 'RUNTIME_PROBE_TRANSPORT_ERROR',
+  });
+  assert.deepEqual(registry.summary(), {
+    checked: 2,
+    ready: 1,
+    unready: 1,
+    implementationReady: 1,
+    reviewReady: 0,
+  });
+
+  registry.record(review.candidate, { ready: true, checkedAt: NOW });
+  assert.deepEqual(registry.summary(), {
+    checked: 2,
+    ready: 2,
+    unready: 0,
+    implementationReady: 1,
+    reviewReady: 1,
+  });
+});

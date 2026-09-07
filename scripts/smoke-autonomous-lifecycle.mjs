@@ -9,7 +9,17 @@ const PROJECT_KEY = process.env.FORGEFLOW_AUTONOMOUS_SMOKE_PROJECT_KEY ?? 'forge
 const REPOSITORY =
   process.env.FORGEFLOW_AUTONOMOUS_SMOKE_REPOSITORY ?? '/home/dev/projects/forgeflow-smoke';
 const OPENHANDS_CONTAINER = process.env.FORGEFLOW_OPENHANDS_CONTAINER ?? 'forgeflow-openhands';
-const TIMEOUT_MS = integerEnv('FORGEFLOW_AUTONOMOUS_SMOKE_TIMEOUT_MS', 20 * 60_000, 60_000, 60 * 60_000);
+// The lifecycle budget must cover implementation, admission recovery, one bounded
+// review transport failure, and a replacement reviewer that may legitimately use
+// ForgeFlow's full standard progress window. A 20-minute whole-run cap produced a
+// false negative while the replacement reviewer was still healthy, so the default
+// is intentionally larger than any single execution budget while remaining bounded.
+const TIMEOUT_MS = integerEnv(
+  'FORGEFLOW_AUTONOMOUS_SMOKE_TIMEOUT_MS',
+  45 * 60_000,
+  60_000,
+  90 * 60_000,
+);
 const POLL_MS = integerEnv('FORGEFLOW_AUTONOMOUS_SMOKE_POLL_MS', 5_000, 1_000, 60_000);
 const PARALLEL_START_MAX_DELTA_MS = integerEnv(
   'FORGEFLOW_AUTONOMOUS_SMOKE_PARALLEL_START_MAX_DELTA_MS',
