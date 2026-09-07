@@ -24,6 +24,7 @@ const forgeFlowEnv = read('deploy/forgeflow.env.example');
 const planWorktrees = read('src/core/adapters/planWorktrees.ts');
 const appSource = read('src/app.ts');
 const literalSmoke = read('scripts/smoke-literal-worktree.mjs');
+const autonomousLifecycleSmoke = read('scripts/smoke-autonomous-lifecycle.mjs');
 
 test('ForgeFlow service is standalone, headless, and fail-closed around host writes', () => {
   assert.match(service, /Description=ForgeFlow Autonomous Software Engineering Control Plane/);
@@ -249,6 +250,18 @@ test('checked-in deployment scripts are syntactically valid', () => {
   ]) execFileSync('bash', ['-n', path.join(root, file)]);
   for (const file of [
     'scripts/run-antigravity-unit.mjs',
+    'scripts/smoke-autonomous-lifecycle.mjs',
     'openhands_tools/headless_review_acp.mjs',
   ]) execFileSync('node', ['--check', path.join(root, file)]);
+});
+
+test('autonomous lifecycle smoke is explicit, public-API driven, and checks terminal resource release', () => {
+  assert.match(autonomousLifecycleSmoke, /\/api\/v1\/plans/);
+  assert.match(autonomousLifecycleSmoke, /\/api\/v1\/projects\/.*\/plan-queue/);
+  assert.match(autonomousLifecycleSmoke, /provider-session-cleanup/);
+  assert.match(autonomousLifecycleSmoke, /WORKTREE_RETIREMENT_INCOMPLETE/);
+  assert.match(autonomousLifecycleSmoke, /OPENHANDS_CONVERSATION_STILL_PRESENT/);
+  assert.match(autonomousLifecycleSmoke, /PROVIDER_PROCESS_LEAK/);
+  assert.match(autonomousLifecycleSmoke, /CANONICAL_REPOSITORY_MUTATED/);
+  assert.doesNotMatch(autonomousLifecycleSmoke, /forgeflow\.sqlite|better-sqlite3|node:sqlite/);
 });

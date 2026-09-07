@@ -2306,6 +2306,10 @@ export async function buildControlPlane(
       executions: repositories.executions.listByPlan(planId).map(executionProjection),
       reviews: repositories.reviews.listByPlan(planId),
       sessions: repositories.sessions.listByPlan(planId),
+      worktrees: repositories.planWorktrees.listByPlan(planId),
+      activationEvents: repositories.events
+        .listRecentByAggregate(planId, 500)
+        .filter((event) => event.type.startsWith('PLAN_ACTIVATION_')),
       supervisor: repositories.supervisors.getByPlanId(planId),
     };
   };
