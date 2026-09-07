@@ -370,6 +370,8 @@ async function main() {
     const view = await api(`/api/v1/plans/${encodeURIComponent(planId)}`);
     const queue = await api(`/api/v1/projects/${encodeURIComponent(PROJECT_KEY)}/plan-queue`);
     progress(view, queue);
+    if (view.plan?.status === 'SAFETY_HOLD')
+      fail('SMOKE_PLAN_SAFETY_HOLD', { activationEvents: view.activationEvents ?? [] });
     if (view.plan?.status === 'FAILED' || view.plan?.status === 'CANCELLED')
       fail('SMOKE_PLAN_TERMINAL_FAILURE', { status: view.plan.status });
     const worktrees = view.worktrees ?? [];

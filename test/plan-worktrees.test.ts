@@ -869,6 +869,17 @@ test('parallel reviewed candidates integrate serially in the Plan integration wo
   );
   assert.notEqual(advancedA.status, 'rejected');
 
+  const reactivated = await value.manager.ensurePlanActivated(value.plan.planId);
+  assert.equal(reactivated.worktreeId, first.worktree.worktreeId);
+  assert.equal(reactivated.baseRevision, value.revision);
+  assert.equal(reactivated.currentRevision, first.headRevision);
+  assert.equal(
+    value.repositories.events
+      .listByAggregate(value.plan.planId)
+      .some((event) => event.type === 'PLAN_ACTIVATION_FAILED'),
+    false,
+  );
+
   const second = await value.manager.integrateReviewedCandidate({
     rootPlanId: value.plan.planId,
     workItemId: value.itemB.workItemId,

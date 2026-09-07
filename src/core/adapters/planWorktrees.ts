@@ -152,11 +152,14 @@ export class PlanWorktreeManager {
       if (this.projectAdmission) await this.projectAdmission(plan.repositoryPath);
       await this.ensureProtectedRefSnapshot(rootPlanId);
       await this.assertProtectedRefsStable(rootPlanId);
+      const existingIntegration = this.repositories.planWorktrees
+        .listByPlan(plan.planId)
+        .find((record) => record.role === 'INTEGRATION' && record.state !== 'RETIRED');
       const integration = await this.ensureIntegration({
         projectKey: plan.projectKey,
         rootPlanId: plan.planId,
         repositoryPath: plan.repositoryPath,
-        baseRevision: plan.currentRevision,
+        baseRevision: existingIntegration?.baseRevision ?? plan.currentRevision,
       });
       this.recoverActivationWait(rootPlanId);
       return integration;
