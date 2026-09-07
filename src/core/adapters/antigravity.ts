@@ -70,6 +70,8 @@ export interface AntigravityProviderOptions {
   home: string;
   uid: number;
   gid: number;
+  authUid?: number;
+  authGid?: number;
   workspaceGid: number;
   user?: string;
   printTimeout?: string;
@@ -262,6 +264,8 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
   readonly home: string;
   readonly uid: number;
   readonly gid: number;
+  readonly authUid: number;
+  readonly authGid: number;
   readonly workspaceGid: number;
   readonly user: string;
   readonly printTimeout: string;
@@ -278,6 +282,8 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
     this.home = path.resolve(options.home);
     this.uid = options.uid;
     this.gid = options.gid;
+    this.authUid = options.authUid ?? options.uid;
+    this.authGid = options.authGid ?? options.gid;
     this.workspaceGid = options.workspaceGid;
     this.user = options.user ?? path.basename(this.home);
     this.printTimeout = options.printTimeout ?? '20m';
@@ -380,6 +386,8 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
         sandboxWrapper: this.sandboxWrapper,
         uid: this.uid,
         gid: this.gid,
+        authUid: this.authUid,
+        authGid: this.authGid,
         workspaceGid: this.workspaceGid,
         user: this.user,
         args,
@@ -419,9 +427,8 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
         this.workspaceHostRoot,
         '--workspace',
         workspace,
-        ...(this.role === 'REVIEW'
-          ? ['--source-git-dir', path.join(path.resolve(input.workspace.sourceRepositoryPath), '.git')]
-          : []),
+        '--source-git-dir',
+        path.join(path.resolve(input.workspace.sourceRepositoryPath), '.git'),
         '--home',
         this.home,
         '--binary',
@@ -430,6 +437,10 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
         String(this.uid),
         '--gid',
         String(this.gid),
+        '--auth-uid',
+        String(this.authUid),
+        '--auth-gid',
+        String(this.authGid),
         '--workspace-gid',
         String(this.workspaceGid),
         '--user',
@@ -656,6 +667,7 @@ abstract class AntigravityProviderBase implements ExecutionProviderPort {
       '- Inspect repository instructions and preserve contracts outside scope.',
       '- Run focused verification and the appropriate wider checks.',
       '- Commit every intended tracked change with a concise conventional commit and leave git status clean.',
+      '- Do not fetch, pull, rebase, run git gc, or run git maintenance; work only from the exact local source graph.',
       '- Do not write completion-evidence.json; the outer controller validates the result and writes it.',
       '- Finish only after implementation, checks, commit, and clean-status verification are complete.',
     ].join('\n');

@@ -8,6 +8,8 @@ home=''
 binary=''
 uid=''
 gid=''
+auth_uid=''
+auth_gid=''
 workspace_gid=''
 user=''
 read_only_workspace=false
@@ -21,6 +23,8 @@ while (($#)); do
     --binary) binary="$2"; shift 2 ;;
     --uid) uid="$2"; shift 2 ;;
     --gid) gid="$2"; shift 2 ;;
+    --auth-uid) auth_uid="$2"; shift 2 ;;
+    --auth-gid) auth_gid="$2"; shift 2 ;;
     --workspace-gid) workspace_gid="$2"; shift 2 ;;
     --user) user="$2"; shift 2 ;;
     --read-only-workspace) read_only_workspace=true; shift ;;
@@ -29,7 +33,7 @@ while (($#)); do
   esac
 done
 
-for value in workspace_root workspace home binary uid gid workspace_gid user; do
+for value in workspace_root workspace source_git_dir home binary uid gid auth_uid auth_gid workspace_gid user; do
   if [[ -z ${!value} ]]; then
     echo "missing sandbox argument: $value" >&2
     exit 64
@@ -44,23 +48,14 @@ workspace_root="$(realpath -e "$workspace_root")"
 workspace="$(realpath -e "$workspace")"
 home="$(realpath -e "$home")"
 binary="$(realpath -e "$binary")"
-if [[ "$read_only_workspace" == true ]]; then
-  if [[ -z "$source_git_dir" ]]; then
-    echo 'read-only review requires source Git metadata' >&2
-    exit 70
-  fi
-  source_git_dir="$(realpath -e "$source_git_dir")"
-  case "$source_git_dir" in
-    "$home"/*/.git) ;;
-    *) echo 'source Git metadata escapes Antigravity home scope' >&2; exit 71 ;;
-  esac
-  if [[ ! -d "$source_git_dir" || -L "$source_git_dir" ]]; then
-    echo 'source Git metadata is not a safe directory' >&2
-    exit 72
-  fi
-elif [[ -n "$source_git_dir" ]]; then
-  echo 'source Git metadata is review-only' >&2
-  exit 73
+source_git_dir="$(realpath -e "$source_git_dir")"
+case "$source_git_dir" in
+  "$home"/*/.git) ;;
+  *) echo 'source Git metadata escapes Antigravity home scope' >&2; exit 71 ;;
+esac
+if [[ ! -d "$source_git_dir" || -L "$source_git_dir" ]]; then
+  echo 'source Git metadata is not a safe directory' >&2
+  exit 72
 fi
 case "$workspace" in
   "$workspace_root"/*) ;;
@@ -74,11 +69,10 @@ if [[ ! -d "$auth" ]]; then
 fi
 
 stash="$(mktemp -d /run/forgeflow-antigravity.XXXXXX)"
-mkdir -p "$stash/workspace" "$stash/auth"
-if [[ "$read_only_workspace" == true ]]; then mkdir -p "$stash/source-git"; fi
+mkdir -p "$stash/workspace" "$stash/auth" "$stash/source-git"
 touch "$stash/agy"
 mount --bind "$workspace" "$stash/workspace"
-if [[ "$read_only_workspace" == true ]]; then mount --bind "$source_git_dir" "$stash/source-git"; fi
+mount --bind "$source_git_dir" "$stash/source-git"
 
 # Build a private writable Antigravity state from the minimum consumer-auth files.
 # The host credential directory is never mounted into the agent namespace, so token
@@ -99,7 +93,7 @@ for rel in "${auth_files[@]}"; do
     echo "unsupported Antigravity auth state file: $rel" >&2
     exit 67
   fi
-  if [[ $(stat -c '%u:%g' "$src") != "$uid:$gid" ]]; then
+  if [[ $(stat -c '%u:%g' "$src") != "$auth_uid:$auth_gid" ]]; then
     echo "Antigravity auth state owner mismatch: $rel" >&2
     exit 68
   fi
@@ -123,11 +117,12 @@ chown "$uid:$gid" "$home" "$home/.gemini" "$home/.local" "$home/.local/bin"
 mount --bind "$stash/auth" "$home/.gemini/antigravity-cli"
 mount --bind "$stash/agy" "$home/.local/bin/agy"
 mount -o remount,bind,ro "$home/.local/bin/agy"
+# Restore only the exact execution repository's Git metadata. The source working tree
+# remains hidden with the rest of /home. REVIEW gets a kernel-enforced read-only mount;
+# IMPLEMENT uses ForgeFlow's scoped worker ACLs for its exact admin/ref and object creation.
+mkdir -p "$source_git_dir"
+mount --bind "$stash/source-git" "$source_git_dir"
 if [[ "$read_only_workspace" == true ]]; then
-  # Restore only the exact reviewed repository's Git metadata. The source working tree
-  # remains hidden with the rest of /home, and Git metadata is kernel-enforced read-only.
-  mkdir -p "$source_git_dir"
-  mount --bind "$stash/source-git" "$source_git_dir"
   mount -o remount,bind,ro "$source_git_dir"
 fi
 
@@ -158,18 +153,31 @@ esac
 umount "$stash/workspace"
 umount "$stash/auth"
 umount "$stash/agy"
-if [[ "$read_only_workspace" == true ]]; then umount "$stash/source-git"; fi
+umount "$stash/source-git"
 rmdir "$stash/workspace" "$stash/auth"
-if [[ "$read_only_workspace" == true ]]; then rmdir "$stash/source-git"; fi
+rmdir "$stash/source-git"
 rm -f "$stash/agy"
 rmdir "$stash"
 
 export HOME="$home"
 export USER="$user"
 export LOGNAME="$user"
+# The literal worktree root intentionally remains source-owned. Trust only this exact
+# rebound workspace instead of weakening Git ownership checks globally.
+export GIT_CONFIG_KEY_0=safe.directory
+export GIT_CONFIG_VALUE_0="$workspace"
 if [[ "$read_only_workspace" == true ]]; then
   # Read-only review Git commands must never refresh/write the linked-worktree index.
+  export GIT_CONFIG_COUNT=1
   export GIT_OPTIONAL_LOCKS=0
+else
+  # Provider-native implementation may create commits, but it must not auto-pack or
+  # maintenance-rewrite the shared object database behind the literal worktree.
+  export GIT_CONFIG_COUNT=3
+  export GIT_CONFIG_KEY_1=gc.auto
+  export GIT_CONFIG_VALUE_1=0
+  export GIT_CONFIG_KEY_2=maintenance.auto
+  export GIT_CONFIG_VALUE_2=false
 fi
 # Keep native-agent output writable by the OpenHands execution group.
 umask 0002

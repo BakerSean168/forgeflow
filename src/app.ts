@@ -866,21 +866,35 @@ async function buildExecutionAutomation(
     workspaceHostRoot: managedHostRoot,
     home: antigravityHome,
     uid: integerValue(
-      env.FORGEFLOW_ANTIGRAVITY_UID ?? env.FORGEFLOW_ANTIGRAVITY_UID,
-      1001,
+      env.FORGEFLOW_ANTIGRAVITY_UID,
+      10_001,
       1,
       2 ** 31 - 1,
       'ANTIGRAVITY_UID_INVALID',
     ),
     gid: integerValue(
-      env.FORGEFLOW_ANTIGRAVITY_GID ?? env.FORGEFLOW_ANTIGRAVITY_GID,
-      1002,
+      env.FORGEFLOW_ANTIGRAVITY_GID,
+      10_001,
       1,
       2 ** 31 - 1,
       'ANTIGRAVITY_GID_INVALID',
     ),
+    authUid: integerValue(
+      env.FORGEFLOW_ANTIGRAVITY_AUTH_UID,
+      1001,
+      1,
+      2 ** 31 - 1,
+      'ANTIGRAVITY_AUTH_UID_INVALID',
+    ),
+    authGid: integerValue(
+      env.FORGEFLOW_ANTIGRAVITY_AUTH_GID,
+      1002,
+      1,
+      2 ** 31 - 1,
+      'ANTIGRAVITY_AUTH_GID_INVALID',
+    ),
     workspaceGid,
-    user: env.FORGEFLOW_ANTIGRAVITY_USER ?? env.FORGEFLOW_ANTIGRAVITY_USER ?? 'dev',
+    user: env.FORGEFLOW_ANTIGRAVITY_USER ?? 'forgeflow-worker',
     printTimeout:
       env.FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT ??
       env.FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT ??

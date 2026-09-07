@@ -374,13 +374,14 @@ export class PlanWorktreeManager {
     this.chownTreeNoFollow(current.hostPath, uid, gid);
     const common = await this.canonicalCommonDir(current.repositoryPath);
     const source = fs.statSync(common);
+    const objects = path.join(common, 'objects');
+    this.ensureObjectDirectories(objects, source.uid, source.gid);
+    this.hardenSharedObjectDirectories(objects);
     if (source.uid !== uid) {
       failClosed(fs.existsSync(this.setfaclBinary), 'WORKTREE_ACL_TOOL_MISSING');
       const commonMode = fs.statSync(common).mode & 0o7777;
       fs.chmodSync(common, commonMode | 0o1000);
       await this.execAcl(['-m', `u:${uid}:rwx`, '--', common]);
-      const objects = path.join(common, 'objects');
-      this.ensureObjectDirectories(objects, source.uid, source.gid);
       await this.grantObjectStoreAcl(objects, uid);
       const { admin } = this.worktreeGitfileIdentity(current, common);
       await this.grantTraverseAcl(common, admin, uid);
@@ -1299,6 +1300,14 @@ export class PlanWorktreeManager {
         const stat = fs.lstatSync(directory);
         failClosed(stat.isDirectory() && !stat.isSymbolicLink(), 'WORKTREE_OBJECT_STORE_UNSAFE');
       }
+    }
+  }
+
+  private hardenSharedObjectDirectories(objects: string): void {
+    for (const directory of this.objectDirectories(objects)) {
+      const stat = fs.lstatSync(directory);
+      const mode = stat.mode & 0o7777;
+      if ((mode & 0o1000) === 0) fs.chmodSync(directory, mode | 0o1000);
     }
   }
 

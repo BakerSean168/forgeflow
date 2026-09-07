@@ -55,16 +55,21 @@ exec "$@"
 set -eu
 binary=''
 source_git=''
+auth_uid=''
+auth_gid=''
 read_only=0
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
   if [ "$1" = "--binary" ]; then shift; binary="$1"
   elif [ "$1" = "--source-git-dir" ]; then shift; source_git="$1"
+  elif [ "$1" = "--auth-uid" ]; then shift; auth_uid="$1"
+  elif [ "$1" = "--auth-gid" ]; then shift; auth_gid="$1"
   elif [ "$1" = "--read-only-workspace" ]; then read_only=1
   fi
   shift
 done
 [ "$read_only" -eq 0 ] || touch ${JSON.stringify(path.join(root, 'read-only-workspace-requested'))}
 [ -z "$source_git" ] || printf '%s' "$source_git" > ${JSON.stringify(path.join(root, 'source-git-dir-requested'))}
+printf '%s:%s' "$auth_uid" "$auth_gid" > ${JSON.stringify(path.join(root, 'auth-owner-requested'))}
 [ "$#" -gt 0 ] && shift
 exec "$binary" "$@"
 `,
@@ -180,7 +185,10 @@ test('Antigravity implementation requires a clean committed workspace and writes
   assert.equal(launched.providerSessionId, 'antigravity:exec-ant');
   const completed = await terminal(provider, launched.providerSessionId!);
   assert.equal(fs.existsSync(path.join(value.root, 'read-only-workspace-requested')), false);
-  assert.equal(fs.existsSync(path.join(value.root, 'source-git-dir-requested')), false);
+  assert.equal(
+    fs.readFileSync(path.join(value.root, 'source-git-dir-requested'), 'utf8'),
+    path.join(value.repository, '.git'),
+  );
   assert.equal(completed.status, 'SUCCEEDED');
   assert.match(completed.finalResponse ?? '', /Implemented bounded objective/);
   assert.equal(git(value.repository, ['status', '--porcelain']), '');
@@ -282,6 +290,8 @@ test('Antigravity systemd request binds literal Plan workspace identity before l
   assert.equal(request.workspace, literal);
   assert.equal(request.workspaceRoot, path.join(value.root, 'workspaces'));
   assert.equal(request.sourceRepositoryPath, requestInput.workspace.sourceRepositoryPath);
+  assert.equal(request.authUid, process.getuid?.() ?? 1000);
+  assert.equal(request.authGid, process.getgid?.() ?? 1000);
 
   const metaFile = path.join(value.stateRoot, 'exec-ant', 'meta.json');
   const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));

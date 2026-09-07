@@ -143,6 +143,36 @@ test('PlanWorktreeManager creates one literal shared-common-dir worktree per rol
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+
+test('worker Git object directories are sticky before shared object creation access is granted', async () => {
+  const value = fixture();
+  const item = await value.manager.ensureWorkItem({
+    projectKey: value.plan.projectKey,
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  await value.manager.prepareAgentAccess(
+    item.worktreeId,
+    process.getuid?.() ?? 1000,
+    process.getgid?.() ?? 1000,
+  );
+  const objects = path.join(value.repository, '.git', 'objects');
+  const directories = [
+    objects,
+    ...fs
+      .readdirSync(objects, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+      .map((entry) => path.join(objects, entry.name)),
+  ];
+  assert.ok(directories.length >= 257);
+  for (const directory of directories)
+    assert.notEqual(fs.statSync(directory).mode & 0o1000, 0, directory);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('literal Plan parents remain controller-owned and traversable under production umask 0077', async () => {
   const value = fixture();
   const previousUmask = process.umask(0o077);

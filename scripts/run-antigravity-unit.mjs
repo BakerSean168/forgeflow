@@ -19,10 +19,12 @@ const canonicalWrapper = path.resolve(
   process.env.FORGEFLOW_ANTIGRAVITY_SANDBOX_WRAPPER ??
     '/home/dev/projects/forgeflow/scripts/run-antigravity-sandbox.sh',
 );
-const expectedUid = Number(process.env.FORGEFLOW_ANTIGRAVITY_UID ?? '1001');
-const expectedGid = Number(process.env.FORGEFLOW_ANTIGRAVITY_GID ?? '1002');
+const expectedUid = Number(process.env.FORGEFLOW_ANTIGRAVITY_UID ?? '10001');
+const expectedGid = Number(process.env.FORGEFLOW_ANTIGRAVITY_GID ?? '10001');
+const expectedAuthUid = Number(process.env.FORGEFLOW_ANTIGRAVITY_AUTH_UID ?? '1001');
+const expectedAuthGid = Number(process.env.FORGEFLOW_ANTIGRAVITY_AUTH_GID ?? '1002');
 const expectedWorkspaceGid = Number(process.env.FORGEFLOW_WORKSPACE_GID ?? '10001');
-const expectedUser = process.env.FORGEFLOW_ANTIGRAVITY_USER ?? 'dev';
+const expectedUser = process.env.FORGEFLOW_ANTIGRAVITY_USER ?? 'forgeflow-worker';
 const allowedModels = new Set([
   'gemini-3.8-flash-high',
   'gemini-3.7-flash-high',
@@ -45,7 +47,7 @@ function record(value) {
 
 if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(executionId))
   fail('ANTIGRAVITY_UNIT_EXECUTION_ID_INVALID');
-if (![expectedUid, expectedGid, expectedWorkspaceGid].every(Number.isSafeInteger))
+if (![expectedUid, expectedGid, expectedAuthUid, expectedAuthGid, expectedWorkspaceGid].every(Number.isSafeInteger))
   fail('ANTIGRAVITY_UNIT_IDENTITY_INVALID');
 
 const executionDirectory = path.join(stateRoot, executionId);
@@ -78,8 +80,7 @@ const sourceRepository = path.resolve(String(request.sourceRepositoryPath ?? '')
 const args = Array.isArray(request.args) ? request.args : [];
 
 
-function reviewSourceGitDir() {
-  if (request.phase !== 'REVIEW') return undefined;
+function executionSourceGitDir() {
   const sourceStat = fs.lstatSync(sourceRepository, { throwIfNoEntry: false });
   if (
     !sourceStat?.isDirectory() ||
@@ -117,6 +118,25 @@ function reviewSourceGitDir() {
   );
   if (common !== fs.realpathSync(sourceGitDir))
     fail('ANTIGRAVITY_UNIT_WORKTREE_COMMONDIR_INVALID');
+
+  const headFile = path.join(admin, 'HEAD');
+  const headStat = fs.lstatSync(headFile, { throwIfNoEntry: false });
+  if (!headStat?.isFile() || headStat.isSymbolicLink())
+    fail('ANTIGRAVITY_UNIT_WORKTREE_HEAD_INVALID');
+  const head = fs.readFileSync(headFile, 'utf8').trim();
+  if (request.phase === 'REVIEW') {
+    if (!/^[0-9a-f]{40}$/.test(head)) fail('ANTIGRAVITY_UNIT_REVIEW_HEAD_INVALID');
+  } else {
+    const relative = path.relative(workspaceRoot, workspace).split(path.sep);
+    const workItemId = String(request.workItemId ?? '').trim();
+    const expectedRef =
+      'ref: refs/heads/forgeflow/' +
+      relative[3] +
+      '/items/' +
+      refComponent(workItemId) +
+      '/head';
+    if (head !== expectedRef) fail('ANTIGRAVITY_UNIT_IMPLEMENTATION_REF_INVALID');
+  }
   return sourceGitDir;
 }
 
@@ -177,7 +197,7 @@ function expectedManagedWorkspace() {
 }
 
 const expectedWorkspace = expectedManagedWorkspace();
-const reviewGitDir = reviewSourceGitDir();
+const sourceGitDir = executionSourceGitDir();
 const modelIndex = args.indexOf('--model');
 const model = modelIndex >= 0 ? args[modelIndex + 1] : undefined;
 if (
@@ -195,6 +215,8 @@ if (
   path.resolve(String(request.sandboxWrapper ?? '')) !== canonicalWrapper ||
   request.uid !== expectedUid ||
   request.gid !== expectedGid ||
+  request.authUid !== expectedAuthUid ||
+  request.authGid !== expectedAuthGid ||
   request.workspaceGid !== expectedWorkspaceGid ||
   request.user !== expectedUser ||
   !args.every((value) => typeof value === 'string' && value.length <= 64_000) ||
@@ -235,7 +257,8 @@ const child = spawn(
     workspaceRoot,
     '--workspace',
     workspace,
-    ...(reviewGitDir ? ['--source-git-dir', reviewGitDir] : []),
+    '--source-git-dir',
+    sourceGitDir,
     '--home',
     canonicalHome,
     '--binary',
@@ -244,6 +267,10 @@ const child = spawn(
     String(expectedUid),
     '--gid',
     String(expectedGid),
+    '--auth-uid',
+    String(expectedAuthUid),
+    '--auth-gid',
+    String(expectedAuthGid),
     '--workspace-gid',
     String(expectedWorkspaceGid),
     '--user',
