@@ -203,6 +203,10 @@ test('literal worktree deployment is project-mounted, runtime-verified, and smok
   assert.match(appSource, /!isTerminalPlanStatus\(plan\.status\)/);
   assert.match(literalSmoke, /FORGEFLOW_WORKTREE_SMOKE_USE_RUNNING_CONTAINER/);
   assert.match(literalSmoke, /useRunningContainer[\s\S]*'exec'/);
+  assert.match(installer, /literal-git-common-dirs\.conf/);
+  assert.match(installer, /for common in "\$\{common_dirs\[@\]\}"/);
+  assert.match(installer, /printf 'ReadWritePaths=%s\\n' "\$common"/);
+  assert.match(installer, /systemctl daemon-reload[\s\S]*OPENHANDS_SOURCE_IMAGE/);
 });
 
 test('autonomous execution polling does not await slow runtime-admission probes', () => {

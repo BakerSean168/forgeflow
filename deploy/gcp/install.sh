@@ -148,9 +148,31 @@ if [[ "$literal_enabled" == true ]]; then
   install -o root -g root -m 0644 "$literal_override.tmp" "$literal_override"
   rm -f "$literal_override.tmp"
   compose_args+=(-f "$literal_override")
+
+  # A configured source repository may itself be a linked Git worktree. In that
+  # topology its .git file points at a common directory outside the source
+  # worktree root. ProtectHome=read-only would otherwise make that shared Git
+  # metadata read-only even though the source worktree itself is admitted via
+  # FORGEFLOW_REPOSITORY_WRITE_PATHS. Grant only the exact, already-validated
+  # common directories required by literal-worktree projects.
+  literal_git_dropin=/etc/systemd/system/forgeflow.service.d/literal-git-common-dirs.conf
+  {
+    echo '[Service]'
+    for common in "${common_dirs[@]}"; do
+      printf 'ReadWritePaths=%s\n' "$common"
+    done
+  } >"$literal_git_dropin.tmp"
+  install -o root -g root -m 0644 "$literal_git_dropin.tmp" "$literal_git_dropin"
+  rm -f "$literal_git_dropin.tmp"
 else
   rm -f "$literal_override" "$literal_override.tmp"
+  rm -f /etc/systemd/system/forgeflow.service.d/literal-git-common-dirs.conf \
+    /etc/systemd/system/forgeflow.service.d/literal-git-common-dirs.conf.tmp
 fi
+
+# The literal Git common-dir drop-in is generated after the base unit files, so
+# reload once more before the service is restarted below.
+systemctl daemon-reload
 
 OPENHANDS_SOURCE_IMAGE="$image" \
 FORGEFLOW_OPENHANDS_ENV_FILE="$openhands_env" \
