@@ -830,7 +830,7 @@ Legacy adapter retirement, V1 contract hardening, compatibility floors, generate
 
 ### Batch 10 — V1.x semantic SDK operations
 
-Status: **implemented; release closure targets v1.4.0**.
+Status: **completed and production-attested in v1.4.0**.
 
 Completed:
 
@@ -849,9 +849,11 @@ Verification before PR:
 - compatibility: candidate passes both committed V1 floors;
 - client codegen drift, TypeScript, server/client build, and npm-pack dry-run: passing.
 
-Next:
+Release closure:
 
-1. merge only after PR and main CI pass;
-2. deploy exact merge SHA and run the normal fresh real-provider lifecycle acceptance for v1.4.0;
-3. create the v1.4.0 Tag/Latest GitHub Release only after ATTESTED;
-4. npm publication of `@forgeflow/client` remains an explicit distribution action, not an implicit control-plane deploy side effect.
+- PR #16 and main CI passed from clean GitHub runners;
+- exact SHA `cd857061f0a5ad19bc89850b4cfeee475bd091e4` deployed with HEALTHY provenance;
+- one fresh real-provider lifecycle smoke completed two same-wave implementations, two independent exact-SHA PASS reviews, provider cleanup for every execution, five worktree retirements, lease release, and zero activation failures;
+- release acceptance is ATTESTED for the exact v1.4.0 source/artifact identity;
+- Git tag and Latest GitHub Release `v1.4.0` point to the attested SHA;
+- npm publication of `@forgeflow/client` remains an explicit distribution action, not an implicit control-plane deploy side effect.
