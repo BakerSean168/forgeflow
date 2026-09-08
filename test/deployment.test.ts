@@ -22,9 +22,10 @@ const artifactDigest = read('scripts/artifact-digest.sh');
 const headless = read('openhands_tools/headless_review_acp.mjs');
 const launcher = read('openhands_tools/harness_agent_launcher.sh');
 const forgeFlowEnv = read('deploy/forgeflow.env.example');
-const planWorktrees = read('src/core/adapters/planWorktrees.ts');
+const planWorktrees = read('src/integrations/workspaces/planWorktrees.ts');
 const appSource = read('src/app.ts');
 const executionRuntimeSource = read('src/bootstrap/executionRuntime.ts');
+const workspaceAssemblySource = read('src/integrations/workspaces/assembly.ts');
 const projectSchedulingSource = read('src/bootstrap/projectScheduling.ts');
 const planLifecycleReconcilerSource = read('src/reconcilers/planLifecycle.ts');
 const reconcilerLifecycleSource = read('src/reconcilers/lifecycle.ts');
@@ -214,10 +215,10 @@ test('project registry is the preferred deployment authority with legacy compati
 test('literal worktree deployment is project-mounted, runtime-verified, and smokeable in the live container', () => {
   assert.match(forgeFlowEnv, /FORGEFLOW_LITERAL_WORKTREE_REPOSITORIES=\n/);
   assert.match(forgeFlowEnv, /FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands/);
-  assert.match(executionRuntimeSource, /WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED/);
-  assert.match(executionRuntimeSource, /safe\.directory=\$\{repositoryPath\}/);
-  assert.match(executionRuntimeSource, /docker'[\s\S]*inspect'[\s\S]*\{\{json \.Mounts\}\}/);
-  assert.match(executionRuntimeSource, /mount\.Source === common && mount\.Destination === common && mount\.RW === true/);
+  assert.match(workspaceAssemblySource, /WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED/);
+  assert.match(workspaceAssemblySource, /safe\.directory=\$\{repositoryPath\}/);
+  assert.match(workspaceAssemblySource, /\/usr\/bin\/docker[\s\S]*'inspect'[\s\S]*\{\{json \.Mounts\}\}/);
+  assert.match(workspaceAssemblySource, /mount\.Source === common && mount\.Destination === common && mount\.RW === true/);
   assert.match(projectSchedulingSource, /plan\.status !== 'SAFETY_HOLD'/);
   assert.match(projectSchedulingSource, /!isTerminalPlanStatus\(plan\.status\)/);
   assert.match(literalSmoke, /FORGEFLOW_WORKTREE_SMOKE_USE_RUNNING_CONTAINER/);

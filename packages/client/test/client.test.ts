@@ -12,12 +12,13 @@ test('client requires a non-empty base URL and strips trailing slashes', async (
   assert.throws(() => createForgeFlowClient({ baseUrl: '   ' }), /baseUrl is required/);
 
   let observed: Request | undefined;
+  const fetchMock: typeof fetch = async (input, init) => {
+    observed = input instanceof Request ? input : new Request(input, init);
+    return Response.json({ source: 'manifest', items: [], count: 0 });
+  };
   const client = createForgeFlowClient({
     baseUrl: 'http://forgeflow.test///',
-    fetch: async (request) => {
-      observed = request;
-      return Response.json({ source: 'manifest', items: [], count: 0 });
-    },
+    fetch: fetchMock,
   });
   const result = await client.GET('/api/v1/projects');
   assert.equal(result.response.status, 200);
@@ -27,13 +28,14 @@ test('client requires a non-empty base URL and strips trailing slashes', async (
 
 test('client serializes typed path parameters and default headers through OpenAPI transport', async () => {
   let observed: Request | undefined;
+  const fetchMock: typeof fetch = async (input, init) => {
+    observed = input instanceof Request ? input : new Request(input, init);
+    return Response.json({ project: { projectKey: 'memo flow' } });
+  };
   const client = createForgeFlowClient({
     baseUrl: 'https://forgeflow.test',
     headers: { 'x-forgeflow-test': 'typed-client' },
-    fetch: async (request) => {
-      observed = request;
-      return Response.json({ project: { projectKey: 'memo flow' } });
-    },
+    fetch: fetchMock,
   });
 
   await client.GET('/api/v1/projects/{projectKey}', {

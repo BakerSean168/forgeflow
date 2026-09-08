@@ -83,6 +83,8 @@ for (const file of visit(sourceRoot)) {
     if (relative.startsWith('src/core/')) {
       if (target.includes('/api/') || target.includes('/platform/') || /(?:^|\/)app\.js$/.test(target))
         failures.push(`${relative}: core must not depend on API/platform/composition root: ${target}`);
+      if (target.includes('/integrations/') && !relative.startsWith('src/core/adapters/'))
+        failures.push(`${relative}: core feature code must depend on ports, not concrete integrations: ${target}`);
     }
     if (relative.startsWith('src/platform/')) {
       const allowedCore = target.includes('/core/domain/');
@@ -97,10 +99,27 @@ for (const file of visit(sourceRoot)) {
       if (
         target.includes('/core/adapters/') ||
         target.includes('/core/persistence/') ||
-        target.includes('/core/orchestration/')
+        target.includes('/core/orchestration/') ||
+        target.includes('/integrations/')
       )
-        failures.push(`${relative}: API modules must consume application/platform contracts, not runtime internals: ${target}`);
+        failures.push(`${relative}: API modules must consume application/platform contracts, not runtime internals/integrations: ${target}`);
     }
+    if (relative.startsWith('src/application/') && target.includes('/integrations/'))
+      failures.push(`${relative}: application services must depend on ports, not concrete integrations: ${target}`);
+    if (
+      relative.startsWith('src/bootstrap/') &&
+      target.includes('/integrations/') &&
+      !target.endsWith('/index.js')
+    )
+      failures.push(`${relative}: bootstrap must consume integration package index surfaces only: ${target}`);
+    if (
+      relative.startsWith('src/integrations/') &&
+      (target.includes('/api/') ||
+        target.includes('/application/') ||
+        target.includes('/bootstrap/') ||
+        /(?:^|\/)app\.js$/.test(target))
+    )
+      failures.push(`${relative}: integrations must not depend back on API/application/bootstrap/composition: ${target}`);
   }
 }
 
