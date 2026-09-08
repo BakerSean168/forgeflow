@@ -3,7 +3,7 @@
 > **Autonomous software engineering with durable plans, isolated execution, independent review, recovery, and exact-revision release evidence.**
 
 <p align="left">
-  <a href="https://github.com/BakerSean168/forgeflow/releases/tag/v1.4.0"><strong>v1.4.0</strong></a> ·
+  <a href="https://github.com/BakerSean168/forgeflow/releases/tag/v1.5.0"><strong>v1.5.0</strong></a> ·
   <a href="./docs/getting-started.md"><strong>Getting Started</strong></a> ·
   <a href="./docs/platform-architecture-north-star.md"><strong>Platform Architecture</strong></a> ·
   <a href="./docs/architecture.md"><strong>Runtime Invariants</strong></a> ·
@@ -15,7 +15,7 @@
 <p align="left">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" />
   <img alt="Node.js 24+" src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg" />
-  <img alt="Release v1.4.0" src="https://img.shields.io/badge/release-v1.4.0-blue.svg" />
+  <img alt="Release v1.5.0" src="https://img.shields.io/badge/release-v1.5.0-blue.svg" />
 </p>
 
 Give ForgeFlow a software-engineering objective. It turns that objective into durable work, executes dependency-ready tasks through governed coding-agent resources, independently reviews exact revisions, repairs failures, integrates accepted changes, and closes the lifecycle with repository and release evidence.

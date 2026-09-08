@@ -2,6 +2,7 @@ import type { PlanDeliveryConfig } from '../../core/domain/delivery.js';
 import { ForgeFlowError } from '../../core/domain/errors.js';
 import type { PlanStatus } from '../../core/domain/plan.js';
 import type { PlanKernel } from '../../core/kernel/planKernel.js';
+import type { WorkspaceProviderPort } from '../../core/orchestration/contracts.js';
 import type { ProjectPlanQueueRuntime } from '../../core/orchestration/projectPlanQueueRuntime.js';
 import type { ForgeFlowRepositories } from '../../core/persistence/repositories.js';
 import type { ProjectRegistry } from '../../platform/projects/index.js';
@@ -18,6 +19,7 @@ export interface PlanGraphItemInput {
 }
 
 export interface PlanAutomationPort {
+  workspace: WorkspaceProviderPort;
   literalWorktreeProjectKeys: string[];
   planWorktreeManager?: { ensurePlanActivated(planId: string): Promise<unknown> };
   plans: {
@@ -60,6 +62,53 @@ export interface CreateChildPlanInput {
 
 export class PlanApplication {
   constructor(private readonly dependencies: PlanApplicationDependencies) {}
+
+  private async adoptIdleExternalProjectHead(input: {
+    projectKey: string;
+    repositoryPath: string;
+    requestedBaseRevision: string;
+  }): Promise<void> {
+    if (!this.dependencies.singleActivePlanEnabled || !this.dependencies.projectPlanQueue) return;
+    const lease = this.dependencies.repositories.projectPlans.getLease(input.projectKey);
+    const committedRevision = lease?.committedRevision?.trim();
+    if (!lease || lease.activeRootPlanId || !committedRevision) return;
+
+    const workspace = this.dependencies.automation?.workspace;
+    if (!workspace) return;
+    const observation = await workspace.observeRepository(
+      input.repositoryPath,
+      input.requestedBaseRevision,
+    );
+    if (!observation.clean) throw new ForgeFlowError('PROJECT_PLAN_CANONICAL_REPOSITORY_DIRTY');
+    if (!observation.commitExists) throw new ForgeFlowError('PROJECT_PLAN_BASE_REVISION_NOT_FOUND');
+    if (observation.headRevision === committedRevision) {
+      if (input.requestedBaseRevision !== committedRevision)
+        throw new ForgeFlowError('PROJECT_PLAN_BASE_NOT_CANONICAL_HEAD');
+      return;
+    }
+    if (observation.headRevision !== input.requestedBaseRevision)
+      throw new ForgeFlowError('PROJECT_PLAN_EXTERNAL_HEAD_UNACKNOWLEDGED');
+    if (!workspace.isRevisionAncestor)
+      throw new ForgeFlowError('PROJECT_PLAN_EXTERNAL_HEAD_ANCESTRY_UNAVAILABLE');
+    if (
+      !(await workspace.isRevisionAncestor(
+        input.repositoryPath,
+        committedRevision,
+        observation.headRevision,
+      ))
+    )
+      throw new ForgeFlowError('PROJECT_PLAN_EXTERNAL_HEAD_DIVERGED');
+
+    const adopted = this.dependencies.repositories.projectPlans.adoptIdleCommittedRevision({
+      projectKey: input.projectKey,
+      repositoryPath: input.repositoryPath,
+      expectedVersion: lease.version,
+      expectedCommittedRevision: committedRevision,
+      nextCommittedRevision: observation.headRevision,
+    });
+    if (adopted.status === 'rejected')
+      throw new ForgeFlowError(adopted.reason ?? 'PROJECT_PLAN_EXTERNAL_HEAD_ADOPTION_FAILED');
+  }
 
   private executionProjection(execution: ReturnType<ForgeFlowRepositories['executions']['get']>) {
     return {
@@ -161,6 +210,11 @@ export class PlanApplication {
       input.requestedRepositoryPath,
     );
     if (!repositoryPath) throw new ForgeFlowError('PLAN_REPOSITORY_REQUIRED');
+    await this.adoptIdleExternalProjectHead({
+      projectKey: input.projectKey,
+      repositoryPath,
+      requestedBaseRevision: input.baseRevision,
+    });
     const planResult = this.dependencies.planKernel.createPlan({
       idempotencyKey: input.idempotencyKey,
       projectKey: input.projectKey,

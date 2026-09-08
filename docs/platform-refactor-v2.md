@@ -857,3 +857,43 @@ Release closure:
 - release acceptance is ATTESTED for the exact v1.4.0 source/artifact identity;
 - Git tag and Latest GitHub Release `v1.4.0` point to the attested SHA;
 - npm publication of `@forgeflow/client` remains an explicit distribution action, not an implicit control-plane deploy side effect.
+
+### Batch 11 — V1.x external project-head adoption
+
+Status: **implemented; release closure targets v1.5.0**.
+
+Real-project trigger:
+
+- the first post-v1.4.0 Digital Biome optimization Plan requested exact base `d5a7e3a...`, after a documentation/CI PR had advanced `main` outside ForgeFlow;
+- the controlled Digital Biome checkout was already clean at that exact new `main` SHA, while the durable project lease still recorded the prior ForgeFlow logical head `7a49535...`;
+- the scheduler correctly preserved its durable lease authority, but therefore activated the Plan and literal worktrees from the stale logical head and could not see the newly merged optimization specification;
+- the incorrect-base Plan was cancelled through the public API before any implementation was accepted; provider/worktree cleanup and lease release completed without rewriting product truth.
+
+Hardening:
+
+- `plansCreate` now treats an idle project's clean canonical checkout as a possible externally fast-forwarded project head before creating the Plan;
+- the requested `baseRevision` must acknowledge the exact observed canonical HEAD;
+- the prior durable `committedRevision` must be an ancestor of that HEAD; dirty repositories, rewinds/divergence, stale requests, active leases, repository mismatches, and CAS races remain fail-closed;
+- Git observation and ancestry proof stay in the Application/Workspace boundary, while Persistence owns only the version-fenced durable lease CAS;
+- adoption occurs before Plan creation, so rejected dirty/stale requests leave no DRAFT Plan residue;
+- the accepted transition emits a sanitized `PROJECT_PLAN_EXTERNAL_HEAD_ADOPTED` maintenance event with old/new revision and lease version;
+- queued Plans under an active root keep the existing semantics of inheriting the ForgeFlow-managed project head; this change only reconciles an idle project's legitimate external fast-forward.
+
+Verification before PR:
+
+- focused project scheduler + public runtime regression: 45/45 passing;
+- a real Git fixture proves clean external fast-forward adoption, exact base/current revision alignment, durable event evidence, and stale-base rejection;
+- persistence regression proves version fencing and active-lease exclusion;
+- dirty canonical and stale-base requests are rejected before Plan creation with zero durable Plan residue;
+- full repository tests: 412/412 passing;
+- client tests: 7/7 passing;
+- OpenAPI/API compatibility remains unchanged at 45 operations and both committed V1 floors pass;
+- architecture, generated client drift, TypeScript, server/client builds, and npm-pack gates pass.
+
+Release gate:
+
+1. merge only after PR/main CI pass;
+2. deploy exact merge SHA as v1.5.0 candidate; API/client contract remains unchanged and `@forgeflow/client` stays at v1.4.0;
+3. reproduce the original Digital Biome condition in production and require the new Plan to adopt the clean external `main` fast-forward before any literal worktree is activated;
+4. continue that real Digital Biome optimization Plan from the correct base;
+5. run the normal exact-artifact ForgeFlow lifecycle acceptance and require `ATTESTED` before creating the v1.5.0 tag/Latest Release.

@@ -2647,6 +2647,148 @@ test('public Plan cancel supports child-first cancellation without releasing the
   }
 });
 
+
+test('idle Plan creation adopts a clean externally fast-forwarded canonical project head', async () => {
+  const value = fixture();
+  const manifest = path.join(value.root, 'external-head-projects.yaml');
+  fs.writeFileSync(
+    manifest,
+    `version: 1
+projects:
+  - projectKey: external-head-project
+    repositoryPath: ${value.repository}
+    tags: [product]
+    execution:
+      enabled: true
+      workspace: canonical-fast-forward
+      allowProviderNative: false
+    improvement:
+      enabled: false
+`,
+    { mode: 0o600 },
+  );
+  const runtime = await buildControlPlane({
+    dbFile: path.join(value.root, 'external-head.sqlite'),
+    environment: 'test',
+    logger: false,
+    env: {
+      NODE_ENV: 'test',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'true',
+      FORGEFLOW_AUTOMATION_RUNTIME_ENABLED: 'false',
+      FORGEFLOW_SINGLE_ACTIVE_PLAN_ENABLED: 'true',
+      FORGEFLOW_OPENHANDS_URL: 'http://openhands.test',
+      FORGEFLOW_OPENHANDS_TOKEN: 'test-session-key',
+      FORGEFLOW_LITELLM_API_KEY: 'test-litellm-key',
+      FORGEFLOW_LITELLM_BASE_URL: 'http://litellm.test/v1',
+      FORGEFLOW_ALLOWED_REPOSITORY_ROOTS: value.allowed,
+      FORGEFLOW_WORKSPACE_HOST_ROOT: value.managed,
+      FORGEFLOW_WORKSPACE_EXECUTION_ROOT: '/workspace',
+      FORGEFLOW_PROJECTS_FILE: manifest,
+      FORGEFLOW_WORKSPACE_UID: String(process.getuid?.() ?? 0),
+      FORGEFLOW_WORKSPACE_GID: String(process.getgid?.() ?? 0),
+    },
+  });
+  const create = async (key: string, revision: string) =>
+    await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans',
+      headers: { 'idempotency-key': key },
+      payload: {
+        projectKey: 'external-head-project',
+        objective: key,
+        baseRevision: revision,
+        workItems: [
+          {
+            itemKey: 'only',
+            title: 'Only item',
+            objective: key,
+            dependencies: [],
+            acceptanceCriteria: ['preserve exact project head'],
+          },
+        ],
+      },
+    });
+  try {
+    const seed = await create('external-head-seed', value.revision);
+    assert.equal(seed.statusCode, 201);
+    const seedPlanId = seed.json().plan.planId as string;
+    const cancelledSeed = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans/' + encodeURIComponent(seedPlanId) + '/cancel',
+      headers: { 'idempotency-key': 'external-head-cancel-seed' },
+      payload: { reason: 'release project lease before external fast-forward' },
+    });
+    assert.equal(cancelledSeed.statusCode, 200);
+    assert.equal(cancelledSeed.json().lease.committedRevision, value.revision);
+    assert.equal(cancelledSeed.json().lease.activeRootPlanId, undefined);
+
+    fs.writeFileSync(path.join(value.repository, 'external-main.txt'), 'merged outside ForgeFlow\n');
+    git(value.repository, ['add', 'external-main.txt']);
+    git(value.repository, ['commit', '-m', 'docs: external main fast-forward']);
+    const externalHead = git(value.repository, ['rev-parse', 'HEAD']);
+    assert.notEqual(externalHead, value.revision);
+
+    const adopted = await create('external-head-adopt-plan', externalHead);
+    assert.equal(adopted.statusCode, 201);
+    assert.equal(adopted.json().plan.baseRevision, externalHead);
+    assert.equal(adopted.json().plan.currentRevision, externalHead);
+    const adoptedPlanId = adopted.json().plan.planId as string;
+    const queue = await runtime.app.inject({
+      method: 'GET',
+      url: '/api/v1/projects/external-head-project/plan-queue',
+    });
+    assert.equal(queue.statusCode, 200);
+    assert.equal(queue.json().lease.activeRootPlanId, adoptedPlanId);
+    assert.equal(queue.json().lease.committedRevision, externalHead);
+    assert.ok(
+      runtime.repositories.events
+        .listRecentByAggregate('project-head:external-head-project', 50)
+        .some((event) => event.type === 'PROJECT_PLAN_EXTERNAL_HEAD_ADOPTED'),
+    );
+
+    const cancelledAdopted = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans/' + encodeURIComponent(adoptedPlanId) + '/cancel',
+      headers: { 'idempotency-key': 'external-head-cancel-adopted' },
+      payload: { reason: 'prepare stale-base refusal check' },
+    });
+    assert.equal(cancelledAdopted.statusCode, 200);
+
+    const dirtyPath = path.join(value.repository, 'untracked-external-residue.txt');
+    fs.writeFileSync(dirtyPath, 'must block project head adoption\n');
+    const dirty = await create('external-head-dirty-request', externalHead);
+    assert.equal(dirty.statusCode, 400);
+    assert.equal(dirty.json().error, 'PROJECT_PLAN_CANONICAL_REPOSITORY_DIRTY');
+    assert.equal(
+      runtime.repositories.plans
+        .listPlans({ limit: 100 })
+        .some((plan) => plan.idempotencyKey === 'external-head-dirty-request'),
+      false,
+    );
+    fs.rmSync(dirtyPath);
+
+    fs.writeFileSync(path.join(value.repository, 'external-main-2.txt'), 'newer external head\n');
+    git(value.repository, ['add', 'external-main-2.txt']);
+    git(value.repository, ['commit', '-m', 'docs: advance main again']);
+    const staleBase = await create('external-head-stale-request', externalHead);
+    assert.equal(staleBase.statusCode, 400);
+    assert.equal(staleBase.json().error, 'PROJECT_PLAN_EXTERNAL_HEAD_UNACKNOWLEDGED');
+    assert.equal(
+      runtime.repositories.plans
+        .listPlans({ limit: 100 })
+        .some((plan) => plan.idempotencyKey === 'external-head-stale-request'),
+      false,
+    );
+    assert.equal(
+      runtime.repositories.projectPlans.getLease('external-head-project')?.committedRevision,
+      externalHead,
+    );
+  } finally {
+    await runtime.app.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test('project manifest drives the public project API and generated OpenAPI contract', async () => {
   const value = fixture();
   const manifest = path.join(value.root, 'projects.yaml');
