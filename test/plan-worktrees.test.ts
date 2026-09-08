@@ -346,6 +346,8 @@ test('provider cleanup repairs corrupted nested submodule metadata without reset
   const submoduleGitfile = path.join(item.hostPath, 'vendor', 'knowledge', '.git');
   fs.chmodSync(submoduleGitfile, 0o644);
   fs.writeFileSync(submoduleGitfile, 'gitdir: /tmp/forgeflow-broken-cleanup-submodule\n');
+  const gitmodules = path.join(item.hostPath, '.gitmodules');
+  fs.chmodSync(gitmodules, 0o000);
   assert.throws(() => git(item.hostPath, ['status', '--porcelain=v1']));
 
   const prepared = await value.manager.prepareCancellationAccess(
@@ -366,6 +368,7 @@ test('provider cleanup repairs corrupted nested submodule metadata without reset
     /\/tmp\/forgeflow-broken-cleanup-submodule/,
   );
   assert.equal(fs.statSync(submoduleGitfile).mode & 0o777, 0o444);
+  assert.notEqual(fs.statSync(gitmodules).mode & 0o400, 0);
 
   await value.manager.abandonExecutionWorktree(
     owned.worktreeId,
