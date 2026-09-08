@@ -60,3 +60,51 @@ const resourceCount: number = resourceListResponse.count;
 const resourceState: 'ACTIVE' | 'SUSPENDED' | 'DISABLED' = resourceListResponse.items[0]!.state;
 void resourceCount;
 void resourceState;
+
+type PlanCreateBody = ForgeFlowOperations['plansCreate']['requestBody']['content']['application/json'];
+const minimalPlanCreateBody: PlanCreateBody = {
+  projectKey: 'memoflow',
+  objective: 'implement typed API client',
+  baseRevision: 'deadbeef',
+};
+void minimalPlanCreateBody;
+
+const planCreateWithLegacyPriority: PlanCreateBody = {
+  ...minimalPlanCreateBody,
+  priority: '10',
+  workItems: [
+    {
+      itemKey: 'typed-client',
+      title: 'Typed client',
+      objective: 'Harden the contract',
+      parallelSafe: true,
+    },
+  ],
+};
+void planCreateWithLegacyPriority;
+
+type PlanListQuery = NonNullable<ForgeFlowOperations['plansList']['parameters']['query']>;
+const planListQuery: PlanListQuery = { limit: '100', status: 'RUNNING', view: 'summary' };
+void planListQuery;
+
+// @ts-expect-error Plan status is closed over the documented durable status set.
+const invalidPlanListQuery: PlanListQuery = { status: 'NOT_A_STATUS' };
+void invalidPlanListQuery;
+
+type ExecutionListQuery = NonNullable<ForgeFlowOperations['executionsList']['parameters']['query']>;
+const executionListQuery: ExecutionListQuery = { planId: 'plan-example', status: 'RUNNING', view: 'dashboard' };
+void executionListQuery;
+
+// Optional legacy bodies remain optional in the generated client.
+void client.POST('/api/v1/plans/{planId}/reconcile', {
+  params: { path: { planId: 'plan-example' } },
+});
+void client.POST('/api/v1/executions/{executionId}/continue', {
+  params: { path: { executionId: 'execution-example' } },
+});
+void client.POST('/api/v1/executions/{executionId}/replace-provider-session', {
+  params: {
+    path: { executionId: 'execution-example' },
+    header: { 'idempotency-key': 'replacement-key' },
+  },
+});

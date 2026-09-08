@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import swagger from '@fastify/swagger';
 
 import { registerApiOperationIds } from './operations.js';
-import { openApiContractOverlay } from './contracts/index.js';
+import { finalizeOpenApiContract, openApiContractOverlay } from './contracts/index.js';
 
 export async function registerOpenApi(app: FastifyInstance): Promise<void> {
   registerApiOperationIds(app);
@@ -21,6 +21,11 @@ export async function registerOpenApi(app: FastifyInstance): Promise<void> {
     // Documentation-only overlay for legacy V1 routes. This enriches OpenAPI without
     // changing Fastify request validation or response serialization semantics.
     transform: ({ schema, url }) => ({ schema: openApiContractOverlay(schema), url }),
+    transformObject: (documentObject) => {
+      if (!('openapiObject' in documentObject)) return {};
+      finalizeOpenApiContract(documentObject.openapiObject as Record<string, unknown>);
+      return documentObject.openapiObject;
+    },
   });
   app.get(
     '/api/openapi.json',

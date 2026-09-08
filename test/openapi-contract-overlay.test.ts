@@ -39,12 +39,35 @@ test('Swagger transform documents Resource body while Fastify runtime remains un
   }
 });
 
-test('first schema-hardening batch is bounded to System and Resource operation identities', () => {
+test('schema-hardening batches cover System, Resource, Plan and Execution while leaving later features untouched', () => {
   const ids = documentedOperationIds();
   assert.ok(ids.includes('systemHealth'));
   assert.ok(ids.includes('resourcesList'));
   assert.ok(ids.includes('resourcesSetState'));
   assert.ok(ids.includes('releaseAcceptanceRecordAutonomousLifecycle'));
-  assert.equal(ids.includes('plansCreate'), false);
-  assert.equal(ids.includes('executionsRun'), false);
+  assert.ok(ids.includes('plansCreate'));
+  assert.ok(ids.includes('executionsRun'));
+  assert.equal(ids.includes('improvementsDiscover'), false);
+  assert.equal(ids.includes('supervisorsDecide'), false);
+});
+
+
+test('final OpenAPI contract keeps legacy optional request bodies optional', async () => {
+  const app = Fastify({ logger: false });
+  await registerOpenApi(app);
+  app.post('/api/v1/plans/:planId/reconcile', async () => ({ statusUrl: '/api/v1/plans/example' }));
+  app.post('/api/v1/executions/:executionId/continue', async () => ({}));
+  app.post('/api/v1/executions/:executionId/replace-provider-session', async () => ({}));
+  await app.ready();
+  try {
+    const openapi = (await app.inject({ method: 'GET', url: '/api/openapi.json' })).json();
+    assert.equal(openapi.paths['/api/v1/plans/{planId}/reconcile'].post.requestBody.required, false);
+    assert.equal(openapi.paths['/api/v1/executions/{executionId}/continue'].post.requestBody.required, false);
+    assert.equal(
+      openapi.paths['/api/v1/executions/{executionId}/replace-provider-session'].post.requestBody.required,
+      false,
+    );
+  } finally {
+    await app.close();
+  }
 });

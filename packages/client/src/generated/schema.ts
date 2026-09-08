@@ -765,7 +765,12 @@ export interface operations {
     };
     readonly executionsList: {
         readonly parameters: {
-            readonly query?: never;
+            readonly query?: {
+                readonly limit?: number | string;
+                readonly planId?: string;
+                readonly status?: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED";
+                readonly view?: "dashboard";
+            };
             readonly header?: never;
             readonly path?: never;
             readonly cookie?: never;
@@ -777,7 +782,14 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly count: number;
+                        readonly items: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                    };
+                };
             };
         };
     };
@@ -797,47 +809,98 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly evidence: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                        readonly execution: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly resourceSelection: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                        readonly reviewAsImplementation: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                        readonly reviewAsReviewer: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                        readonly session: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                    };
+                };
             };
         };
     };
     readonly executionsAbortPausedProvider: {
         readonly parameters: {
             readonly query?: never;
-            readonly header?: never;
+            readonly header?: {
+                readonly "idempotency-key"?: string;
+            };
             readonly path: {
                 readonly executionId: string;
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly idempotencyKey?: string;
+                    readonly reason: string;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
     readonly executionsAdoptWorkspace: {
         readonly parameters: {
             readonly query?: never;
-            readonly header?: never;
+            readonly header?: {
+                readonly "idempotency-key"?: string;
+            };
             readonly path: {
                 readonly executionId: string;
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly idempotencyKey?: string;
+                    readonly reason: string;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -850,54 +913,98 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody?: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly instruction?: string;
+                    readonly interruptCurrent?: boolean;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
     readonly executionsProviderCleanup: {
         readonly parameters: {
             readonly query?: never;
-            readonly header?: never;
+            readonly header?: {
+                readonly "idempotency-key"?: string;
+            };
             readonly path: {
                 readonly executionId: string;
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly idempotencyKey?: string;
+                    readonly reason: string;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
     readonly executionsReplaceProviderSession: {
         readonly parameters: {
             readonly query?: never;
-            readonly header?: never;
+            readonly header?: {
+                readonly "idempotency-key"?: string;
+            };
             readonly path: {
                 readonly executionId: string;
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody?: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly idempotencyKey?: string;
+                    readonly instruction?: string;
+                    readonly reason?: string;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -917,7 +1024,11 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -1155,7 +1266,11 @@ export interface operations {
     };
     readonly plansList: {
         readonly parameters: {
-            readonly query?: never;
+            readonly query?: {
+                readonly limit?: number | string;
+                readonly status?: "DRAFT" | "QUEUED" | "READY" | "RUNNING" | "WAITING_FOR_RESOURCE" | "WAITING_FOR_SYSTEM_REPAIR" | "WAITING_FOR_EXTERNAL_EVIDENCE" | "SAFETY_HOLD" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+                readonly view?: "full" | "summary";
+            };
             readonly header?: never;
             readonly path?: never;
             readonly cookie?: never;
@@ -1167,25 +1282,111 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly count: number;
+                        readonly items: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                    };
+                };
             };
         };
     };
     readonly plansCreate: {
         readonly parameters: {
             readonly query?: never;
-            readonly header?: never;
+            readonly header?: {
+                readonly "idempotency-key"?: string;
+            };
             readonly path?: never;
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly baseRevision: string;
+                    readonly delivery?: {
+                        readonly autoMerge: boolean;
+                        readonly branch: string;
+                        /** @enum {string} */
+                        readonly mergeMethod?: "merge" | "squash" | "rebase";
+                        readonly remote?: string;
+                        readonly requiredChecks?: readonly string[];
+                        readonly targetBranch?: string;
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                    readonly idempotencyKey?: string;
+                    readonly objective: string;
+                    readonly priority?: number | string | null;
+                    readonly projectKey: string;
+                    readonly repositoryPath?: string;
+                    readonly workItems?: readonly ({
+                        readonly acceptanceCriteria?: readonly string[];
+                        readonly conflictKeys?: readonly string[];
+                        readonly dependencies?: readonly string[];
+                        readonly itemKey: string;
+                        readonly objective: string;
+                        readonly parallelSafe?: boolean;
+                        readonly title: string;
+                        readonly writeScopes?: readonly string[];
+                    } & {
+                        readonly [key: string]: unknown;
+                    })[];
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly graph: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly plan: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly scheduling?: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly supervisor: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Default Response */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly graph: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly plan: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly scheduling?: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly supervisor: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -1205,27 +1406,82 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly activationEvents: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                        readonly delivery: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                        readonly executions: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                        readonly graph: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                        readonly plan: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly reviews: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                        readonly sessions: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                        readonly supervisor: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                        readonly workItems: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                        readonly worktrees: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                    };
+                };
             };
         };
     };
     readonly plansCancel: {
         readonly parameters: {
             readonly query?: never;
-            readonly header?: never;
+            readonly header?: {
+                readonly "idempotency-key"?: string;
+            };
             readonly path: {
                 readonly planId: string;
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly idempotencyKey?: string;
+                    readonly reason: string;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly lease: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                        readonly plan: {
+                            readonly [key: string]: unknown;
+                        };
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -1245,7 +1501,16 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly plan: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly queueEntry: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                    };
+                };
             };
         };
     };
@@ -1258,14 +1523,87 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly childPlanId: string;
+                    readonly delivery?: {
+                        readonly autoMerge: boolean;
+                        readonly branch: string;
+                        /** @enum {string} */
+                        readonly mergeMethod?: "merge" | "squash" | "rebase";
+                        readonly remote?: string;
+                        readonly requiredChecks?: readonly string[];
+                        readonly targetBranch?: string;
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                    readonly objective: string;
+                    /**
+                     * @default FOLLOW_UP
+                     * @enum {string}
+                     */
+                    readonly relation?: "SYSTEM_REPAIR" | "INFRASTRUCTURE_REPAIR" | "FOLLOW_UP";
+                    readonly repositoryPath?: string;
+                    readonly workItems?: readonly ({
+                        readonly acceptanceCriteria?: readonly string[];
+                        readonly conflictKeys?: readonly string[];
+                        readonly dependencies?: readonly string[];
+                        readonly itemKey: string;
+                        readonly objective: string;
+                        readonly parallelSafe?: boolean;
+                        readonly title: string;
+                        readonly writeScopes?: readonly string[];
+                    } & {
+                        readonly [key: string]: unknown;
+                    })[];
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly graph: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly plan: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly relationshipId: string;
+                        readonly statusUrl: string;
+                        readonly supervisor: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                    };
+                };
+            };
+            /** @description Default Response */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly graph: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly plan: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly relationshipId: string;
+                        readonly statusUrl: string;
+                        readonly supervisor: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                    };
+                };
             };
         };
     };
@@ -1278,14 +1616,67 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly autoMerge: boolean;
+                    readonly branch: string;
+                    /** @enum {string} */
+                    readonly mergeMethod?: "merge" | "squash" | "rebase";
+                    readonly remote?: string;
+                    readonly requiredChecks?: readonly string[];
+                    readonly targetBranch?: string;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly delivery: {
+                            readonly autoMerge: boolean;
+                            readonly branch: string;
+                            /** @enum {string} */
+                            readonly mergeMethod?: "merge" | "squash" | "rebase";
+                            readonly remote?: string;
+                            readonly requiredChecks?: readonly string[];
+                            readonly targetBranch?: string;
+                        } & {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly planId: string;
+                        readonly statusUrl: string;
+                    };
+                };
+            };
+            /** @description Default Response */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly delivery: {
+                            readonly autoMerge: boolean;
+                            readonly branch: string;
+                            /** @enum {string} */
+                            readonly mergeMethod?: "merge" | "squash" | "rebase";
+                            readonly remote?: string;
+                            readonly requiredChecks?: readonly string[];
+                            readonly targetBranch?: string;
+                        } & {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly planId: string;
+                        readonly statusUrl: string;
+                    };
+                };
             };
         };
     };
@@ -1298,14 +1689,41 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody?: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly mode?: string;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly statusUrl: string;
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Default Response */
+            readonly 202: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly statusUrl: string;
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -1318,14 +1736,29 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly priority?: number | string | null;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly mutation: string;
+                        readonly queueEntry: {
+                            readonly [key: string]: unknown;
+                        };
+                    };
+                };
             };
         };
     };
@@ -1345,7 +1778,11 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -1448,7 +1885,17 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                        readonly lease: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                        readonly projectKey: string;
+                    };
+                };
             };
         };
     };
