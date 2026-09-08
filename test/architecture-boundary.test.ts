@@ -16,5 +16,8 @@ test('architecture boundary uses the TypeScript AST and permanently forbids inli
   assert.match(checker, /composition root must remain thin/);
   assert.match(checker, /runtime configuration must flow through src\/bootstrap\/config\.ts/);
   assert.match(checker, /rawRuntimeConfigForbidden/);
+  assert.match(checker, /bootstrap must not own feature timers/);
+  assert.match(checker, /feature reconcilers must declare cadence, not create timers/);
+  assert.match(checker, /runtime admission lifecycle must flow through RuntimeAdmissionReconciler/);
   assert.doesNotMatch(checker, /function imports\(text\)/);
 });

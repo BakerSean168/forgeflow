@@ -32,13 +32,13 @@ export interface ResourceRuntimePort {
     invalidateResource(resourceId: string): void;
     invalidateBinding(resourceId: string, bindingId: string): void;
   };
-  reconcileRuntimeAdmission(): Promise<void>;
 }
 
 export interface ResourceApplicationDependencies {
   repositories: ForgeFlowRepositories;
   requireRuntime(): ResourceRuntimePort;
   invalidateSupervisorResource(resourceId: string): void;
+  runtimeAdmission: { request(): Promise<void> };
   reconcileSupervisorReadiness(): Promise<{ becameAvailable: string[]; scheduledWakes: number }>;
 }
 
@@ -86,7 +86,7 @@ export class ResourceApplication {
     this.dependencies.invalidateSupervisorResource(input.resourceId);
     this.dependencies.repositories.runtimeAdmissions.invalidateResource(input.resourceId);
     runtime.runtimeAdmission.invalidateResource(input.resourceId);
-    await runtime.reconcileRuntimeAdmission();
+    await this.dependencies.runtimeAdmission.request();
     const resourceWake = await this.dependencies.reconcileSupervisorReadiness();
     return {
       resource: this.project(this.requireResource(runtime, input.resourceId)),
@@ -108,7 +108,7 @@ export class ResourceApplication {
     this.dependencies.invalidateSupervisorResource(input.resourceId);
     this.dependencies.repositories.runtimeAdmissions.invalidateBinding(input.resourceId, input.bindingId);
     runtime.runtimeAdmission.invalidateBinding(input.resourceId, input.bindingId);
-    await runtime.reconcileRuntimeAdmission();
+    await this.dependencies.runtimeAdmission.request();
     const resourceWake = await this.dependencies.reconcileSupervisorReadiness();
     return {
       resource: this.project(this.requireResource(runtime, input.resourceId)),
