@@ -25,6 +25,8 @@ const forgeFlowEnv = read('deploy/forgeflow.env.example');
 const planWorktrees = read('src/core/adapters/planWorktrees.ts');
 const appSource = read('src/app.ts');
 const executionRuntimeSource = read('src/bootstrap/executionRuntime.ts');
+const projectSchedulingSource = read('src/bootstrap/projectScheduling.ts');
+const runtimeLifecycleSource = read('src/bootstrap/runtimeLifecycle.ts');
 const bootstrapConfigSource = read('src/bootstrap/config.ts');
 const systemApplicationSource = read('src/application/system/systemApplication.ts');
 const systemApiSource = read('src/api/v1/system/routes.ts');
@@ -215,8 +217,8 @@ test('literal worktree deployment is project-mounted, runtime-verified, and smok
   assert.match(executionRuntimeSource, /safe\.directory=\$\{repositoryPath\}/);
   assert.match(executionRuntimeSource, /docker'[\s\S]*inspect'[\s\S]*\{\{json \.Mounts\}\}/);
   assert.match(executionRuntimeSource, /mount\.Source === common && mount\.Destination === common && mount\.RW === true/);
-  assert.match(appSource, /plan\.status !== 'SAFETY_HOLD'/);
-  assert.match(appSource, /!isTerminalPlanStatus\(plan\.status\)/);
+  assert.match(projectSchedulingSource, /plan\.status !== 'SAFETY_HOLD'/);
+  assert.match(projectSchedulingSource, /!isTerminalPlanStatus\(plan\.status\)/);
   assert.match(literalSmoke, /FORGEFLOW_WORKTREE_SMOKE_USE_RUNNING_CONTAINER/);
   assert.match(literalSmoke, /useRunningContainer[\s\S]*'exec'/);
   assert.match(installer, /literal-git-common-dirs\.conf/);
@@ -227,11 +229,11 @@ test('literal worktree deployment is project-mounted, runtime-verified, and smok
 
 test('autonomous execution polling does not await slow runtime-admission probes', () => {
   assert.match(
-    appSource,
-    /const results = await automation\.plans\.runOnce\(\);[\s\S]*void automation\.reconcileRuntimeAdmission\(\)\.catch/,
+    runtimeLifecycleSource,
+    /const results = await automation\.plans\.runOnce\(\);[\s\S]*void automation[\s\S]*\.reconcileRuntimeAdmission\(\)[\s\S]*\.catch/,
   );
   assert.doesNotMatch(
-    appSource,
+    runtimeLifecycleSource,
     /await automation\.reconcileRuntimeAdmission\(\);\s*return await automation\.plans\.runOnce\(\)/,
   );
   assert.match(forgeFlowEnv, /FORGEFLOW_OPPORTUNISTIC_MEANINGFUL_PROGRESS_TIMEOUT_MS=300000/);

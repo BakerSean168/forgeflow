@@ -9,6 +9,12 @@ const failures = [];
 const legacyCompositionRouteBudget = 0;
 const compositionSource = fs.readFileSync(path.join(sourceRoot, 'app.ts'), 'utf8');
 const inlineRoutes = compositionSource.match(/\bapp\.(?:get|post|put|patch|delete)\(/g)?.length ?? 0;
+const compositionLineBudget = 250;
+const compositionLines = compositionSource.split(/\r?\n/).length;
+if (compositionLines > compositionLineBudget)
+  failures.push(
+    `src/app.ts: composition root must remain thin (line budget ${compositionLineBudget}, found ${compositionLines})`,
+  );
 if (inlineRoutes > legacyCompositionRouteBudget)
   failures.push(
     `src/app.ts: new public routes must be Fastify modules under src/api (legacy inline route budget ${legacyCompositionRouteBudget}, found ${inlineRoutes})`,
