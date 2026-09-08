@@ -15,6 +15,7 @@ const RETRYABLE_ACTIVATION_FAILURE_CODES = new Set([
   'WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED',
   'WORKTREE_OPENHANDS_MOUNT_CHECK_FAILED',
   'WORKTREE_GIT_FAILED',
+  'WORKTREE_SUBMODULE_INIT_FAILED',
   'WORKTREE_ACL_TOOL_MISSING',
   'WORKTREE_ACL_FAILED',
 ]);
@@ -371,6 +372,7 @@ export class PlanWorktreeManager {
     uid: number,
     gid: number,
   ): Promise<PlanWorktree> {
+    const submodulePaths = await this.verifyPinnedSubmodules(current);
     this.chownTreeNoFollow(current.hostPath, uid, gid);
     const common = await this.canonicalCommonDir(current.repositoryPath);
     const source = fs.statSync(common);
@@ -409,6 +411,14 @@ export class PlanWorktreeManager {
         }
       }
     }
+    await this.protectSubmoduleIdentities(
+      current,
+      submodulePaths,
+      uid,
+      common,
+      source.uid,
+      source.gid,
+    );
     await this.protectWorktreeIdentity(current, uid, common, source.uid, source.gid);
     return this.repositories.planWorktrees.get(current.worktreeId);
   }
@@ -787,11 +797,15 @@ export class PlanWorktreeManager {
         current.role === 'REVIEW',
         false,
       );
+      failClosed(
+        (await this.gitStatus(current.repositoryPath, current.hostPath)).length === 0,
+        'WORKTREE_DIRTY_ON_RETIRE',
+      );
       const sourceIdentity = this.repositoryIdentity(current.repositoryPath);
       if (fs.existsSync(current.hostPath))
         this.chownTreeNoFollow(current.hostPath, sourceIdentity.uid, sourceIdentity.gid);
       await this.git(current.repositoryPath, ['worktree', 'unlock', '--', current.hostPath], true);
-      await this.git(current.repositoryPath, ['worktree', 'remove', '--', current.hostPath]);
+      await this.git(current.repositoryPath, ['worktree', 'remove', '--force', '--', current.hostPath]);
       await this.git(current.repositoryPath, ['worktree', 'prune', '--expire', 'now']);
       failClosed(!fs.existsSync(current.hostPath), 'WORKTREE_REMOVE_INCOMPLETE');
     } else {
@@ -1127,6 +1141,7 @@ export class PlanWorktreeManager {
     const listed = await this.worktreeAt(record.repositoryPath, record.hostPath);
     if (listed) {
       await this.verifyRegistered(record, revision, branchRef, detached);
+      await this.initializePinnedSubmodules(record, false);
       return;
     }
     if (fs.existsSync(record.hostPath)) {
@@ -1189,6 +1204,7 @@ export class PlanWorktreeManager {
         revision,
       ]);
     }
+    await this.initializePinnedSubmodules(record, false);
     await this.verifyRegistered(record, revision, branchRef, detached);
   }
 
@@ -1464,6 +1480,190 @@ export class PlanWorktreeManager {
     );
   }
 
+  private validateSubmodulePath(worktree: PlanWorktree, value: string): string {
+    const normalized = value.trim().replace(/\\/g, '/');
+    failClosed(
+      normalized.length > 0 &&
+        normalized.length <= 1_000 &&
+        !path.posix.isAbsolute(normalized) &&
+        !normalized.split('/').includes('..'),
+      'WORKTREE_SUBMODULE_METADATA_INVALID',
+    );
+    const target = path.resolve(worktree.hostPath, ...normalized.split('/'));
+    failClosed(
+      target !== path.resolve(worktree.hostPath) && inside(target, worktree.hostPath),
+      'WORKTREE_SUBMODULE_METADATA_INVALID',
+    );
+    return normalized;
+  }
+
+  private async configuredSubmodulePaths(worktree: PlanWorktree): Promise<string[]> {
+    const raw = await this.gitAsSourceInWorktree(worktree.repositoryPath, worktree.hostPath, [
+      'ls-tree',
+      '-r',
+      '-z',
+      '--full-tree',
+      'HEAD',
+    ]);
+    const result: string[] = [];
+    const seen = new Set<string>();
+    for (const record of raw.split('\0')) {
+      if (!record) continue;
+      const separator = record.indexOf('\t');
+      failClosed(separator > 0, 'WORKTREE_SUBMODULE_METADATA_INVALID');
+      const metadata = record.slice(0, separator).split(/\s+/);
+      if (metadata[0] !== '160000') continue;
+      failClosed(metadata[1] === 'commit' && Boolean(metadata[2]), 'WORKTREE_SUBMODULE_METADATA_INVALID');
+      const submodulePath = this.validateSubmodulePath(worktree, record.slice(separator + 1));
+      failClosed(!seen.has(submodulePath), 'WORKTREE_SUBMODULE_METADATA_INVALID');
+      seen.add(submodulePath);
+      result.push(submodulePath);
+    }
+    if (result.length === 0) return [];
+    const gitmodules = path.join(worktree.hostPath, '.gitmodules');
+    const stat = fs.lstatSync(gitmodules, { throwIfNoEntry: false });
+    failClosed(Boolean(stat?.isFile()) && !stat!.isSymbolicLink(), 'WORKTREE_SUBMODULE_METADATA_INVALID');
+    const tracked = await this.gitSucceedsInWorktree(worktree.repositoryPath, worktree.hostPath, [
+      'cat-file',
+      '-e',
+      'HEAD:.gitmodules',
+    ]);
+    failClosed(tracked, 'WORKTREE_SUBMODULE_METADATA_INVALID');
+    return result.sort();
+  }
+
+  private async verifyPinnedSubmodules(worktree: PlanWorktree): Promise<string[]> {
+    const configured = await this.configuredSubmodulePaths(worktree);
+    if (configured.length === 0) return [];
+    let raw: string;
+    try {
+      raw = await this.gitInWorktree(worktree.repositoryPath, worktree.hostPath, [
+        'submodule',
+        'status',
+        '--recursive',
+      ]);
+    } catch (error) {
+      throw new ForgeFlowError(
+        'WORKTREE_SUBMODULE_GIT_LINKAGE_VIOLATED',
+        'Unable to verify the pinned submodule tree.',
+        error,
+      );
+    }
+    const paths: string[] = [];
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const normalized = line.trimStart();
+      failClosed(!/^[+\-U]/.test(normalized), 'WORKTREE_SUBMODULE_REVISION_MISMATCH');
+      const match = /^([0-9a-f]{40,64})\s+(.+?)(?:\s+\(.+\))?$/.exec(normalized);
+      failClosed(Boolean(match?.[2]), 'WORKTREE_SUBMODULE_STATUS_INVALID');
+      const submodulePath = this.validateSubmodulePath(worktree, match![2]!);
+      const root = path.resolve(worktree.hostPath, ...submodulePath.split('/'));
+      const rootStat = fs.lstatSync(root, { throwIfNoEntry: false });
+      failClosed(Boolean(rootStat?.isDirectory()) && !rootStat!.isSymbolicLink(), 'WORKTREE_SUBMODULE_GIT_LINKAGE_VIOLATED');
+      const gitfile = path.join(root, '.git');
+      const gitfileStat = fs.lstatSync(gitfile, { throwIfNoEntry: false });
+      failClosed(Boolean(gitfileStat?.isFile()) && !gitfileStat!.isSymbolicLink(), 'WORKTREE_SUBMODULE_GIT_LINKAGE_VIOLATED');
+      paths.push(submodulePath);
+    }
+    for (const configuredPath of configured)
+      failClosed(paths.includes(configuredPath), 'WORKTREE_SUBMODULE_REVISION_MISMATCH');
+    return [...new Set(paths)].sort();
+  }
+
+  private async initializePinnedSubmodules(
+    worktree: PlanWorktree,
+    repairExisting: boolean,
+  ): Promise<string[]> {
+    const configured = await this.configuredSubmodulePaths(worktree);
+    if (configured.length === 0) return [];
+    if (repairExisting) {
+      const common = await this.canonicalCommonDir(worktree.repositoryPath);
+      const { admin } = this.worktreeGitfileIdentity(worktree, common);
+      const modulesRoot = path.join(admin, 'modules');
+      for (const submodulePath of configured) {
+        const root = path.resolve(worktree.hostPath, ...submodulePath.split('/'));
+        if (fs.existsSync(root)) {
+          const stat = fs.lstatSync(root);
+          failClosed(stat.isDirectory() && !stat.isSymbolicLink(), 'WORKTREE_SUBMODULE_REPAIR_PATH_UNSAFE');
+          fs.rmSync(root, { recursive: true, force: true });
+        }
+        const adminPath = path.resolve(modulesRoot, ...submodulePath.split('/'));
+        failClosed(inside(adminPath, modulesRoot), 'WORKTREE_SUBMODULE_REPAIR_PATH_UNSAFE');
+        if (fs.existsSync(adminPath)) {
+          const stat = fs.lstatSync(adminPath);
+          failClosed(stat.isDirectory() && !stat.isSymbolicLink(), 'WORKTREE_SUBMODULE_REPAIR_PATH_UNSAFE');
+          fs.rmSync(adminPath, { recursive: true, force: true });
+        }
+      }
+    }
+    try {
+      await this.gitAsSourceInWorktree(worktree.repositoryPath, worktree.hostPath, [
+        '-c',
+        'protocol.file.allow=always',
+        'submodule',
+        'update',
+        '--init',
+        '--recursive',
+        '--force',
+      ]);
+    } catch (error) {
+      throw new ForgeFlowError(
+        'WORKTREE_SUBMODULE_INIT_FAILED',
+        'Unable to initialize the exact submodule revisions for this literal worktree.',
+        error,
+      );
+    }
+    return await this.verifyPinnedSubmodules(worktree);
+  }
+
+  private submoduleGitfileIdentity(
+    worktree: PlanWorktree,
+    submodulePath: string,
+    mainAdmin: string,
+  ): { root: string; gitfile: string; admin: string } {
+    const normalized = this.validateSubmodulePath(worktree, submodulePath);
+    const root = path.resolve(worktree.hostPath, ...normalized.split('/'));
+    const gitfile = path.join(root, '.git');
+    const stat = fs.lstatSync(gitfile, { throwIfNoEntry: false });
+    failClosed(Boolean(stat?.isFile()) && !stat!.isSymbolicLink(), 'WORKTREE_SUBMODULE_GIT_LINKAGE_VIOLATED');
+    const content = fs.readFileSync(gitfile, 'utf8').trim();
+    const match = /^gitdir:\s*(.+)$/i.exec(content);
+    failClosed(Boolean(match?.[1]), 'WORKTREE_SUBMODULE_GIT_LINKAGE_VIOLATED');
+    const candidate = path.isAbsolute(match![1]!)
+      ? match![1]!
+      : path.resolve(root, match![1]!);
+    let admin: string;
+    let modulesRoot: string;
+    try {
+      admin = fs.realpathSync(candidate);
+      modulesRoot = fs.realpathSync(path.join(mainAdmin, 'modules'));
+    } catch {
+      throw new ForgeFlowError('WORKTREE_SUBMODULE_GIT_LINKAGE_VIOLATED');
+    }
+    failClosed(admin !== modulesRoot && inside(admin, modulesRoot), 'WORKTREE_SUBMODULE_GIT_LINKAGE_VIOLATED');
+    return { root, gitfile, admin };
+  }
+
+  private async protectSubmoduleIdentities(
+    worktree: PlanWorktree,
+    submodulePaths: readonly string[],
+    uid: number,
+    common: string,
+    sourceUid: number,
+    sourceGid: number,
+  ): Promise<void> {
+    if (submodulePaths.length === 0) return;
+    const { admin: mainAdmin } = this.worktreeGitfileIdentity(worktree, common);
+    for (const submodulePath of submodulePaths) {
+      const { root, gitfile } = this.submoduleGitfileIdentity(worktree, submodulePath, mainAdmin);
+      fs.lchownSync(root, sourceUid, sourceGid);
+      fs.chmodSync(root, 0o1750);
+      fs.lchownSync(gitfile, sourceUid, sourceGid);
+      fs.chmodSync(gitfile, 0o444);
+      if (sourceUid !== uid) await this.execAcl(['-m', `u:${uid}:rwx`, '--', root]);
+    }
+  }
+
   private worktreeGitfileIdentity(
     worktree: PlanWorktree,
     common: string,
@@ -1637,6 +1837,7 @@ export class PlanWorktreeManager {
       '--hard',
       expectedRevision,
     ]);
+    await this.initializePinnedSubmodules(worktree, true);
     await this.gitAsSourceInWorktree(worktree.repositoryPath, worktree.hostPath, ['clean', '-ffd']);
     const head = await this.gitInWorktree(worktree.repositoryPath, worktree.hostPath, [
       'rev-parse',
