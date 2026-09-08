@@ -270,7 +270,7 @@ test('finalization inspection accepts a released quiescent source but rejects an
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
-test('committed finalization inspection rejects a clean candidate outside the declared write scope', async () => {
+test('committed finalization inspection requires an audited scope amendment before accepting a widened candidate', async () => {
   const value = fixture();
   const implementation = createExecution(value, 'exec-finalization-out-of-scope', 'IMPLEMENT', value.revision);
   const workspace = await value.adapter.provision({
@@ -301,6 +301,19 @@ test('committed finalization inspection rejects a clean candidate outside the de
     (error: unknown) => error instanceof ForgeFlowError && error.code === 'WORKSPACE_WRITE_SCOPE_VIOLATED',
   );
   assert.notEqual(git(workspace.hostPath, ['rev-parse', 'HEAD']), value.revision);
+
+  value.repositories.plans.amendFailedWorkItemWriteScopes(value.plan.planId, [
+    {
+      itemKey: value.item.itemKey,
+      expectedWriteScopes: ['src/item.txt'],
+      writeScopes: ['README.md', 'src/item.txt'],
+      reason: 'Align the failed WorkItem metadata with the authoritative bounded scope.',
+    },
+  ]);
+  const amended = await value.adapter.inspectCommittedImplementation(workspace);
+  assert.deepEqual(amended.changedFiles, ['README.md']);
+  assert.equal(amended.clean, true);
+  assert.notEqual(amended.headRevision, value.revision);
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });
 });

@@ -887,6 +887,7 @@ Hardening:
 - preserved candidates do not receive synthetic test evidence: the next real provider execution starts from the candidate, reruns verification, and still requires normal exact-SHA independent review; whole-wave recovery is persistence-atomic and preserves product attempt budgets.
 - terminal provider cleanup/cancellation repairs corrupted pinned submodule metadata before workspace teardown using the same committed gitlink authority; before Git performs that repair, the controller restores only source-owner traversal/write on the worktree root plus source read access to tracked `.gitmodules`, so worker-owned file modes cannot force a credential/network fallback; this repair never resets the superproject HEAD, so a committed candidate remains available for explicit finalization recovery until the later abandon/reset step is actually authorized.
 - `plansReconcile` now supports explicit `retry-infrastructure`: only `WAITING_FOR_RESOURCE` Plans with terminal provider/resource/workspace-capacity failures qualify; product failures remain ineligible, product-attempt budgets are preserved, the existing Plan/worktree/source revision is verified, all sibling recoveries are preflighted before commit, and only each latest failed route is reopened while older exclusions remain durable.
+- `plansReconcile` now supports an optional audited `scopeAmendments` input only with `retry-finalization`: it can correct an overly narrow FAILED/BLOCKED WorkItem scope by strict superset CAS, refuses active/accepted work, rejects same-wave overlap, records `WORK_ITEM_WRITE_SCOPES_AMENDED`, and does not bypass the later literal-worktree changed-file gate; the public operation count remains 45 and the generated client change is additive.
 
 Verification before PR:
 
@@ -897,7 +898,7 @@ Verification before PR:
 - linked-source Git provenance fixtures accept normal and legitimate linked control worktrees while rejecting forged admin backlinks and symlinked Git metadata;
 - deployment regression proves the exact provenance helper is syntax-checked, installed, and byte-compared with the Antigravity runner;
 - focused infrastructure-recovery regression proves same-wave recovery, exact latest-route reopening, product-failure rejection, route-substitution rejection, repeat-call idempotence, and worktree revision fail-closed behavior;
-- full repository tests: 428/428 passing;
+- full repository tests: 432/432 passing;
 - client tests: 7/7 passing;
 - OpenAPI/API compatibility remains unchanged at 45 operations and both committed V1 floors pass;
 - architecture, generated client drift, TypeScript, server/client builds, and npm-pack gates pass.
@@ -905,7 +906,7 @@ Verification before PR:
 Release gate:
 
 1. merge only after PR/main CI pass;
-2. deploy exact merge SHA as v1.5.0 candidate; API/client contract remains unchanged and `@forgeflow/client` stays at v1.4.0;
+2. deploy exact merge SHA as v1.5.0 candidate; the V1 API adds only the optional `plansReconcile.scopeAmendments` field, operation identities remain unchanged, and `@forgeflow/client` package SemVer stays at v1.4.0 unless separately published;
 3. reproduce the original Digital Biome condition in production and require the new Plan to adopt the clean external `main` fast-forward before any literal worktree is activated;
 4. continue that real Digital Biome optimization Plan from the correct base;
 5. run the normal exact-artifact ForgeFlow lifecycle acceptance and require `ATTESTED` before creating the v1.5.0 tag/Latest Release.

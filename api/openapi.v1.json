@@ -3127,6 +3127,45 @@
                 "properties": {
                   "mode": {
                     "type": "string"
+                  },
+                  "scopeAmendments": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "expectedWriteScopes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "minItems": 1,
+                          "type": "array"
+                        },
+                        "itemKey": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "writeScopes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "minItems": 1,
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "itemKey",
+                        "expectedWriteScopes",
+                        "writeScopes",
+                        "reason"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 20,
+                    "minItems": 1,
+                    "type": "array"
                   }
                 },
                 "type": "object"

@@ -447,6 +447,7 @@ test('ForgeFlow creates a durable first execution through the public plan runtim
           objective: 'Implement first item',
           dependencies: [],
           acceptanceCriteria: ['commit the change', 'pass review'],
+          writeScopes: ['src/first.ts'],
         },
       ],
     },
@@ -588,6 +589,28 @@ test('ForgeFlow creates a durable first execution through the public plan runtim
   });
   runtime.repositories.plans.updateWorkItemStatus(workItemId, 'FAILED');
   runtime.repositories.plans.updateStatus(planId, 'FAILED');
+
+  const invalidScopeAmendmentMode = await runtime.app.inject({
+    method: 'POST',
+    url: '/api/v1/plans/' + planId + '/reconcile',
+    payload: {
+      mode: 'auto',
+      scopeAmendments: [
+        {
+          itemKey: 'first',
+          expectedWriteScopes: ['src/first.ts'],
+          writeScopes: ['src/first-helper.ts', 'src/first.ts'],
+          reason: 'operator correction must be explicit finalization recovery',
+        },
+      ],
+    },
+  });
+  assert.equal(invalidScopeAmendmentMode.statusCode, 400);
+  assert.equal(
+    invalidScopeAmendmentMode.json().error,
+    'WORK_ITEM_SCOPE_AMENDMENT_MODE_INVALID',
+  );
+  assert.deepEqual(runtime.repositories.plans.getWorkItem(workItemId).writeScopes, ['src/first.ts']);
 
   const invalidReconcile = await runtime.app.inject({
     method: 'POST',

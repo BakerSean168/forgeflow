@@ -201,6 +201,17 @@ void client.operations.projectsGet({
 });
 void client.operations.plansReconcile({
   params: { path: { planId: 'plan-example' } },
+  body: {
+    mode: 'retry-finalization',
+    scopeAmendments: [
+      {
+        itemKey: 'DB-OPT-101',
+        expectedWriteScopes: ['src/a.ts'],
+        writeScopes: ['src/a.ts', 'src/b.ts'],
+        reason: 'align durable scope with the authoritative implementation boundary',
+      },
+    ],
+  },
 });
 void client.operations.plansCreate({
   body: minimalPlanCreateBody,

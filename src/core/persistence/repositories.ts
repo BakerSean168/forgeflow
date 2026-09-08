@@ -83,6 +83,7 @@ import {
   transitionWorkItem,
   validateGraphItems,
   normalizeParallelMetadata,
+  workItemsConflict,
   type GraphVersion,
   type WorkItem,
   type WorkItemStatus,
@@ -1254,6 +1255,113 @@ export class PlanRepository {
         }),
       );
       return { status: 'updated', value: this.getWorkItem(workItemId) };
+    });
+  }
+
+  amendFailedWorkItemWriteScopes(
+    planId: string,
+    amendments: ReadonlyArray<{
+      itemKey: string;
+      expectedWriteScopes: readonly string[];
+      writeScopes: readonly string[];
+      reason: string;
+    }>,
+  ): { plan: Plan; workItems: WorkItem[] } {
+    failClosed(amendments.length > 0 && amendments.length <= 20, 'WORK_ITEM_SCOPE_AMENDMENTS_INVALID');
+    return withTransaction(this.db, () => {
+      const plan = this.getPlan(planId);
+      failClosed(plan.status === 'FAILED', 'PLAN_SCOPE_AMENDMENT_REQUIRES_FAILED');
+      const graph = this.getActiveGraphVersion(planId);
+      if (!graph) throw new ForgeFlowError('PLAN_GRAPH_MISSING');
+      const currentItems = this.listWorkItems(planId, graph.graphVersionId);
+      const byKey = new Map(currentItems.map((item) => [item.itemKey, item]));
+      const seen = new Set<string>();
+      const proposed = new Map<string, WorkItem>();
+
+      for (const amendment of amendments) {
+        const itemKey = amendment.itemKey.trim();
+        const reason = amendment.reason.trim();
+        failClosed(itemKey.length > 0 && itemKey.length <= 200, 'WORK_ITEM_SCOPE_AMENDMENT_ITEM_INVALID');
+        failClosed(reason.length > 0 && reason.length <= 2_000, 'WORK_ITEM_SCOPE_AMENDMENT_REASON_INVALID');
+        failClosed(!seen.has(itemKey), 'WORK_ITEM_SCOPE_AMENDMENT_DUPLICATE');
+        seen.add(itemKey);
+        const item = byKey.get(itemKey);
+        if (!item) throw new ForgeFlowError('WORK_ITEM_NOT_FOUND');
+        failClosed(
+          (item.status === 'FAILED' || item.status === 'BLOCKED') && !item.exactAcceptedRevision,
+          'WORK_ITEM_SCOPE_AMENDMENT_STATE_INVALID',
+        );
+        const activeExecution = this.db
+          .prepare(
+            "SELECT execution_id FROM executions WHERE work_item_id=? AND status IN ('QUEUED','RUNNING') LIMIT 1",
+          )
+          .get(item.workItemId) as { execution_id: string } | undefined;
+        failClosed(!activeExecution, 'WORK_ITEM_SCOPE_AMENDMENT_EXECUTION_ACTIVE');
+
+        const expected = normalizeParallelMetadata({
+          parallelSafe: item.parallelSafe,
+          writeScopes: amendment.expectedWriteScopes,
+          conflictKeys: item.conflictKeys,
+        }).writeScopes;
+        const next = normalizeParallelMetadata({
+          parallelSafe: item.parallelSafe,
+          writeScopes: amendment.writeScopes,
+          conflictKeys: item.conflictKeys,
+        }).writeScopes;
+        const validScope = (value: string): boolean => {
+          const normalized = value.replace(/\\/g, '/').replace(/^\.\//, '');
+          return (
+            normalized.length > 0 &&
+            !normalized.startsWith('/') &&
+            !normalized.split('/').includes('..') &&
+            !normalized.includes('*')
+          );
+        };
+        failClosed(expected.every(validScope) && next.every(validScope), 'WORK_ITEM_WRITE_SCOPES_INVALID');
+        failClosed(
+          JSON.stringify(expected) === JSON.stringify(item.writeScopes),
+          'WORK_ITEM_SCOPE_AMENDMENT_STALE',
+        );
+        const nextSet = new Set(next);
+        failClosed(item.writeScopes.every((scope) => nextSet.has(scope)), 'WORK_ITEM_SCOPE_AMENDMENT_NOT_SUPERSET');
+        failClosed(next.length > item.writeScopes.length, 'WORK_ITEM_SCOPE_AMENDMENT_NO_CHANGE');
+        proposed.set(itemKey, { ...item, writeScopes: next });
+      }
+
+      const effective = currentItems.map((item) => proposed.get(item.itemKey) ?? item);
+      for (let leftIndex = 0; leftIndex < effective.length; leftIndex += 1) {
+        const left = effective[leftIndex]!;
+        if (!left.wave) continue;
+        for (let rightIndex = leftIndex + 1; rightIndex < effective.length; rightIndex += 1) {
+          const right = effective[rightIndex]!;
+          if (left.wave !== right.wave) continue;
+          failClosed(!workItemsConflict(left, right), 'WORK_ITEM_SCOPE_AMENDMENT_WAVE_CONFLICT');
+        }
+      }
+
+      const updated: WorkItem[] = [];
+      const at = iso();
+      for (const amendment of amendments) {
+        const current = byKey.get(amendment.itemKey.trim())!;
+        const next = proposed.get(current.itemKey)!;
+        const result = this.db
+          .prepare(
+            "UPDATE work_items SET write_scopes=?,updated_at=? WHERE work_item_id=? AND status IN ('FAILED','BLOCKED') AND exact_accepted_revision IS NULL AND write_scopes=?",
+          )
+          .run(encode(next.writeScopes), at, current.workItemId, encode(current.writeScopes));
+        if (Number(result.changes) !== 1) throw new StaleStateError('WORK_ITEM_SCOPE_AMENDMENT_STALE');
+        this.events.appendInTransaction(
+          makeEvent(current.workItemId, 'WORK_ITEM', 'WORK_ITEM_WRITE_SCOPES_AMENDED', {
+            planId,
+            itemKey: current.itemKey,
+            from: current.writeScopes,
+            to: next.writeScopes,
+            reason: amendment.reason.trim(),
+          }),
+        );
+        updated.push(this.getWorkItem(current.workItemId));
+      }
+      return { plan: this.getPlan(planId), workItems: updated };
     });
   }
 
