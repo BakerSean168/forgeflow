@@ -8,8 +8,8 @@ import test from 'node:test';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 import type { WorkspaceDescriptor } from '../src/core/orchestration/contracts.js';
 import { openDatabase, SCHEMA_VERSION, SCHEMA_SQL } from '../src/core/persistence/database.js';
-import { JulesAdapter } from '../src/core/adapters/jules.js';
-import { MaintenanceCandidateRegistry } from '../src/core/adapters/maintenance.js';
+import { JulesAdapter } from '../src/integrations/providers/index.js';
+import { MaintenanceCandidateRegistry } from '../src/core/maintenance/index.js';
 import { createRepositories } from '../src/core/persistence/repositories.js';
 
 function tempDatabase(prefix: string): string {
@@ -1218,7 +1218,7 @@ test('Jules correlation preserves immutable session lineage and validates remote
     baseRevision: 'base-sha',
     objective: 'Refactor the rendering boundary',
   };
-  let remote: import('../src/core/adapters/jules.js').JulesTaskResult = {
+  let remote: import('../src/integrations/providers/index.js').JulesTaskResult = {
     sessionId: 'jules-session-1',
     repository: request.repository,
     baseRevision: request.baseRevision,

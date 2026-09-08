@@ -9,7 +9,7 @@ import {
   type SpawnSyncReturns,
 } from 'node:child_process';
 
-import { GitHubCliDeliveryAdapter } from '../src/core/adapters/githubDelivery.js';
+import { GitHubCliDeliveryAdapter } from '../src/integrations/delivery/index.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 import type { PlanDelivery } from '../src/core/domain/delivery.js';
 import type { Plan } from '../src/core/domain/plan.js';

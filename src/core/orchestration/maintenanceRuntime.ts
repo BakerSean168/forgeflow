@@ -4,23 +4,17 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import {
   MaintenanceCandidateRegistry,
+  improvementDiagnosisContextDigest,
   type ImprovementCanaryAttestation,
   type ImprovementCandidate,
   type ImprovementDiagnosisAttestation,
-  type ImprovementSelfPromotionRequest,
-  type MaintenanceProgram,
-} from '../adapters/maintenance.js';
-import {
-  improvementDiagnosisContextDigest,
   type ImprovementDiagnosisClientPort,
   type ImprovementDiagnosisInput,
-} from '../adapters/improvementDiagnosis.js';
-import type {
-  SelfChangeCanaryPort,
-} from '../adapters/selfChangeCanary.js';
-import type {
-  SelfChangePromotionQueuePort,
-} from '../adapters/selfChangePromotion.js';
+  type ImprovementSelfPromotionRequest,
+  type MaintenanceProgram,
+  type SelfChangeCanaryPort,
+  type SelfChangePromotionQueuePort,
+} from '../maintenance/index.js';
 import type { PlanDeliveryConfig } from '../domain/delivery.js';
 import { ForgeFlowError, failClosed } from '../domain/errors.js';
 import type { Plan } from '../domain/plan.js';

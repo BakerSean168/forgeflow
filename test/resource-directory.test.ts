@@ -13,7 +13,7 @@ import {
   ResourceStateService,
   StaticResourceDirectory,
   providerNativeResources,
-} from '../src/core/adapters/resourceDirectory.js';
+} from '../src/integrations/resources/index.js';
 import { openDatabase } from '../src/core/persistence/database.js';
 import { ResourceSelector } from '../src/core/orchestration/resourceSelector.js';
 import { createRepositories } from '../src/core/persistence/repositories.js';

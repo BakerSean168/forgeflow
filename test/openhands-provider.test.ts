@@ -18,7 +18,7 @@ import {
   OpenHandsZCodeExecutionProvider,
   createOpenHandsProviderForSelection,
   mapOpenHandsStatus,
-} from '../src/core/adapters/openHandsCoding.js';
+} from '../src/integrations/providers/index.js';
 import type {
   ProviderLaunchInput,
   ProviderSessionReplacementInput,

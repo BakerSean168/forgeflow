@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { HttpOpenHandsSupervisorClient } from '../src/core/adapters/openhands.js';
+import { HttpOpenHandsSupervisorClient } from '../src/integrations/providers/index.js';
 
 test('OpenHands supervisor conversations persist bounded input without running a second model', async () => {
   const calls: Array<{ url: string; body: Record<string, any>; headers: Record<string, string> }> = [];

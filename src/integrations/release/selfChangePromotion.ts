@@ -3,21 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { ForgeFlowError, failClosed } from '../../core/domain/errors.js';
-
-export interface SelfChangePromotionRequest {
-  version: 1;
-  candidateId: string;
-  planId: string;
-  sourceRevision: string;
-  artifactSha256: string;
-  canaryAttestationId: string;
-  requestedAt: string;
-}
-
-export interface SelfChangePromotionQueuePort {
-  request(input: SelfChangePromotionRequest): SelfChangePromotionRequest;
-  current(): SelfChangePromotionRequest | undefined;
-}
+import type {
+  SelfChangePromotionQueuePort,
+  SelfChangePromotionRequest,
+} from '../../core/maintenance/index.js';
+export type {
+  SelfChangePromotionQueuePort,
+  SelfChangePromotionRequest,
+} from '../../core/maintenance/index.js';
 
 function validate(value: SelfChangePromotionRequest): void {
   const identity = /^[A-Za-z0-9._:-]{1,200}$/;

@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { ResourceSelectedImprovementDiagnosisClient } from '../integrations/providers/index.js';
-import { MaintenanceCandidateRegistry } from '../core/adapters/maintenance.js';
+import { MaintenanceCandidateRegistry } from '../core/maintenance/index.js';
 import { ResourceStateService } from '../integrations/resources/index.js';
 import { ExactShaSelfChangeCanary } from '../integrations/release/index.js';
 import { FileSelfChangePromotionQueue } from '../integrations/release/index.js';

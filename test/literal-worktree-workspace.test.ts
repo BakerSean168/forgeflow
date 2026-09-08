@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { LiteralWorktreeWorkspaceAdapter } from '../src/core/adapters/literalWorktreeWorkspace.js';
-import { PlanWorktreeManager } from '../src/core/adapters/planWorktrees.js';
+import { LiteralWorktreeWorkspaceAdapter } from '../src/integrations/workspaces/index.js';
+import { PlanWorktreeManager } from '../src/integrations/workspaces/index.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 import { openDatabase } from '../src/core/persistence/database.js';
 import { createRepositories } from '../src/core/persistence/repositories.js';
