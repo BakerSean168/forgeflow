@@ -826,3 +826,32 @@ Release closure:
 Status: **completed**.
 
 Legacy adapter retirement, V1 contract hardening, compatibility floors, generated semantic operation types, terminal cleanup hardening, dependency-direction enforcement, and release-gated real-provider verification are all in place. Future SDK ergonomics and other additive developer-experience work continue as bounded V1.x follow-ups rather than extending the refactor phase.
+
+
+### Batch 10 — V1.x semantic SDK operations
+
+Status: **implemented; release closure targets v1.4.0**.
+
+Completed:
+
+- client codegen now emits an exact `operationId -> HTTP method/path` map directly from `api/openapi.v1.json`;
+- `createForgeFlowClient()` remains backward-compatible with raw `GET` / `POST` / `request` methods and adds `client.operations.<operationId>()`;
+- semantic method parameter requiredness is derived from `openapi-fetch` `FetchOptions<operations[operationId]>`, so required path/header/body input remains compile-time enforced;
+- semantic method response types are derived directly from generated OpenAPI operations, with no hand-written DTO or facade authority;
+- all 45 hardened V1 operations are exposed through the generated map; generation fails on missing or duplicate `operationId` values;
+- no-argument operations, required path parameters, required request bodies, request serialization, response typing, package build, self-reference exports, and npm pack surface are covered by client tests.
+
+Verification before PR:
+
+- full repository tests: 410/410 passing;
+- client tests: 7/7 passing;
+- V1 operation registry: 45/45 with unique IDs;
+- compatibility: candidate passes both committed V1 floors;
+- client codegen drift, TypeScript, server/client build, and npm-pack dry-run: passing.
+
+Next:
+
+1. merge only after PR and main CI pass;
+2. deploy exact merge SHA and run the normal fresh real-provider lifecycle acceptance for v1.4.0;
+3. create the v1.4.0 Tag/Latest GitHub Release only after ATTESTED;
+4. npm publication of `@forgeflow/client` remains an explicit distribution action, not an implicit control-plane deploy side effect.
