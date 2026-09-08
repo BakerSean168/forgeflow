@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { createForgeFlowClient } from '../src/index.js';
+import { createForgeFlowClient, FORGEFLOW_OPERATION_ROUTES } from '../src/index.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -44,6 +44,59 @@ test('client serializes typed path parameters and default headers through OpenAP
 
   assert.equal(observed?.url, 'https://forgeflow.test/api/v1/projects/memo%20flow');
   assert.equal(observed?.headers.get('x-forgeflow-test'), 'typed-client');
+});
+
+
+
+test('semantic operation methods preserve generated method, path, body, and response transport', async () => {
+  const observed: Request[] = [];
+  const fetchMock: typeof fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    observed.push(request);
+    if (request.method === 'POST') return Response.json({ plan: { planId: 'plan-semantic' } }, { status: 201 });
+    return Response.json({ project: { projectKey: 'memo flow' } });
+  };
+  const client = createForgeFlowClient({ baseUrl: 'https://forgeflow.test', fetch: fetchMock });
+
+  const projects = await client.operations.projectsList();
+  assert.equal(projects.response.status, 200);
+  assert.equal(observed[0]?.method, 'GET');
+  assert.equal(observed[0]?.url, 'https://forgeflow.test/api/v1/projects');
+
+  const project = await client.operations.projectsGet({
+    params: { path: { projectKey: 'memo flow' } },
+  });
+  assert.equal(project.response.status, 200);
+  assert.equal(observed[1]?.method, 'GET');
+  assert.equal(observed[1]?.url, 'https://forgeflow.test/api/v1/projects/memo%20flow');
+
+  const created = await client.operations.plansCreate({
+    body: {
+      projectKey: 'memoflow',
+      objective: 'exercise semantic client operations',
+      baseRevision: 'deadbeef',
+    },
+  });
+  assert.equal(created.response.status, 201);
+  assert.equal(observed[2]?.method, 'POST');
+  assert.equal(observed[2]?.url, 'https://forgeflow.test/api/v1/plans');
+  assert.deepEqual(await observed[2]?.clone().json(), {
+    projectKey: 'memoflow',
+    objective: 'exercise semantic client operations',
+    baseRevision: 'deadbeef',
+  });
+});
+
+test('generated semantic operation map covers the complete hardened contract', () => {
+  assert.equal(Object.keys(FORGEFLOW_OPERATION_ROUTES).length, 45);
+  assert.deepEqual(FORGEFLOW_OPERATION_ROUTES.plansGet, {
+    method: 'get',
+    path: '/api/v1/plans/{planId}',
+  });
+  assert.deepEqual(FORGEFLOW_OPERATION_ROUTES.supervisorsDecide, {
+    method: 'post',
+    path: '/api/v1/supervisors/{supervisorId}/decisions',
+  });
 });
 
 test('client package has no server-internal source dependency and generated schema names its authority', () => {
