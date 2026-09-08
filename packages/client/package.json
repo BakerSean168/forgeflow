@@ -1,0 +1,42 @@
+{
+  "name": "@forgeflow/client",
+  "version": "1.2.0",
+  "description": "Typed OpenAPI client for the ForgeFlow autonomous software engineering control plane",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run check-types && node --test --import tsx test/client.test.ts",
+    "pretest": "npm run build",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm test",
+    "check-types": "tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "types": "./dist/index.d.ts",
+  "main": "./dist/index.js",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BakerSean168/forgeflow.git",
+    "directory": "packages/client"
+  }
+}
