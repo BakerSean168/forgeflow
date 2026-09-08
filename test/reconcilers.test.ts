@@ -174,7 +174,7 @@ test('plan reconciler preserves maintenance and queue ordering while detaching a
       },
     },
   } as unknown as ExecutionAutomationRuntime;
-  const queue = { reconcile: async () => void calls.push('queue') } as unknown as ProjectPlanQueueRuntime;
+  const queue = { reconcile: async () => { calls.push('queue'); return []; } } as unknown as ProjectPlanQueueRuntime;
   const storage = {
     reconcile: async () => void calls.push('storage'),
   } as unknown as StorageMaintenanceReconciler;
@@ -191,4 +191,45 @@ test('plan reconciler preserves maintenance and queue ordering while detaching a
   );
   await reconciler.reconcile({ trigger: 'INTERVAL' });
   assert.deepEqual(calls, ['storage', 'queue', 'plans', 'admission-detached']);
+});
+
+
+test('plan reconciler surfaces terminal queue cleanup failures instead of silently retrying them', async () => {
+  const errors: Array<{ data: unknown; message: string }> = [];
+  const observedLogger = {
+    info: () => undefined,
+    error: (data: unknown, message: string) => void errors.push({ data, message }),
+  };
+  const automation = {
+    plans: { runOnce: async () => [] },
+  } as unknown as ExecutionAutomationRuntime;
+  const queue = {
+    reconcile: async () => [
+      {
+        projectKey: 'forgeflow-smoke',
+        code: 'WORKSPACE_EVIDENCE_AMBIGUOUS',
+        failure: true as const,
+      },
+    ],
+  } as unknown as ProjectPlanQueueRuntime;
+  const storage = { reconcile: async () => undefined } as unknown as StorageMaintenanceReconciler;
+  const runtimeAdmission = {
+    requestDetached: () => undefined,
+  } as unknown as RuntimeAdmissionReconciler;
+  const reconciler = new PlanLifecycleReconciler(
+    automation,
+    queue,
+    storage,
+    runtimeAdmission,
+    { enabled: true, pollMs: 5 } as never,
+    observedLogger,
+  );
+
+  await reconciler.reconcile({ trigger: 'INTERVAL' });
+  assert.deepEqual(errors, [
+    {
+      data: { projectKey: 'forgeflow-smoke', code: 'WORKSPACE_EVIDENCE_AMBIGUOUS' },
+      message: 'project Plan queue reconciliation failed',
+    },
+  ]);
 });

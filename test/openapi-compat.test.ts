@@ -6,7 +6,7 @@ import { checkOpenApiCompatibility } from '../scripts/check-openapi-compat.mts';
 
 const baseline = JSON.parse(fs.readFileSync('api/compat/openapi.v1.2.1.json', 'utf8')) as Record<string, any>;
 const hardenedBaseline = JSON.parse(
-  fs.readFileSync('api/compat/openapi.v1.3.0.json', 'utf8'),
+  fs.readFileSync('api/compat/openapi.v1.3.1.json', 'utf8'),
 ) as Record<string, any>;
 const clone = () => structuredClone(baseline) as Record<string, any>;
 
@@ -78,7 +78,7 @@ test('OpenAPI compatibility rejects enum narrowing and response guarantee weaken
 });
 
 
-test('hardened v1.3.0 floor protects optional bodies and action enums', () => {
+test('hardened v1.3.1 floor protects optional bodies and action enums', () => {
   const candidate = structuredClone(hardenedBaseline) as Record<string, any>;
   candidate.paths['/api/v1/improvements/{candidateId}/adopt'].post.requestBody.required = true;
   candidate.paths['/api/v1/supervisors/{supervisorId}/decisions'].post.requestBody.content['application/json']

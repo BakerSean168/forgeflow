@@ -11,7 +11,7 @@ ForgeFlow is an independent control plane. External integrations and orchestrato
 - `npm run check:api-contract` fails when the generated contract drifts from the checked-in artifact.
 - `npm run check:api-compat` compares the candidate contract against every committed compatibility baseline under `api/compat/`.
 - `npm run check:api-operations` and `npm run check:api-coverage` require stable unique operation identities plus complete response/body coverage for all 45 public operations.
-- OpenAPI `info.version` is the HTTP contract version; it is intentionally independent from ForgeFlow/server and npm-package SemVer. The v1.3.0 release carries API contract version `1.2.0`.
+- OpenAPI `info.version` is the HTTP contract version; it is intentionally independent from ForgeFlow/server and npm-package SemVer. The v1.3.1 release carries API contract version `1.2.0`; the v1.3.0 exact-SHA candidate was not released because its production lifecycle acceptance did not complete terminal worktree retirement.
 
 Within `v1`, changes should be additive and backward compatible. Removing or changing the meaning of an existing field, status, or route requires an explicit migration or a new API version.
 
@@ -45,7 +45,7 @@ New API modules should:
 5. regenerate and commit `api/openapi.v1.json`;
 6. add an API-level test using Fastify injection.
 
-All retained V1 public operations now have an explicit generated contract. The Phase-1 compatibility exception is **closed as of v1.3.0**.
+All retained V1 public operations now have an explicit generated contract. The Phase-1 compatibility exception is **closed as of v1.3.1**.
 
 ### Legacy V1 runtime compatibility
 
@@ -57,7 +57,7 @@ The older V1 handlers originally performed validation inside their transport/app
 - the four historically optional bodies (`plansReconcile`, `executionsContinue`, `executionsReplaceProviderSession`, `improvementsAdopt`) remain optional in the generated contract;
 - historical generated response statuses are retained when the runtime also exposes a more accurate status, so hardening is monotonic rather than silently breaking old consumers.
 
-New routes do not get this compatibility path: they must be schema-first in their Fastify module. The committed v1.2.1 baseline protects the old documented floor, while the v1.3.0 hardened baseline protects the stronger operation IDs, request bodies, enums, response shapes, and requiredness guarantees introduced by this phase.
+New routes do not get this compatibility path: they must be schema-first in their Fastify module. The committed v1.2.1 baseline protects the old documented floor, while the v1.3.1 hardened baseline protects the stronger operation IDs, request bodies, enums, response shapes, and requiredness guarantees introduced by this phase.
 
 ## Client strategy
 
@@ -78,4 +78,4 @@ The client is generated from the committed `api/openapi.v1.json` artifact with `
 
 The package exports the exact contract SHA-256 and API/OpenAPI versions used for generation. This lets external consumers identify the contract they were compiled against without coupling package SemVer to the server's internal implementation version.
 
-The SDK intentionally keeps typed HTTP method/path calls as its runtime surface instead of hand-authored DTO wrappers. As of v1.3.0, all V1 public operations have stable `operationId` values and explicit contract coverage; generated `ForgeFlowOperations` can be used for semantic compile-time identities. Convenience methods remain optional ergonomics and, if added, must be generated/delegated from these declarations. No second DTO authority is allowed.
+The SDK intentionally keeps typed HTTP method/path calls as its runtime surface instead of hand-authored DTO wrappers. As of v1.3.1, all V1 public operations have stable `operationId` values and explicit contract coverage; generated `ForgeFlowOperations` can be used for semantic compile-time identities. Convenience methods remain optional ergonomics and, if added, must be generated/delegated from these declarations. No second DTO authority is allowed.

@@ -116,11 +116,12 @@ function attachSession(
   value: ReturnType<typeof fixture>,
   executionId: string,
   workspace: import('../src/core/orchestration/contracts.js').WorkspaceDescriptor,
+  phase: 'IMPLEMENT' | 'REVIEW' = 'IMPLEMENT',
 ) {
   value.repositories.sessions.create({
     executionId,
-    phase: 'IMPLEMENT',
-    provider: 'fake-implementation',
+    phase,
+    provider: phase === 'REVIEW' ? 'fake-review' : 'fake-implementation',
     workspace,
     sourceRevision: workspace.sourceRevision,
   });
@@ -294,7 +295,7 @@ test('literal workspace completes implementation, exact-SHA review and Plan inte
 });
 
 
-test('terminal literal Plan retirement prunes only an exact durable implementation evidence replay', async () => {
+test('terminal literal Plan retirement prunes decision-equivalent descriptive evidence drift', async () => {
   const value = fixture();
   const implementation = createExecution(
     value,
@@ -333,7 +334,18 @@ test('terminal literal Plan retirement prunes only an exact durable implementati
     resultRevision: candidate,
     resultSummary: 'implemented',
   });
-  fs.writeFileSync(staged, JSON.stringify(evidence) + '\n');
+  fs.writeFileSync(
+    staged,
+    JSON.stringify({
+      ...evidence,
+      summary: 'provider finished late and rewrote only descriptive evidence text',
+      tests: evidence.tests.map((item) => ({
+        ...item,
+        command: 'npm test -- --late-provider-summary',
+        summary: 'still passed after the controller had already promoted durable evidence',
+      })),
+    }) + '\n',
+  );
   value.repositories.plans.updateStatus(value.plan.planId, 'CANCELLED');
 
   await value.adapter.preparePlanRetirement(value.plan.planId);
@@ -346,6 +358,109 @@ test('terminal literal Plan retirement prunes only an exact durable implementati
   );
   assert.equal(git(value.repository, ['rev-parse', 'HEAD']), value.revision);
   assert.equal(git(value.repository, ['status', '--porcelain=v1']), '');
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('terminal literal Plan retirement prunes decision-equivalent Review evidence drift', async () => {
+  const value = fixture();
+  const implementation = createExecution(
+    value,
+    'exec-terminal-review-impl',
+    'IMPLEMENT',
+    value.revision,
+  );
+  const workspace = await value.adapter.provision({
+    executionId: implementation.identity.executionId,
+    planId: value.plan.planId,
+    projectKey: value.plan.projectKey,
+    workItemId: value.item.workItemId,
+    repositoryPath: value.repository,
+    sourceRevision: value.revision,
+    phase: 'IMPLEMENT',
+  });
+  attachSession(value, implementation.identity.executionId, workspace);
+  fs.mkdirSync(path.join(workspace.hostPath, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspace.hostPath, 'src/item.txt'), 'implemented\n');
+  git(workspace.hostPath, ['add', 'src/item.txt']);
+  git(workspace.hostPath, ['commit', '-m', 'feat: implement review retirement case']);
+  const candidate = git(workspace.hostPath, ['rev-parse', 'HEAD']);
+  fs.writeFileSync(
+    path.join(workspace.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE),
+    JSON.stringify(
+      implementationEvidence(implementation.identity.executionId, value.revision, candidate),
+    ) + '\n',
+  );
+  await value.adapter.verifyImplementation(workspace);
+  value.repositories.executions.updateStatus(implementation.identity.executionId, 'RUNNING');
+  value.repositories.executions.recordResult(implementation.identity.executionId, {
+    status: 'SUCCEEDED',
+    resultRevision: candidate,
+    resultSummary: 'implemented',
+  });
+
+  const reviewExecution = createExecution(
+    value,
+    'exec-terminal-review',
+    'REVIEW',
+    candidate,
+    implementation.identity.executionId,
+  );
+  const reviewWorkspace = await value.adapter.provision({
+    executionId: reviewExecution.identity.executionId,
+    planId: value.plan.planId,
+    projectKey: value.plan.projectKey,
+    workItemId: value.item.workItemId,
+    repositoryPath: value.repository,
+    sourceRevision: candidate,
+    phase: 'REVIEW',
+  });
+  attachSession(value, reviewExecution.identity.executionId, reviewWorkspace, 'REVIEW');
+  const reviewEvidence = {
+    version: 1,
+    executionId: reviewExecution.identity.executionId,
+    phase: 'REVIEW',
+    reviewedSha: candidate,
+    verdict: 'PASS',
+    summary: 'review passed',
+    findings: [],
+    checks: [{ command: 'npm test', status: 'PASS', exitCode: 0 }],
+  } as const;
+  const stagedReview = path.join(reviewWorkspace.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE);
+  fs.writeFileSync(stagedReview, JSON.stringify(reviewEvidence) + '\n');
+  await value.adapter.verifyReview(reviewWorkspace, candidate);
+  assert.equal(fs.existsSync(stagedReview), false);
+  value.repositories.executions.updateStatus(reviewExecution.identity.executionId, 'RUNNING');
+  value.repositories.executions.recordResult(reviewExecution.identity.executionId, {
+    status: 'SUCCEEDED',
+    resultRevision: candidate,
+    resultSummary: 'reviewed',
+  });
+
+  fs.writeFileSync(
+    stagedReview,
+    JSON.stringify({
+      ...reviewEvidence,
+      summary: 'provider finished late and rewrote only Review description',
+      findings: ['late descriptive note that does not change PASS'],
+      checks: reviewEvidence.checks.map((item) => ({
+        ...item,
+        command: 'npm test -- --review-summary',
+        summary: 'still passed',
+      })),
+    }) + '\n',
+  );
+  value.repositories.plans.updateStatus(value.plan.planId, 'CANCELLED');
+
+  await value.adapter.preparePlanRetirement(value.plan.planId);
+  assert.equal(fs.existsSync(stagedReview), false);
+  await value.manager.retirePlan(value.plan.planId, process.getuid?.() ?? 1000);
+  assert.ok(
+    value.repositories.planWorktrees
+      .listByPlan(value.plan.planId)
+      .every((worktree) => worktree.state === 'RETIRED'),
+  );
 
   value.db.close();
   fs.rmSync(value.root, { recursive: true, force: true });
@@ -391,12 +506,15 @@ test('terminal literal Plan retirement rejects a differing evidence replay and l
   fs.writeFileSync(
     staged,
     JSON.stringify(
-      implementationEvidence(
-        implementation.identity.executionId,
-        value.revision,
-        candidate,
-        'tampered replay',
-      ),
+      {
+        ...implementationEvidence(
+          implementation.identity.executionId,
+          value.revision,
+          candidate,
+          'descriptive text may drift',
+        ),
+        tests: [{ command: 'test', status: 'PASS', exitCode: 1 }],
+      },
     ) + '\n',
   );
 
