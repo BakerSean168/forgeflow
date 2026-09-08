@@ -16,8 +16,8 @@ const [
   { openDatabase },
   { createRepositories },
 ] = await Promise.all([
-  import(distModule('core/adapters/literalWorktreeWorkspace.js')),
-  import(distModule('core/adapters/planWorktrees.js')),
+  import(distModule('integrations/workspaces/index.js')),
+  import(distModule('integrations/workspaces/index.js')),
   import(distModule('core/persistence/database.js')),
   import(distModule('core/persistence/repositories.js')),
 ]);

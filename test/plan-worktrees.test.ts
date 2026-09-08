@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { PlanWorktreeManager, worktreeRefComponent } from '../src/core/adapters/planWorktrees.js';
+import { PlanWorktreeManager, worktreeRefComponent } from '../src/integrations/workspaces/index.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 import { openDatabase, SCHEMA_VERSION } from '../src/core/persistence/database.js';
 import { createRepositories } from '../src/core/persistence/repositories.js';

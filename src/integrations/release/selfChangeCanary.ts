@@ -4,24 +4,16 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { ForgeFlowError, failClosed } from '../../core/domain/errors.js';
-
-export interface SelfChangeCanaryInput {
-  candidateId: string;
-  planId: string;
-  sourceRevision: string;
-}
-
-export interface SelfChangeCanaryResult {
-  sourceRevision: string;
-  artifactSha256: string;
-  result: 'PASSED' | 'FAILED';
-  checks: string[];
-  observedAt: string;
-}
-
-export interface SelfChangeCanaryPort {
-  run(input: SelfChangeCanaryInput): Promise<SelfChangeCanaryResult>;
-}
+import type {
+  SelfChangeCanaryInput,
+  SelfChangeCanaryPort,
+  SelfChangeCanaryResult,
+} from '../../core/maintenance/index.js';
+export type {
+  SelfChangeCanaryInput,
+  SelfChangeCanaryPort,
+  SelfChangeCanaryResult,
+} from '../../core/maintenance/index.js';
 
 export interface ExactShaSelfChangeCanaryOptions {
   repositoryPath: string;

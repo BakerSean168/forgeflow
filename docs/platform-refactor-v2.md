@@ -625,7 +625,7 @@ Completed:
 - P4-05 narrow integration surfaces are enforced: Provider uses a registry because multiple concrete implementations are selected dynamically, while Workspace/Resource/Delivery use capability-specific assemblies/ports rather than an artificial universal plugin context;
 - Supervisor core no longer depends on concrete OpenHands; it consumes the new `SupervisorConversationHost` core port;
 - release/intake integrations are physically separated under `src/integrations/release/` and `src/integrations/intake/`;
-- old `src/core/adapters/*` public paths remain only as explicit deprecated compatibility re-exports where required, scheduled for Phase 6 retirement.
+- Phase 4 initially retained deprecated `src/core/adapters/*` compatibility re-exports; Phase 6 Batch 1 has now retired that layer after all consumers migrated to capability package surfaces.
 
 Realized integration package map:
 
@@ -643,7 +643,7 @@ src/integrations/
 Dependency rules now enforced by CI:
 
 - core feature code cannot import concrete integrations;
-- `core/adapters/*` is the only temporary compatibility-shim exception;
+- core feature code has no integration exception; the former `core/adapters/*` compatibility directory is retired and CI forbids recreating it;
 - API/Application cannot import integrations;
 - bootstrap can consume integration capability package `index.ts` surfaces, not concrete files;
 - integrations cannot depend back on API/Application/Bootstrap;
@@ -675,7 +675,7 @@ Next:
 
 ### Batch 6 — Phase-5 typed client / SDK
 
-Status: **implemented; closure requires the normal PR/main-CI/exact-SHA v1.2.0 release and real-provider acceptance gates**.
+Status: **completed and production-attested in v1.2.0**.
 
 Completed:
 
@@ -705,8 +705,37 @@ Verification before PR:
 - npm pack dry-run succeeds with the intended dist/README/package metadata surface;
 - `packages/client/src` server-internal imports: 0.
 
+Verification and release closure:
+
+- PR #11 and main CI passed from a clean GitHub checkout;
+- v1.2.0 exact-SHA release `1dc4bf906d8813bb19ae6f4fb5f5f38e84f40f92` is HEALTHY;
+- real-provider lifecycle acceptance is ATTESTED at the same source/artifact identity;
+- the acceptance exercised same-wave execution, two first-attempt meaningful-progress stalls, deterministic route retry/failover, two successful second attempts, two independent exact-SHA PASS reviews, six provider cleanup proofs, five worktree retirements, lease release, and zero activation failures.
+
+### Batch 7 — Phase-6 legacy adapter retirement
+
+Status: **implemented; release closure targets v1.2.1**.
+
+Completed:
+
+- deleted every deprecated external `src/core/adapters/*` compatibility re-export and the old adapter barrel;
+- moved the durable Maintenance/Improvement registry from the misleading adapter location to `src/core/maintenance/registry.ts`;
+- added `src/core/maintenance/contracts.ts` as the provider-neutral authority for Improvement diagnosis inputs/results/digest plus self-change canary/promotion ports;
+- Provider and Release integrations now implement/re-export those core contracts rather than defining authority that core orchestration must import back through a shim;
+- migrated repository tests and smoke tooling to `src/integrations/<capability>/index` package surfaces or `src/core/maintenance/index`;
+- deleted the unused adapter-shaped `resourceState.ts` re-export; domain resource-routing policy remains the authority;
+- architecture CI now fails if `src/core/adapters/` is recreated and core feature code has zero concrete integration import exceptions.
+
+Verification before PR:
+
+- focused regression: 394/394 passing;
+- full repository/client deterministic gate: passing;
+- retired `core/adapters` source/test/smoke consumers: 0;
+- core -> integrations imports: 0;
+- TypeScript/OpenAPI/client drift/build/pack gates: passing.
+
 Next:
 
-1. release Phase 5 as v1.2.0 if PR/main CI remain green;
-2. run a fresh exact-SHA real-provider lifecycle acceptance on v1.2.0 even though runtime API semantics are unchanged;
-3. only after ATTESTED, enter Phase 6 compatibility-shim retirement and optional API-schema/`operationId` hardening.
+1. release Batch 7 as v1.2.1 after PR/main CI and exact-SHA lifecycle acceptance;
+2. continue Phase 6 with API compatibility automation and schema/`operationId` hardening in bounded contract-preserving groups;
+3. only generate semantic client convenience methods from the hardened OpenAPI operation identities, never from a second DTO authority.

@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { MaintenanceCandidateRegistry } from '../src/core/adapters/maintenance.js';
 import {
+  MaintenanceCandidateRegistry,
   improvementDiagnosisContextDigest,
   type ImprovementDiagnosisClientPort,
   type ImprovementDiagnosisInput,
-} from '../src/core/adapters/improvementDiagnosis.js';
+  type SelfChangeCanaryPort,
+  type SelfChangePromotionQueuePort,
+  type SelfChangePromotionRequest,
+} from '../src/core/maintenance/index.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 import { createExecutionResourceSelection } from '../src/core/domain/resourceRouting.js';
 import { PlanKernel } from '../src/core/kernel/planKernel.js';
@@ -14,11 +17,6 @@ import {
   MaintenanceImprovementRuntime,
   type ImprovementReleaseProvenance,
 } from '../src/core/orchestration/maintenanceRuntime.js';
-import type { SelfChangeCanaryPort } from '../src/core/adapters/selfChangeCanary.js';
-import type {
-  SelfChangePromotionQueuePort,
-  SelfChangePromotionRequest,
-} from '../src/core/adapters/selfChangePromotion.js';
 import { ProjectPlanQueueRuntime } from '../src/core/orchestration/projectPlanQueueRuntime.js';
 import { openDatabase } from '../src/core/persistence/database.js';
 import { createRepositories } from '../src/core/persistence/repositories.js';

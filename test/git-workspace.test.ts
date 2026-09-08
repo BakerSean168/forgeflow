@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { LocalGitWorkspaceAdapter } from '../src/core/adapters/gitWorkspace.js';
+import { LocalGitWorkspaceAdapter } from '../src/integrations/workspaces/index.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 import { REPOSITORY_COMPLETION_EVIDENCE_FILE } from '../src/core/orchestration/contracts.js';
 import type {

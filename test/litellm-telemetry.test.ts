@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { LiteLlmExecutionTelemetry } from '../src/core/adapters/liteLlmTelemetry.js';
+import { LiteLlmExecutionTelemetry } from '../src/integrations/resources/index.js';
 
 async function listen(server: Server): Promise<number> {
   return new Promise((resolve, reject) => {

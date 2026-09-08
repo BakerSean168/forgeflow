@@ -7,11 +7,11 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { buildControlPlane } from '../src/app.js';
-import { ExactShaSelfChangeCanary } from '../src/core/adapters/selfChangeCanary.js';
+import { ExactShaSelfChangeCanary } from '../src/integrations/release/index.js';
 import {
   FileSelfChangePromotionQueue,
   type SelfChangePromotionRequest,
-} from '../src/core/adapters/selfChangePromotion.js';
+} from '../src/integrations/release/index.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

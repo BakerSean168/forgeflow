@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ProjectScopedWorkspaceAdapter } from '../src/core/adapters/projectScopedWorkspace.js';
-import type { LiteralWorktreeWorkspaceAdapter } from '../src/core/adapters/literalWorktreeWorkspace.js';
+import { ProjectScopedWorkspaceAdapter } from '../src/integrations/workspaces/index.js';
+import type { LiteralWorktreeWorkspaceAdapter } from '../src/integrations/workspaces/index.js';
 import type { WorkspaceDescriptor, WorkspaceProviderPort } from '../src/core/orchestration/contracts.js';
 import type { ForgeFlowRepositories } from '../src/core/persistence/repositories.js';
 

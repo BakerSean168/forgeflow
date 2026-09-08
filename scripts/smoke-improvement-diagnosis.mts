@@ -4,11 +4,11 @@ import {
   ResourceSelectedImprovementDiagnosisClient,
   improvementDiagnosisContextDigest,
   type ImprovementDiagnosisInput,
-} from '../src/core/adapters/improvementDiagnosis.ts';
+} from '../src/integrations/providers/index.ts';
 import {
   LiteLlmResourceDirectory,
   StaticResourceDirectory,
-} from '../src/core/adapters/resourceDirectory.ts';
+} from '../src/integrations/resources/index.ts';
 import { ForgeFlowError } from '../src/core/domain/errors.ts';
 import type {
   ExecutionResourceSelection,

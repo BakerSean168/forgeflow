@@ -19,13 +19,13 @@ import { PlanKernel } from '../src/core/kernel/planKernel.js';
 import { buildBoundedProjection } from '../src/core/supervisor/projection.js';
 import { parseSupervisorDecision } from '../src/core/supervisor/protocol.js';
 import { SupervisorActionExecutor } from '../src/core/supervisor/executor.js';
-import { JulesAdapter } from '../src/core/adapters/jules.js';
-import { GitHubPrIntake } from '../src/core/adapters/github.js';
-import { AntiGravityReadinessAdapter } from '../src/core/adapters/antigravity.js';
-import { MaintenanceCandidateRegistry } from '../src/core/adapters/maintenance.js';
+import { JulesAdapter } from '../src/integrations/providers/index.js';
+import { GitHubPrIntake } from '../src/integrations/intake/index.js';
+import { AntiGravityReadinessAdapter } from '../src/integrations/providers/index.js';
+import { MaintenanceCandidateRegistry } from '../src/core/maintenance/index.js';
 import { SupervisorWakeScheduler } from '../src/core/supervisor/scheduler.js';
 import { SupervisorRuntime } from '../src/core/supervisor/runtime.js';
-import { OpenHandsSupervisorAdapter } from '../src/core/adapters/openhands.js';
+import { OpenHandsSupervisorAdapter } from '../src/integrations/providers/index.js';
 import { HttpSupervisorDecisionClient } from '../src/core/supervisor/runtime.js';
 import { SupervisorActionExecutor } from '../src/core/supervisor/executor.js';
 

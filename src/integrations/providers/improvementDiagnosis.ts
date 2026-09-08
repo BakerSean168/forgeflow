@@ -1,13 +1,26 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import {
   IMPROVEMENT_DIAGNOSIS_CLASSIFICATIONS,
   IMPROVEMENT_DIAGNOSIS_CONFIDENCES,
   IMPROVEMENT_DIAGNOSIS_DISPOSITIONS,
   assertSafeImprovementDiagnosisText,
-  type ImprovementCandidate,
+  improvementDiagnosisContextDigest,
+  type ImprovementDiagnosisClientPort,
+  type ImprovementDiagnosisInput,
+  type ImprovementDiagnosisObservation,
   type ImprovementDiagnosisProposal,
-} from '../../core/adapters/maintenance.js';
+  type ImprovementDiagnosisResult,
+} from '../../core/maintenance/index.js';
+export {
+  improvementDiagnosisContextDigest,
+} from '../../core/maintenance/index.js';
+export type {
+  ImprovementDiagnosisClientPort,
+  ImprovementDiagnosisInput,
+  ImprovementDiagnosisObservation,
+  ImprovementDiagnosisResult,
+} from '../../core/maintenance/index.js';
 import { ForgeFlowError, failClosed } from '../../core/domain/errors.js';
 import {
   createExecutionResourceSelection,
@@ -18,40 +31,6 @@ import {
 import type { ResourceSelectionExclusion, ResourceSelector } from '../../core/orchestration/resourceSelector.js';
 import type { EventStore } from '../../core/persistence/eventStore.js';
 import { supervisorProviderEndpoint } from '../../core/supervisor/resourceClient.js';
-
-export interface ImprovementDiagnosisObservation {
-  evidenceRef: string;
-  phase: string;
-  errorCode: string;
-  route: string;
-  status: 'FAILED' | 'BLOCKED';
-  retryable: boolean | null;
-  updatedAt: string;
-}
-
-export interface ImprovementDiagnosisInput {
-  candidateId: string;
-  programId: string;
-  fingerprint: string;
-  projectKey: string;
-  currentRisk: ImprovementCandidate['risk'];
-  failurePattern: {
-    phase: string;
-    errorCode: string;
-    observedCount: number;
-  };
-  observations: ImprovementDiagnosisObservation[];
-}
-
-export interface ImprovementDiagnosisResult {
-  contextDigest: string;
-  proposal: ImprovementDiagnosisProposal;
-  selection: ExecutionResourceSelection;
-}
-
-export interface ImprovementDiagnosisClientPort {
-  diagnose(input: ImprovementDiagnosisInput): Promise<ImprovementDiagnosisResult>;
-}
 
 export interface ImprovementDiagnosisResourceFeedbackPort {
   success(selection: ExecutionResourceSelection, source?: ResourceStateOverrideSource): void;
@@ -201,21 +180,6 @@ function providerFailureMessage(body: string, status: number): string {
 async function boundedResponseText(response: Response, maximumBytes = 4_096): Promise<string> {
   const body = await response.text();
   return body.slice(0, maximumBytes);
-}
-
-export function improvementDiagnosisContextDigest(input: ImprovementDiagnosisInput): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        candidateId: input.candidateId,
-        programId: input.programId,
-        fingerprint: input.fingerprint,
-        projectKey: input.projectKey,
-        failurePattern: input.failurePattern,
-        observations: input.observations,
-      }),
-    )
-    .digest('hex');
 }
 
 export function parseImprovementDiagnosis(

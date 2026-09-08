@@ -6,8 +6,8 @@ import {
   improvementDiagnosisContextDigest,
   parseImprovementDiagnosis,
   type ImprovementDiagnosisInput,
-} from '../src/core/adapters/improvementDiagnosis.js';
-import { StaticResourceDirectory } from '../src/core/adapters/resourceDirectory.js';
+} from '../src/integrations/providers/index.js';
+import { StaticResourceDirectory } from '../src/integrations/resources/index.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 import type {
   ExecutionResource,

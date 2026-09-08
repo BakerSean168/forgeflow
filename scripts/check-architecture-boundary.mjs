@@ -6,6 +6,9 @@ import ts from 'typescript';
 const root = path.resolve(import.meta.dirname, '..');
 const sourceRoot = path.join(root, 'src');
 const failures = [];
+const retiredAdapterRoot = path.join(sourceRoot, 'core', 'adapters');
+if (fs.existsSync(retiredAdapterRoot))
+  failures.push('src/core/adapters: retired compatibility adapter directory must not be recreated');
 const legacyCompositionRouteBudget = 0;
 const compositionSource = fs.readFileSync(path.join(sourceRoot, 'app.ts'), 'utf8');
 const inlineRoutes = compositionSource.match(/\bapp\.(?:get|post|put|patch|delete)\(/g)?.length ?? 0;
@@ -83,7 +86,7 @@ for (const file of visit(sourceRoot)) {
     if (relative.startsWith('src/core/')) {
       if (target.includes('/api/') || target.includes('/platform/') || /(?:^|\/)app\.js$/.test(target))
         failures.push(`${relative}: core must not depend on API/platform/composition root: ${target}`);
-      if (target.includes('/integrations/') && !relative.startsWith('src/core/adapters/'))
+      if (target.includes('/integrations/'))
         failures.push(`${relative}: core feature code must depend on ports, not concrete integrations: ${target}`);
     }
     if (relative.startsWith('src/platform/')) {

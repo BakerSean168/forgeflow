@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { StaticResourceDirectory } from '../src/core/adapters/resourceDirectory.js';
+import { StaticResourceDirectory } from '../src/integrations/resources/index.js';
 import type { ExecutionResource } from '../src/core/domain/resourceRouting.js';
 import {
   PlanAutomationRuntime,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { StaticResourceDirectory } from '../src/core/adapters/resourceDirectory.js';
+import { StaticResourceDirectory } from '../src/integrations/resources/index.js';
 import { ForgeFlowError } from '../src/core/domain/errors.js';
 import { DEFAULT_AFFINITY_POLICY, type ExecutionResource, type ExecutionResourceSelection, type ResourceStateOverrideSource } from '../src/core/domain/resourceRouting.js';
 import { ResourceSelector, selectExecutableProfile } from '../src/core/orchestration/resourceSelector.js';
@@ -11,7 +11,7 @@ import {
   ResourceSelectedSupervisorDecisionClient,
   supervisorDecisionContextDigest,
 } from '../src/core/supervisor/resourceClient.js';
-import { SupervisorDirectAdmissionProbe } from '../src/core/adapters/supervisorDirectAdmission.js';
+import { SupervisorDirectAdmissionProbe } from '../src/integrations/providers/index.js';
 import { SupervisorDirectAdmissionRegistry } from '../src/core/supervisor/admission.js';
 import type { SupervisorDecisionInput } from '../src/core/supervisor/runtime.js';
 

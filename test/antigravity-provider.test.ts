@@ -8,7 +8,7 @@ import test from 'node:test';
 import {
   AntigravityExecutionProvider,
   AntigravityReviewProvider,
-} from '../src/core/adapters/antigravity.js';
+} from '../src/integrations/providers/index.js';
 import type {
   ProviderLaunchInput,
   ProviderSessionSnapshot,

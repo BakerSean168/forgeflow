@@ -3,7 +3,7 @@ import type {
   ImprovementCandidate,
   MaintenanceProgram,
   MaintenanceCandidateRegistry,
-} from '../../core/adapters/maintenance.js';
+} from '../../core/maintenance/index.js';
 import type { MaintenanceImprovementRuntime } from '../../core/orchestration/maintenanceRuntime.js';
 
 export type ImprovementProgramInput = MaintenanceProgram;
