@@ -16,9 +16,20 @@ Start from [`deploy/forgeflow.env.example`](../deploy/forgeflow.env.example) and
 
 ## Project authorization
 
-Literal-worktree execution is available only to explicitly authorized project keys and canonical repository paths. ForgeFlow verifies repository identity and the required Git mount before Plan activation and revalidates linkage during execution/finalization.
+The preferred project source is a versioned manifest outside the repository:
+
+```text
+FORGEFLOW_PROJECTS_FILE=/etc/forgeflow/projects.yaml
+```
+
+Start from [`../deploy/projects.example.yaml`](../deploy/projects.example.yaml). The manifest owns project identity, repository path, execution enablement, workspace mode, provider-native opt-in, project parallelism ceiling, tags, and Improvement opt-in. Credentials never belong in this file.
+
+The previous `FORGEFLOW_AUTOMATION_PROJECTS`, `FORGEFLOW_LITERAL_WORKTREE_PROJECTS`, `FORGEFLOW_LITERAL_WORKTREE_REPOSITORIES`, `FORGEFLOW_ANTIGRAVITY_PROJECTS`, and `FORGEFLOW_IMPROVEMENT_PROJECTS` lists remain a legacy compatibility source only when `FORGEFLOW_PROJECTS_FILE` is unset.
+
+Literal-worktree execution remains available only to explicitly authorized project keys and canonical repository paths. ForgeFlow verifies repository identity and the required Git mount before Plan activation and revalidates linkage during execution/finalization. The global literal-worktree gate remains independent from a project manifest so a data-only configuration change cannot silently enable that host capability.
 
 Do not broaden a repository allowlist merely to bypass an activation failure. Treat repository identity, mount, ACL, or Git-linkage failures as safety failures that need to be diagnosed.
+
 
 ## Execution resources
 

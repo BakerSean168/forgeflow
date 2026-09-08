@@ -28,8 +28,15 @@ required_nonempty() {
   local key="$1" message="$2"
   grep -Eq "^${key}=.+$" "$config_file" || { echo "$message" >&2; exit 2; }
 }
-required_nonempty FORGEFLOW_AUTOMATION_PROJECTS 'configure FORGEFLOW_AUTOMATION_PROJECTS first'
-required_nonempty FORGEFLOW_REPOSITORY_WRITE_PATHS 'configure FORGEFLOW_REPOSITORY_WRITE_PATHS first'
+projects_file="$(awk -F= '$1=="FORGEFLOW_PROJECTS_FILE"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
+if [[ -n "$projects_file" ]]; then
+  [[ "$projects_file" = /* ]] || { echo 'FORGEFLOW_PROJECTS_FILE must be absolute' >&2; exit 2; }
+  [[ -r "$projects_file" ]] || { echo 'configured ForgeFlow project manifest is not readable' >&2; exit 2; }
+  [[ -f "$repo_root/dist/platform/projects/cli.js" ]] || { echo 'build ForgeFlow before installing a project manifest' >&2; exit 2; }
+else
+  required_nonempty FORGEFLOW_AUTOMATION_PROJECTS 'configure FORGEFLOW_AUTOMATION_PROJECTS or FORGEFLOW_PROJECTS_FILE first'
+  required_nonempty FORGEFLOW_REPOSITORY_WRITE_PATHS 'configure FORGEFLOW_REPOSITORY_WRITE_PATHS first'
+fi
 required_nonempty FORGEFLOW_OPENHANDS_TOKEN 'configure FORGEFLOW_OPENHANDS_TOKEN first'
 grep -Eq '^FORGEFLOW_LITELLM_BASE_URL=https?://.+$' "$config_file" || { echo 'configure FORGEFLOW_LITELLM_BASE_URL first' >&2; exit 2; }
 required_nonempty FORGEFLOW_LITELLM_API_KEY 'configure FORGEFLOW_LITELLM_API_KEY first'
@@ -51,14 +58,23 @@ unset admin_key
 
 allowed_raw="$(awk -F= '$1=="FORGEFLOW_ALLOWED_REPOSITORY_ROOTS"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
 writes_raw="$(awk -F= '$1=="FORGEFLOW_REPOSITORY_WRITE_PATHS"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
-[[ -n "$allowed_raw" && -n "$writes_raw" ]] || { echo 'repository root/write policy missing' >&2; exit 2; }
+[[ -n "$allowed_raw" ]] || { echo 'allowed repository root policy missing' >&2; exit 2; }
 IFS=',' read -r -a allowed_roots <<<"$allowed_raw"
-IFS=',' read -r -a write_paths <<<"$writes_raw"
 canonical_allowed=()
 for item in "${allowed_roots[@]}"; do
   [[ "$item" = /* ]] || { echo "allowed repository root must be absolute" >&2; exit 2; }
   canonical_allowed+=("$(realpath -e -- "$item")")
 done
+manifest_query() {
+  node "$repo_root/dist/platform/projects/cli.js" "$projects_file" "$1" "${canonical_allowed[@]}"
+}
+write_paths=()
+if [[ -n "$projects_file" ]]; then
+  mapfile -t write_paths < <(manifest_query write-paths)
+else
+  IFS=',' read -r -a write_paths <<<"$writes_raw"
+fi
+[[ ${#write_paths[@]} -gt 0 ]] || { echo 'repository write policy has no execution-enabled repository' >&2; exit 2; }
 canonical_writes=()
 for item in "${write_paths[@]}"; do
   [[ "$item" = /* ]] || { echo "repository write path must be absolute" >&2; exit 2; }
@@ -106,12 +122,18 @@ fi
 literal_enabled="$(awk -F= '$1=="FORGEFLOW_LITERAL_WORKTREES_ENABLED"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
 literal_projects="$(awk -F= '$1=="FORGEFLOW_LITERAL_WORKTREE_PROJECTS"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
 literal_repositories="$(awk -F= '$1=="FORGEFLOW_LITERAL_WORKTREE_REPOSITORIES"{sub(/^[^=]*=/,""); print; exit}' "$config_file")"
+literal_repo_items=()
+if [[ -n "$projects_file" ]]; then
+  literal_projects="$(manifest_query literal-projects | paste -sd, -)"
+  mapfile -t literal_repo_items < <(manifest_query literal-repositories)
+else
+  IFS=',' read -r -a literal_repo_items <<<"$literal_repositories"
+fi
 literal_override=/etc/forgeflow/openhands-literal-worktrees.override.yml
 compose_args=(-f "$repo_root/deploy/openhands/docker-compose.yml")
 if [[ "$literal_enabled" == true ]]; then
-  [[ -n "$literal_projects" ]] || { echo 'literal worktrees require FORGEFLOW_LITERAL_WORKTREE_PROJECTS' >&2; exit 2; }
-  [[ -n "$literal_repositories" ]] || { echo 'literal worktrees require FORGEFLOW_LITERAL_WORKTREE_REPOSITORIES' >&2; exit 2; }
-  IFS=',' read -r -a literal_repo_items <<<"$literal_repositories"
+  [[ -n "$literal_projects" ]] || { echo 'literal worktrees require at least one manifest or legacy project' >&2; exit 2; }
+  [[ ${#literal_repo_items[@]} -gt 0 ]] || { echo 'literal worktrees require at least one canonical repository' >&2; exit 2; }
   common_dirs=()
   for item in "${literal_repo_items[@]}"; do
     [[ "$item" = /* ]] || { echo 'literal worktree repository must be absolute' >&2; exit 2; }

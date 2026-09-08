@@ -103,8 +103,11 @@ test('installer provisions only ForgeFlow state and refuses unconfigured autonom
   assert.match(installer, /install -d -o 10001 -g 10001 -m 0750 \/var\/lib\/forgeflow\/openhands/);
   assert.match(installer, /install -d -o 10001 -g 10001 -m 0751 \/var\/lib\/forgeflow\/workspaces/);
   assert.match(installer, /\/var\/lib\/forgeflow\/workspaces\/forgeflow\/executions/);
-  assert.match(installer, /configure FORGEFLOW_AUTOMATION_PROJECTS first/);
+  assert.match(installer, /configure FORGEFLOW_AUTOMATION_PROJECTS or FORGEFLOW_PROJECTS_FILE first/);
   assert.match(installer, /configure FORGEFLOW_REPOSITORY_WRITE_PATHS first/);
+  assert.match(installer, /dist\/platform\/projects\/cli\.js/);
+  assert.match(installer, /manifest_query write-paths/);
+  assert.match(installer, /manifest_query literal-repositories/);
   assert.match(installer, /configure FORGEFLOW_OPENHANDS_TOKEN first/);
   assert.match(installer, /configure FORGEFLOW_LITELLM_BASE_URL first/);
   assert.match(installer, /configure FORGEFLOW_LITELLM_API_KEY first/);
@@ -190,6 +193,14 @@ test('self-promotion runs outside the control-plane cgroup and is exact-canary g
   assert.match(selfPromoteScript, /release-gcp\.sh/);
   assert.match(selfPromoteScript, /rm -f -- \"\$request_file\"/);
   assert.match(artifactDigest, /find \. -type f -print0 \| sort -z \| xargs -0 sha256sum/);
+});
+
+test('project registry is the preferred deployment authority with legacy compatibility', () => {
+  assert.match(forgeFlowEnv, /FORGEFLOW_PROJECTS_FILE=\n/);
+  assert.match(forgeFlowEnv, /Legacy compatibility source/);
+  assert.match(installer, /FORGEFLOW_PROJECTS_FILE must be absolute/);
+  assert.match(installer, /project manifest is not readable/);
+  assert.match(installer, /repository write policy has no execution-enabled repository/);
 });
 
 test('literal worktree deployment is project-mounted, runtime-verified, and smokeable in the live container', () => {

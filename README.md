@@ -3,16 +3,18 @@
 > **Autonomous software engineering with durable plans, isolated execution, independent review, recovery, and exact-revision release evidence.**
 
 <p align="left">
-  <a href="https://github.com/BakerSean168/forgeflow/releases/tag/v1.0.1"><strong>v1.0.1</strong></a> ·
+  <a href="https://github.com/BakerSean168/forgeflow/releases/tag/v1.1.0"><strong>v1.1.0</strong></a> ·
   <a href="./docs/getting-started.md"><strong>Getting Started</strong></a> ·
   <a href="./docs/architecture.md"><strong>Architecture</strong></a> ·
+  <a href="./docs/api.md"><strong>API</strong></a> ·
+  <a href="./docs/extensibility.md"><strong>Extensibility</strong></a> ·
   <a href="./CREDITS.md"><strong>Credits</strong></a>
 </p>
 
 <p align="left">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" />
   <img alt="Node.js 24+" src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg" />
-  <img alt="Release v1.0.1" src="https://img.shields.io/badge/release-v1.0.1-blue.svg" />
+  <img alt="Release v1.0.1" src="https://img.shields.io/badge/release-v1.1.0-blue.svg" />
 </p>
 
 Give ForgeFlow a software-engineering objective. It turns that objective into durable work, executes dependency-ready tasks through governed coding-agent resources, independently reviews exact revisions, repairs failures, integrates accepted changes, and closes the lifecycle with repository and release evidence.
@@ -138,8 +140,10 @@ For the detailed state machine, literal-worktree ACL/provenance model, retry sem
 
 ```text
 src/
-  app.ts              HTTP/control-plane composition
-  main.ts             production entrypoint
+  api/                 versioned Fastify API modules + OpenAPI surface
+  platform/            project registry and platform extension foundations
+  app.ts               composition root + legacy V1 route migration surface
+  main.ts              production entrypoint
   core/
     domain/            plans, executions, reviews, resources, worktrees
     kernel/            deterministic state-changing operations
@@ -148,7 +152,10 @@ src/
     adapters/          Git, OpenHands, providers, delivery and telemetry
     persistence/       SQLite schema, repositories and event store
 
+api/
+  openapi.v1.json      deterministic external API contract
 deploy/
+  projects.example.yaml declarative project-registry example
   gcp/                 hardened systemd deployment
   openhands/           isolated OpenHands execution plane
 openhands_tools/       execution/review ACP and headless adapters
@@ -179,6 +186,8 @@ Continue with:
 
 - [`docs/getting-started.md`](./docs/getting-started.md) — first local run and real-provider acceptance.
 - [`docs/configuration.md`](./docs/configuration.md) — project authorization, resources, OpenHands, provider-native workers and secrets.
+- [`docs/api.md`](./docs/api.md) — stable HTTP boundary and OpenAPI contract.
+- [`docs/extensibility.md`](./docs/extensibility.md) — Project Registry, feature modules, extension points and migration rules.
 - [`docs/development.md`](./docs/development.md) — development and contribution workflow.
 - [`docs/architecture.md`](./docs/architecture.md) — full runtime and safety architecture.
 
@@ -188,7 +197,7 @@ Continue with:
 npm run check
 ```
 
-The deterministic gate runs product-boundary validation, type checking, the full test suite, and a clean production build.
+The deterministic gate runs product- and architecture-boundary validation, type checking, OpenAPI drift detection, the full test suite, and a clean production build.
 
 Real-provider acceptance is intentionally separate:
 
