@@ -349,27 +349,44 @@ Hand-written URL/payload duplication outside the control plane becomes transitio
 
 ## 7. Controller/reconciler model
 
-The current runtime already has durable reconciliation behavior, but ownership is distributed across large composition functions and timers. The target makes this explicit.
+Phase 3 makes convergence ownership explicit. Feature controllers do **not** create timers and do not share a global plugin context. They declare identity, enablement, optional cadence, optional warmup, one retry-safe convergence operation, and an optional close hook. A single lifecycle manager owns scheduling and shutdown.
 
-Each reconciler exposes a shape conceptually equivalent to:
+The implemented contract is conceptually:
 
 ```ts
 interface Reconciler {
-  id: string;
-  start(): void;
-  stop(): Promise<void>;
-  reconcileOnce(): Promise<ReconcileSummary>;
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly intervalMs?: number;
+  warmup?(context: ReconcileContext): Promise<void>;
+  reconcile(context: ReconcileContext): Promise<void>;
+  close?(): Promise<void>;
 }
 ```
+
+Current ownership is deliberately narrow:
+
+| Controller | Authority |
+| --- | --- |
+| Runtime Admission | demand-driven ACP admission refresh, single-flight refresh, shutdown drain |
+| Supervisor | direct reasoning admission/readiness, resource-transition wakes, decision cycles |
+| Resource Lifecycle | directory refresh, resource recovery policy, readiness handoff |
+| Plan Lifecycle | storage preflight, project queue reconcile, autonomous Plan progression |
+| Improvement | discovery/diagnosis/adoption/self-promotion-request convergence |
+| Storage Maintenance | in-process workspace cache status and bounded terminal-cache cleanup |
+
+Host-wide cache pruning remains an **external systemd maintenance capability**; the in-process Storage controller exposes its validated projection and owns workspace-local cleanup, rather than duplicating host maintenance authority.
 
 Rules:
 
 - only one reconciler owns a specific automatic transition;
-- `reconcileOnce()` is safe to retry;
-- external calls are bounded and cancellable where supported;
+- feature reconcilers declare cadence but never call `setInterval`/`setImmediate` themselves;
+- Runtime Admission refresh/shutdown can be invoked only through its dedicated reconciler above the low-level execution-runtime implementation;
+- explicit API commands may request convergence through the same controller; they do not create a second authority path;
+- reconcile operations are safe to retry and are single-flighted where overlapping work would be unsafe;
 - no reconciler keeps correctness-critical truth only in memory;
-- shutdown drains active bounded operations before DB close;
-- wake/event scheduling is preferred over hot polling, with watchdog polling only as recovery fallback.
+- lifecycle shutdown disables new scheduling/capability refresh, runs close hooks, then drains already-running reconciliations before the database owner closes SQLite;
+- event/wake scheduling remains primary where durable events exist. In particular, Supervisor resource recovery is event-driven with a watchdog fallback; runtime admission is demand-driven. Periodic Plan/resource polling remains a recovery/heartbeat mechanism rather than a second source of durable truth.
 
 ## 8. Extension model
 
@@ -466,6 +483,8 @@ Migration metrics:
 | external integrations hand-building API payloads | present | 0 after typed client migration |
 | feature modules importing persistence/adapters | CI-blocked for new modules | 0 |
 | project membership authorities | 1 | 1 |
+| bootstrap-owned feature timers | present | 0 |
+| automatic transition owners | distributed | one focused reconciler per transition |
 
 ## 12. Decision summary
 
