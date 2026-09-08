@@ -7,6 +7,7 @@ import type { StorageMaintenanceReconciler } from './storageMaintenance.js';
 
 export interface PlanLifecycleLogger {
   info(data: unknown, message: string): void;
+  error(data: unknown, message: string): void;
 }
 
 export class PlanLifecycleReconciler implements Reconciler {
@@ -29,7 +30,15 @@ export class PlanLifecycleReconciler implements Reconciler {
   async reconcile(context: ReconcileContext): Promise<void> {
     if (!this.automation) return;
     await this.storage.reconcile(context);
-    if (this.projectPlanQueue) await this.projectPlanQueue.reconcile();
+    if (this.projectPlanQueue) {
+      const results = await this.projectPlanQueue.reconcile();
+      for (const result of results)
+        if (result.failure)
+          this.logger.error(
+            { projectKey: result.projectKey, code: result.code },
+            'project Plan queue reconciliation failed',
+          );
+    }
     const results = await this.automation.plans.runOnce();
     // Admission refresh stays detached so slow standby probes cannot starve active execution heartbeats.
     this.runtimeAdmission.requestDetached();

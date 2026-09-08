@@ -10,7 +10,10 @@ import type { PlanWorktree } from '../../core/domain/worktree.js';
 import type { ForgeFlowRepositories } from '../../core/persistence/repositories.js';
 import {
   REPOSITORY_COMPLETION_EVIDENCE_FILE,
+  type ImplementationCompletionEvidence,
   type RepositoryObservation,
+  type ReviewCompletionEvidence,
+  type TestCommandEvidence,
   type WorkspaceCachePruneResult,
   type WorkspaceCompletionSnapshot,
   type WorkspaceDescriptor,
@@ -70,6 +73,47 @@ function inside(candidate: string, root: string): boolean {
   const value = path.resolve(candidate);
   const boundary = path.resolve(root);
   return value === boundary || value.startsWith(boundary + path.sep);
+}
+
+function decisionTestEvidence(tests: readonly TestCommandEvidence[]) {
+  return tests.map((test) => ({
+    status: test.status,
+    ...(test.exitCode === undefined ? {} : { exitCode: test.exitCode }),
+  }));
+}
+
+function retirementEvidenceDecisionProjection(
+  evidence: ImplementationCompletionEvidence | ReviewCompletionEvidence,
+): Record<string, unknown> {
+  if (evidence.phase === 'REVIEW')
+    return {
+      version: evidence.version,
+      executionId: evidence.executionId,
+      phase: evidence.phase,
+      reviewedSha: evidence.reviewedSha,
+      verdict: evidence.verdict,
+      checks: decisionTestEvidence(evidence.checks),
+    };
+  return {
+    version: evidence.version,
+    executionId: evidence.executionId,
+    phase: evidence.phase,
+    sourceRevision: evidence.sourceRevision,
+    resultRevision: evidence.resultRevision,
+    outcome: evidence.outcome ?? 'CHANGED',
+    tests: decisionTestEvidence(evidence.tests),
+  };
+}
+
+function assertRetirementEvidenceDecisionCompatible(
+  staged: ImplementationCompletionEvidence | ReviewCompletionEvidence,
+  durable: ImplementationCompletionEvidence | ReviewCompletionEvidence,
+): void {
+  failClosed(
+    JSON.stringify(retirementEvidenceDecisionProjection(staged)) ===
+      JSON.stringify(retirementEvidenceDecisionProjection(durable)),
+    'WORKSPACE_EVIDENCE_AMBIGUOUS',
+  );
 }
 
 function changedFileWithinScope(file: string, scope: string): boolean {
@@ -383,6 +427,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
           session!.workspace,
           execution.identity.sourceRevision!,
           'REVIEW',
+          true,
         );
         continue;
       }
@@ -395,6 +440,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
         session!.workspace,
         execution.resultRevision!,
         'IMPLEMENTATION',
+        true,
       );
     }
   }
@@ -801,6 +847,7 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
     descriptor: WorkspaceDescriptor,
     expectedRevision: string,
     phase: 'IMPLEMENTATION' | 'REVIEW' = 'IMPLEMENTATION',
+    allowDescriptiveDrift = false,
   ): Promise<void> {
     const staged = path.join(descriptor.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE);
     const stagedStat = fs.lstatSync(staged, { throwIfNoEntry: false });
@@ -852,10 +899,21 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
         expectedRevision,
       );
     }
-    failClosed(
-      JSON.stringify(stagedEvidence) === JSON.stringify(durableEvidence),
-      'WORKSPACE_EVIDENCE_AMBIGUOUS',
-    );
+    if (allowDescriptiveDrift) {
+      // Durable evidence was already promoted and exact-revision validated before the
+      // execution became terminal. A provider may finish its remote turn later and rewrite
+      // repository-local descriptive text (summary/command/findings). Retirement therefore
+      // compares only decision-critical identity and test/check outcomes. Any revision,
+      // outcome/verdict, test/check count, status, or exit-code drift remains fail-closed.
+      assertRetirementEvidenceDecisionCompatible(stagedEvidence, durableEvidence);
+    } else {
+      // Before candidate integration, repository-local evidence still participates in the
+      // acceptance boundary. Keep the historical full-evidence replay check strict here.
+      failClosed(
+        JSON.stringify(stagedEvidence) === JSON.stringify(durableEvidence),
+        'WORKSPACE_EVIDENCE_AMBIGUOUS',
+      );
+    }
     fs.unlinkSync(staged);
   }
 

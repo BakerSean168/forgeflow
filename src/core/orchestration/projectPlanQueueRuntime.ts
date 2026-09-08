@@ -40,6 +40,7 @@ export interface ProjectPlanQueueRuntimeResult {
   releasedPlanId?: string;
   activatedPlanId?: string;
   code: string;
+  failure?: true;
 }
 
 export class ProjectPlanQueueRuntime {
@@ -178,6 +179,7 @@ export class ProjectPlanQueueRuntime {
         results.push({
           projectKey: lease.projectKey,
           code: error instanceof ForgeFlowError ? error.code : 'PROJECT_PLAN_LIFECYCLE_FAILED',
+          failure: true,
         });
       }
     }
