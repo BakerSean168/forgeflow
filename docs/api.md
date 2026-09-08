@@ -59,3 +59,20 @@ This separation keeps Phase 1 behavior-preserving while preventing the compatibi
 ## Client strategy
 
 The checked-in OpenAPI artifact is the source from which typed clients can be generated. A future standalone SDK should be generated from this contract rather than duplicating HTTP payload definitions by hand. Until that package exists, integrations should still use only documented HTTP routes and must tolerate additive fields.
+
+## TypeScript client
+
+ForgeFlow ships a standalone TypeScript client package under [`packages/client`](../packages/client/README.md):
+
+```ts
+import { createForgeFlowClient } from '@forgeflow/client';
+
+const client = createForgeFlowClient({ baseUrl: 'http://127.0.0.1:8420' });
+const { data, error } = await client.GET('/api/v1/projects');
+```
+
+The client is generated from the committed `api/openapi.v1.json` artifact with `openapi-typescript` and uses `openapi-fetch` at runtime. It does not import server domain, persistence, bootstrap, or integration code. Generation is deterministic and checked by `npm run check:client-contract`; package type/runtime/build/pack checks are part of the repository `npm run check` gate.
+
+The package exports the exact contract SHA-256 and API/OpenAPI versions used for generation. This lets external consumers identify the contract they were compiled against without coupling package SemVer to the server's internal implementation version.
+
+The initial SDK intentionally uses typed HTTP method/path calls instead of hand-authored DTO wrappers. Many V1 routes still carry compatibility-permissive schemas, and most operations do not yet have stable `operationId` values. Contract hardening and semantic convenience methods should therefore proceed monotonically: first tighten the OpenAPI schemas/operation identities, then generate ergonomics from those same declarations. No second DTO authority should be introduced.
