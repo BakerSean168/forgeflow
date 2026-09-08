@@ -344,7 +344,15 @@ export class PlanWorktreeManager {
       current.role === 'WORK_ITEM' || current.role === 'DELIVERY_REPAIR',
       'WORKTREE_FINALIZATION_RECOVERY_ROLE_INVALID',
     );
-    failClosed(current.ownerExecutionId === executionId, 'WORKTREE_FINALIZATION_RECOVERY_OWNER_MISMATCH');
+    const ownedCandidate = current.ownerExecutionId === executionId;
+    const quiescentSource =
+      !current.ownerExecutionId &&
+      current.state === 'QUIESCENT' &&
+      current.currentRevision === expectedSourceRevision;
+    failClosed(
+      ownedCandidate || quiescentSource,
+      'WORKTREE_FINALIZATION_RECOVERY_OWNER_MISMATCH',
+    );
     failClosed(
       execution.status === 'FAILED' || execution.status === 'BLOCKED' || execution.status === 'CANCELLED',
       'WORKTREE_FINALIZATION_RECOVERY_EXECUTION_NOT_TERMINAL',
@@ -360,9 +368,10 @@ export class PlanWorktreeManager {
     await this.assertProtectedRefsStable(current.rootPlanId);
     await this.restoreWorktreeAdminSourceAccess(current);
     await this.restoreWorktreeRefSourceAccess(current);
-    await this.verifyRegistered(current, undefined, current.branchRef, false);
+    const expectedHead = ownedCandidate ? undefined : expectedSourceRevision;
+    await this.verifyRegistered(current, expectedHead, current.branchRef, false);
     await this.initializePinnedSubmodules(current, true);
-    await this.verifyRegistered(current, undefined, current.branchRef, false);
+    await this.verifyRegistered(current, expectedHead, current.branchRef, false);
     return this.repositories.planWorktrees.get(current.worktreeId);
   }
 
