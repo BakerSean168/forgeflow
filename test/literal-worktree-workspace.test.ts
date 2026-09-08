@@ -226,6 +226,50 @@ test('committed finalization inspection repairs nested submodule metadata withou
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+test('finalization inspection accepts a released quiescent source but rejects an unowned candidate', async () => {
+  const value = fixture();
+  const implementation = createExecution(value, 'exec-finalization-quiescent', 'IMPLEMENT', value.revision);
+  const workspace = await value.adapter.provision({
+    executionId: implementation.identity.executionId,
+    planId: value.plan.planId,
+    projectKey: value.plan.projectKey,
+    workItemId: value.item.workItemId,
+    repositoryPath: value.repository,
+    sourceRevision: value.revision,
+    phase: 'IMPLEMENT',
+  });
+  attachSession(value, implementation.identity.executionId, workspace);
+  value.repositories.plans.updateWorkItemStatus(value.item.workItemId, 'RUNNING');
+  value.repositories.executions.updateStatus(implementation.identity.executionId, 'RUNNING');
+  value.repositories.executions.updateStatus(implementation.identity.executionId, 'CANCELLED');
+
+  await value.adapter.abandonExecution(workspace);
+  const released = value.repositories.planWorktrees.findByPath(workspace.hostPath)!;
+  assert.equal(released.state, 'QUIESCENT');
+  assert.equal(released.ownerExecutionId, undefined);
+  assert.equal(released.currentRevision, value.revision);
+  assert.equal(git(workspace.hostPath, ['rev-parse', 'HEAD']), value.revision);
+
+  value.repositories.plans.updateWorkItemStatus(value.item.workItemId, 'FAILED');
+  value.repositories.plans.updateStatus(value.plan.planId, 'FAILED');
+  const inspected = await value.adapter.inspectCommittedImplementation(workspace);
+  assert.equal(inspected.headRevision, value.revision);
+  assert.equal(inspected.clean, true);
+  assert.deepEqual(inspected.changedFiles, []);
+
+  fs.mkdirSync(path.join(workspace.hostPath, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspace.hostPath, 'src/item.txt'), 'unowned candidate\n');
+  git(workspace.hostPath, ['add', 'src/item.txt']);
+  git(workspace.hostPath, ['commit', '-m', 'feat: unowned candidate']);
+  await assert.rejects(
+    () => value.adapter.inspectCommittedImplementation(workspace),
+    (error: unknown) => error instanceof ForgeFlowError && error.code === 'WORKTREE_HEAD_MISMATCH',
+  );
+
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('committed finalization inspection rejects a clean candidate outside the declared write scope', async () => {
   const value = fixture();
   const implementation = createExecution(value, 'exec-finalization-out-of-scope', 'IMPLEMENT', value.revision);
