@@ -742,7 +742,7 @@ Verification and release closure:
 
 ### Batch 8 — Phase-6 V1 API contract hardening
 
-Status: **implemented; release closure targets v1.3.0**.
+Status: **implemented; release closure is folded into v1.3.1 after the v1.3.0 production candidate failed the terminal cleanup acceptance gate**.
 
 Completed:
 
@@ -753,8 +753,8 @@ Completed:
 - established 45/45 contract coverage: every public operation has a 2xx JSON response schema; exactly 18 audited operations carry request bodies and exactly four are optional;
 - generated the stronger `ForgeFlowOperations` semantic type surface in `@forgeflow/client` and compile-time tests for Plan, Execution, Resource, Improvement, and Supervisor contracts;
 - exported Supervisor action and Improvement candidate vocabularies from their core authorities so protocol validation and OpenAPI generation do not maintain competing enum lists;
-- added a v1.3.0 hardened compatibility floor and changed CI to validate every candidate against all committed floors;
-- advanced API contract `info.version` from 1.1.0 to 1.2.0 while keeping `/api/v1` path compatibility; server/client package SemVer advances independently to v1.3.0.
+- added a v1.3.1 hardened compatibility floor and changed CI to validate every candidate against all committed floors;
+- advanced API contract `info.version` from 1.1.0 to 1.2.0 while keeping `/api/v1` path compatibility; server/client package SemVer advances independently to v1.3.1; the v1.3.0 candidate was never tagged or released.
 
 Contract-hardening policy:
 
@@ -768,13 +768,54 @@ Verification before PR:
 
 - operation registry: 45/45 operations, 45 unique IDs;
 - contract coverage: 45/45 operations, 18 request bodies, 4 optional bodies;
-- compatibility: candidate passes both v1.2.1 legacy and v1.3.0 hardened baselines;
+- compatibility: candidate passes both v1.2.1 legacy and v1.3.1 hardened baselines;
 - focused final Improvement/Supervisor/API runtime regression: 407/407 passing;
 - full repository + client deterministic gate: passing after each bounded schema group;
 - client codegen/type/runtime/build/pack checks: passing.
 
+Release-gate result:
+
+- PR #13 and main CI passed and exact SHA `b8c4d4f67262d34a02ff1f03984954c9d4124420` was deployed as the v1.3.0 **candidate**;
+- the candidate exercised the hardened API successfully through same-wave Plan execution and two independent exact-SHA PASS reviews;
+- release acceptance correctly remained `MISSING` because terminal cleanup stalled before worktree retirement and lease release;
+- no v1.3.0 Git tag or GitHub Release was created, so the failed acceptance candidate never became a public release.
+
+### Batch 9 — v1.3.1 terminal retirement hotfix
+
+Status: **implemented; release closure targets v1.3.1**.
+
+Production root cause:
+
+- all six provider-session cleanup proofs were durably present;
+- the terminal project lease remained active and all five Plan worktrees remained READY/QUIESCENT;
+- short process tracing showed the cleanup loop repeatedly executing `git ls-files -- .forgeflow-completion-evidence.json` on WorkItem A and never reaching `git worktree remove`;
+- the durable implementation evidence had already been exact-revision verified/promoted, but the provider later rewrote repository-local descriptive evidence (`summary` / test `command`) without changing revision, outcome, PASS status, or exit code;
+- terminal retirement required full JSON equality between durable verified evidence and the late mutable residue, so a non-authoritative descriptive rewrite caused permanent `WORKSPACE_EVIDENCE_AMBIGUOUS` and blocked the cleanup barrier.
+
+Hotfix:
+
+- candidate integration keeps the historical full-evidence equality gate unchanged;
+- only terminal retirement may prune late repository-local evidence when both staged and durable evidence independently pass the exact revision gate and their decision-critical projection matches;
+- Implementation decision identity includes version, execution, phase, source/result revision, outcome, and test count/status/exitCode;
+- Review decision identity includes version, execution, phase, reviewed SHA, verdict, and check count/status/exitCode;
+- summary, command, per-check summary, and findings are treated as non-authoritative descriptive fields only after durable promotion and terminal execution;
+- any revision/outcome/verdict/test/check status or exit-code drift remains fail-closed as `WORKSPACE_EVIDENCE_AMBIGUOUS`;
+- project queue reconcile failures now carry an explicit internal failure marker and `PlanLifecycleReconciler` emits the sanitized project/code pair instead of silently retrying forever.
+
+Verification before PR:
+
+- real production residue was reproduced by deterministic Implementation and Review late-write tests;
+- descriptive drift retires successfully; decision-critical drift remains rejected;
+- pre-integration differing replay remains strictly rejected;
+- queue reconciliation failure logging has a focused test;
+- full repository tests: 410/410 passing;
+- client tests: 5/5 passing;
+- OpenAPI drift, both compatibility floors, 45/45 operation/coverage gates, TypeScript, server/client builds and npm-pack checks: passing.
+
 Next:
 
-1. merge/release v1.3.0 only after PR and main CI pass;
-2. deploy the exact merge SHA and require a fresh real-provider autonomous lifecycle ATTESTED proof;
-3. after v1.3.0 is attested, treat Phase 6 as closed and move future ergonomic/client work into bounded V1.x follow-ups instead of reopening the platform refactor.
+1. merge v1.3.1 only after PR/main CI pass;
+2. deploy exact merge SHA and allow it to automatically finish the already-stuck v1.3.0 candidate Plan cleanup; that recovery proves the hotfix but does **not** count as v1.3.1 release acceptance;
+3. after the old lease/worktrees are fully retired, run exactly one fresh v1.3.1 autonomous lifecycle smoke;
+4. require automatic provider cleanup, five worktree retirements, lease release and `ATTESTED` on the v1.3.1 artifact before creating the tag/Latest Release;
+5. once attested, close Phase 6 and move future ergonomics into bounded V1.x follow-ups.
