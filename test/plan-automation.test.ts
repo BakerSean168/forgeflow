@@ -138,6 +138,10 @@ class AutomationWorkspace implements WorkspaceProviderPort {
   }
 }
 
+class PlanWorktreeAutomationWorkspace extends AutomationWorkspace {
+  readonly integrationStrategy = 'PLAN_WORKTREE' as const;
+}
+
 class AlreadyContainedAutomationWorkspace extends AutomationWorkspace {
   repositoryHead = 'later-canonical-sha';
 
@@ -595,6 +599,254 @@ test('resource wait leaves a work item unassigned until an implementation resour
     seeded.repositories.resourceSelections.get(executions[0]!.identity.executionId)?.resourceId,
     'chatgpt-business-primary',
   );
+  seeded.db.close();
+});
+
+test('explicit infrastructure reconcile reopens only the latest failed route for the whole running wave', async () => {
+  const seeded = seed([
+    { itemKey: 'left', parallelSafe: true, writeScopes: ['src/left/**'] },
+    { itemKey: 'right', parallelSafe: true, writeScopes: ['src/right/**'] },
+  ]);
+  const workspace = new PlanWorktreeAutomationWorkspace();
+  const runner = new ScriptedRunner(seeded.repositories, workspace);
+  runner.implementationFailures = 2;
+  const selector = retrySelector();
+  const automation = new PlanAutomationRuntime(
+    seeded.repositories,
+    runner,
+    workspace,
+    new StaticPlanAutomationPolicyResolver({
+      resourceSelection: { includeProviderNativeProfiles: true },
+      maxImplementationAttempts: 3,
+      maxReviewAttempts: 2,
+      maxInfrastructureAttempts: 5,
+      maxRepairCycles: 3,
+      maxParallelWorkItems: 2,
+    }),
+    undefined,
+    selector,
+  );
+
+  const first = await automation.runPlan(seeded.plan.planId);
+  assert.equal(first.code, 'IMPLEMENTATION_WAVE_QUEUED');
+  const waiting = await automation.runPlan(seeded.plan.planId);
+  assert.equal(waiting.code, 'WAITING_FOR_RESOURCE');
+  assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'WAITING_FOR_RESOURCE');
+
+  const items = seeded.repositories.plans.listWorkItems(seeded.plan.planId);
+  const failedByItem = new Map(
+    seeded.repositories.executions
+      .listByPlan(seeded.plan.planId)
+      .filter((execution) => execution.identity.phase === 'IMPLEMENT')
+      .map((execution) => [execution.identity.workItemId!, execution]),
+  );
+  for (const item of items) {
+    const failed = failedByItem.get(item.workItemId)!;
+    let worktree = seeded.repositories.planWorktrees.create({
+      worktreeId: 'worktree:' + item.workItemId,
+      projectKey: seeded.plan.projectKey,
+      rootPlanId: seeded.plan.planId,
+      workItemId: item.workItemId,
+      role: 'WORK_ITEM',
+      repositoryPath: seeded.plan.repositoryPath,
+      hostPath: '/managed/' + item.workItemId + '/repo',
+      executionPath: '/workspace/' + item.workItemId + '/repo',
+      baseRevision: item.integrationBaseRevision!,
+    }).value!;
+    worktree = seeded.repositories.planWorktrees.transition(worktree.worktreeId, worktree.version, 'READY').value!;
+    seeded.repositories.planWorktrees.attachWriter(
+      worktree.worktreeId,
+      failed.identity.executionId,
+      worktree.version,
+    );
+  }
+
+  const recovered = await automation.reconcilePlan(seeded.plan.planId, 'retry-infrastructure');
+  assert.equal(recovered.status, 'RUNNING');
+  assert.equal(recovered.code, 'INFRASTRUCTURE_RECOVERY_WAVE_QUEUED');
+  assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'RUNNING');
+  const implementations = seeded.repositories.executions
+    .listByPlan(seeded.plan.planId)
+    .filter((execution) => execution.identity.phase === 'IMPLEMENT');
+  assert.equal(implementations.length, 4);
+  const recoveries = implementations.filter((execution) => execution.identity.attempt === 2);
+  assert.equal(recoveries.length, 2);
+  for (const recovery of recoveries) {
+    const previous = failedByItem.get(recovery.identity.workItemId!)!;
+    assert.equal(recovery.identity.parentExecutionId, previous.identity.executionId);
+    assert.equal(recovery.identity.sourceRevision, previous.identity.sourceRevision);
+    assert.equal(recovery.identity.route, previous.identity.route);
+  }
+  assert.deepEqual(
+    selector.calls.slice(-2).map((call) => call.priorAttempts),
+    [[], []],
+  );
+  assert.equal(
+    seeded.repositories.events
+      .listByAggregate(seeded.plan.planId)
+      .filter((event) => event.type === 'PLAN_INFRASTRUCTURE_RECOVERY_QUEUED').length,
+    1,
+  );
+  const repeated = await automation.reconcilePlan(seeded.plan.planId, 'retry-infrastructure');
+  assert.equal(repeated.code, 'PLAN_INFRASTRUCTURE_RECOVERY_NOT_WAITING');
+  assert.equal(
+    seeded.repositories.executions
+      .listByPlan(seeded.plan.planId)
+      .filter((execution) => execution.identity.phase === 'IMPLEMENT').length,
+    4,
+  );
+  seeded.db.close();
+});
+
+test('infrastructure reconcile rejects a durable writer whose revision no longer matches the failed attempt', async () => {
+  const seeded = seed();
+  const workspace = new PlanWorktreeAutomationWorkspace();
+  const runner = new ScriptedRunner(seeded.repositories, workspace);
+  runner.implementationFailures = 1;
+  const selector = retrySelector();
+  const automation = new PlanAutomationRuntime(
+    seeded.repositories,
+    runner,
+    workspace,
+    new StaticPlanAutomationPolicyResolver({
+      resourceSelection: { includeProviderNativeProfiles: true },
+      maxImplementationAttempts: 3,
+      maxReviewAttempts: 2,
+      maxInfrastructureAttempts: 5,
+      maxRepairCycles: 3,
+    }),
+    undefined,
+    selector,
+  );
+  await automation.runPlan(seeded.plan.planId);
+  const waiting = await automation.runPlan(seeded.plan.planId);
+  assert.equal(waiting.code, 'WAITING_FOR_RESOURCE');
+  const item = seeded.repositories.plans.listWorkItems(seeded.plan.planId)[0]!;
+  const failed = seeded.repositories.executions.listByWorkItem(item.workItemId)[0]!;
+  let worktree = seeded.repositories.planWorktrees.create({
+    worktreeId: 'worktree:mismatch',
+    projectKey: seeded.plan.projectKey,
+    rootPlanId: seeded.plan.planId,
+    workItemId: item.workItemId,
+    role: 'WORK_ITEM',
+    repositoryPath: seeded.plan.repositoryPath,
+    hostPath: '/managed/mismatch/repo',
+    executionPath: '/workspace/mismatch/repo',
+    baseRevision: item.integrationBaseRevision!,
+  }).value!;
+  worktree = seeded.repositories.planWorktrees.transition(worktree.worktreeId, worktree.version, 'READY').value!;
+  seeded.repositories.planWorktrees.updateRevision(worktree.worktreeId, worktree.version, 'different-sha');
+  await assert.rejects(
+    automation.reconcilePlan(seeded.plan.planId, 'retry-infrastructure'),
+    (error: unknown) => error instanceof ForgeFlowError && error.code === 'PLAN_INFRASTRUCTURE_RECOVERY_WORKTREE_REVISION_MISMATCH',
+  );
+  assert.equal(seeded.repositories.executions.listByPlan(seeded.plan.planId).length, 1);
+  assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'WAITING_FOR_RESOURCE');
+  assert.equal(failed.status, 'FAILED');
+  seeded.db.close();
+});
+
+test('infrastructure reconcile never treats an arbitrary retryable product failure as infrastructure', async () => {
+  const seeded = seed();
+  const workspace = new AutomationWorkspace();
+  const selector = retrySelector();
+  const runner = new ScriptedRunner(seeded.repositories, workspace);
+  const automation = new PlanAutomationRuntime(
+    seeded.repositories,
+    runner,
+    workspace,
+    new StaticPlanAutomationPolicyResolver({
+      resourceSelection: { includeProviderNativeProfiles: true },
+      maxImplementationAttempts: 3,
+      maxReviewAttempts: 2,
+      maxInfrastructureAttempts: 5,
+      maxRepairCycles: 3,
+    }),
+    undefined,
+    selector,
+  );
+  const queued = await automation.runPlan(seeded.plan.planId);
+  const execution = seeded.repositories.executions.get(queued.executionId!);
+  seeded.repositories.executions.updateStatus(execution.identity.executionId, 'RUNNING');
+  seeded.repositories.executions.recordResult(execution.identity.executionId, {
+    status: 'FAILED',
+    errorCode: 'PRODUCT_ASSERTION_FAILED',
+    retryable: true,
+  });
+  seeded.repositories.plans.updateStatus(seeded.plan.planId, 'WAITING_FOR_RESOURCE');
+  await assert.rejects(
+    automation.reconcilePlan(seeded.plan.planId, 'retry-infrastructure'),
+    (error: unknown) =>
+      error instanceof ForgeFlowError &&
+      error.code === 'PLAN_INFRASTRUCTURE_RECOVERY_FAILURE_NOT_INFRASTRUCTURE',
+  );
+  assert.equal(seeded.repositories.executions.listByPlan(seeded.plan.planId).length, 1);
+  assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'WAITING_FOR_RESOURCE');
+  seeded.db.close();
+});
+
+test('infrastructure reconcile refuses to substitute a different route for the failed route being reopened', async () => {
+  const seeded = seed();
+  const workspace = new AutomationWorkspace();
+  const runner = new ScriptedRunner(seeded.repositories, workspace);
+  runner.implementationFailures = 1;
+  let recoverySelection = false;
+  const firstProfile = {
+    capability: 'IMPLEMENTATION',
+    phase: 'IMPLEMENT',
+    modelFamily: 'deepseek-v4-flash',
+    agentBackend: 'dsh-managed-coding',
+    transport: 'LITELLM_MANAGED',
+    resourceId: 'free-primary',
+    resourceTier: 'FREE',
+    modelRank: 10,
+    resourceSequence: 10,
+    resourceState: 'ACTIVE',
+    selectionReason: 'STATIC_POLICY',
+    bindingId: 'free-primary-deepseek',
+  } as const;
+  const otherProfile = {
+    ...firstProfile,
+    modelFamily: 'gpt-5.6-luna',
+    resourceId: 'paid-secondary',
+    resourceTier: 'SUBSCRIPTION',
+    resourceSequence: 20,
+    bindingId: 'paid-secondary-luna',
+  } as const;
+  const selector = {
+    select() {
+      const profile = recoverySelection ? otherProfile : firstProfile;
+      return {
+        status: 'SELECTED',
+        capability: 'IMPLEMENTATION',
+        profile,
+        candidate: { profile, resource: {} as never, binding: {} as never },
+      } as const;
+    },
+  };
+  const automation = new PlanAutomationRuntime(
+    seeded.repositories,
+    runner,
+    workspace,
+    new StaticPlanAutomationPolicyResolver({
+      resourceSelection: { includeProviderNativeProfiles: true },
+      maxImplementationAttempts: 3,
+      maxReviewAttempts: 2,
+      maxInfrastructureAttempts: 5,
+      maxRepairCycles: 3,
+    }),
+    undefined,
+    selector,
+  );
+  const first = await automation.runPlan(seeded.plan.planId);
+  await runner.runExecution(first.executionId!);
+  seeded.repositories.plans.updateStatus(seeded.plan.planId, 'WAITING_FOR_RESOURCE');
+  recoverySelection = true;
+  const recovered = await automation.reconcilePlan(seeded.plan.planId, 'retry-infrastructure');
+  assert.equal(recovered.code, 'INFRASTRUCTURE_RECOVERY_ROUTE_UNAVAILABLE');
+  assert.equal(recovered.status, 'WAITING');
+  assert.equal(seeded.repositories.executions.listByPlan(seeded.plan.planId).length, 1);
+  assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'WAITING_FOR_RESOURCE');
   seeded.db.close();
 });
 

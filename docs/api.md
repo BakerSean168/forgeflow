@@ -28,6 +28,14 @@ These endpoints expose safe project identity and execution-policy metadata. They
 
 Project registration itself is operator-controlled and intentionally not writable through the Agent-facing API. This prevents a model or integration from granting itself access to a new repository.
 
+## Plan recovery modes
+
+`POST /api/v1/plans/:planId/reconcile` keeps its existing optional string `mode` contract. Supported V1 recovery modes include normal `auto`, review/delivery recovery, and the explicit `retry-infrastructure` operator mode.
+
+`retry-infrastructure` is intentionally narrow: it applies only to a `WAITING_FOR_RESOURCE` Plan whose RUNNING work item has no active Execution and whose latest implementation/repair failure is classified as provider/resource/workspace-capacity infrastructure. ForgeFlow preserves every historical failed Execution and all prior route exclusions, verifies the durable literal-worktree/source revision when Plan worktrees are in use, preserves the product-attempt budget, and reopens only the latest failed route after it becomes healthy again. If the selector would choose a different route, the recovery remains waiting instead of silently substituting another provider. Multiple RUNNING siblings are preflighted before the recovery wave is committed so an operator action cannot create a half-wave.
+
+This mode is for an infrastructure fault that was fixed outside the Plan, such as repairing a provider runner or mount/provenance boundary. It is not a general retry override and does not make product/test/review failures retryable.
+
 ## Trust boundary
 
 The default service binds to `127.0.0.1:8420`. ForgeFlow does not assume that a raw control-plane port is safe to expose to the public internet. Remote integrations should cross an authenticated tunnel, service mesh, or trusted reverse proxy and should keep the control plane private.

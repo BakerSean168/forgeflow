@@ -869,6 +869,7 @@ Real-project trigger:
 - the scheduler correctly preserved its durable lease authority, but therefore activated the Plan and literal worktrees from the stale logical head and could not see the newly merged optimization specification;
 - the incorrect-base Plan was cancelled through the public API before any implementation was accepted; provider/worktree cleanup and lease release completed without rewriting product truth;
 - after external-head adoption was fixed and production-reproduced, the same Digital Biome Plan exposed a second integration boundary: the configured control checkout is itself a legitimate linked Git worktree, while the Antigravity systemd runner still required `sourceRepository/.git` to be a directory; two free implementation bindings stalled without workspace progress, then Antigravity correctly failed closed with `ANTIGRAVITY_UNIT_SOURCE_GIT_INVALID` before model execution.
+- after the linked-worktree runner was repaired and exact-SHA deployed, the original durable Plan remained `WAITING_FOR_RESOURCE`: historical route exclusions correctly prevented blind reuse, but the public reconcile path had no operator-scoped way to reopen the now-fixed infrastructure route without cancelling the Plan or editing durable state.
 
 Hardening:
 
@@ -881,6 +882,7 @@ Hardening:
 - queued Plans under an active root keep the existing semantics of inheriting the ForgeFlow-managed project head; this change only reconciles an idle project's legitimate external fast-forward;
 - Antigravity source provenance now accepts either a normal `.git/` directory or a linked-worktree gitfile only after proving the complete source-gitfile -> worktree-admin -> admin-`gitdir` backlink -> `commondir` chain; the Plan worktree must still resolve to that same Git common dir;
 - the Git provenance resolver is a separately testable exact-SHA helper installed beside the systemd runner, and release promotion byte-compares both files before marking provenance healthy.
+- `plansReconcile` now supports explicit `retry-infrastructure`: only `WAITING_FOR_RESOURCE` Plans with terminal provider/resource/workspace-capacity failures qualify; product failures remain ineligible, product-attempt budgets are preserved, the existing Plan/worktree/source revision is verified, all sibling recoveries are preflighted before commit, and only each latest failed route is reopened while older exclusions remain durable.
 
 Verification before PR:
 
@@ -890,7 +892,8 @@ Verification before PR:
 - dirty canonical and stale-base requests are rejected before Plan creation with zero durable Plan residue;
 - linked-source Git provenance fixtures accept normal and legitimate linked control worktrees while rejecting forged admin backlinks and symlinked Git metadata;
 - deployment regression proves the exact provenance helper is syntax-checked, installed, and byte-compared with the Antigravity runner;
-- full repository tests: 415/415 passing;
+- focused infrastructure-recovery regression proves same-wave recovery, exact latest-route reopening, product-failure rejection, route-substitution rejection, repeat-call idempotence, and worktree revision fail-closed behavior;
+- full repository tests: 419/419 passing;
 - client tests: 7/7 passing;
 - OpenAPI/API compatibility remains unchanged at 45 operations and both committed V1 floors pass;
 - architecture, generated client drift, TypeScript, server/client builds, and npm-pack gates pass.
