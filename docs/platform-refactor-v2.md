@@ -451,7 +451,7 @@ Verification:
 
 ### Batch 2 — Complete Phase-1 API extraction
 
-Status: **implemented; closure requires the normal PR/CI/exact-SHA release and real-provider acceptance gates recorded by ForgeFlow release provenance**.
+Status: **completed and production-attested in v1.1.2**.
 
 Completed:
 
@@ -477,9 +477,74 @@ Focused verification completed during implementation:
 - Supervisor/typed decision focused suite: 46/46 passing;
 - architecture boundary gate: passing with a zero inline-route budget.
 
+Verification and release closure:
+
+- full deterministic suite: 379/379 passing at the Phase-1 release checkpoint;
+- PR and main CI: passing;
+- v1.1.2 exact-SHA real-provider lifecycle acceptance: ATTESTED;
+- two parallel implementations, two independent exact-SHA PASS reviews, provider cleanup, five worktree retirements, and lease release verified.
+
+### Batch 3 — Phase-2 bootstrap/composition split
+
+Status: **implemented on the Phase-2 refactor branch; pending normal PR/CI/exact-SHA release and real-provider acceptance closure**.
+
+Completed:
+
+- P2-01 typed, grouped runtime configuration in `bootstrap/config.ts`, with lazy feature-specific validation preserving disabled-feature startup semantics;
+- P2-02 execution/provider/resource/workspace assembly in `bootstrap/executionRuntime.ts`;
+- P2-03 Supervisor admission/reasoning/scheduler/runtime assembly in `bootstrap/supervisorRuntime.ts`;
+- P2-04 Improvement registry/diagnosis/canary/promotion assembly in `bootstrap/improvementRuntime.ts`;
+- P2-05 application facades and typed Supervisor effects in `bootstrap/applicationAssembly.ts`;
+- P2-06 project scheduling recovery, system-state projections, runtime lifecycle/reconcilers, shutdown drain, and public control-plane runtime types moved into explicit bootstrap owners;
+- deployment/source-ownership tests migrated from file-location assertions to the new subsystem owners;
+- composition-root line budget added as a CI fitness function.
+
+Current bootstrap ownership map:
+
+```text
+bootstrap/config.ts
+  -> typed configuration + Project Registry loading
+bootstrap/executionRuntime.ts
+  -> provider/resource/workspace/execution assembly
+bootstrap/supervisorRuntime.ts
+  -> governed reasoning admission + Supervisor runtime
+bootstrap/improvementRuntime.ts
+  -> Improvement/diagnosis/self-change assembly
+bootstrap/applicationAssembly.ts
+  -> command/query facades + typed Supervisor effects
+bootstrap/projectScheduling.ts
+  -> durable project lease/worktree activation and recovery
+bootstrap/systemState.ts
+  -> release/acceptance/host-maintenance projections
+bootstrap/runtimeLifecycle.ts
+  -> warmup, reconciler intervals and shutdown drain
+bootstrap/controlPlaneTypes.ts
+  -> stable public runtime/build contracts
+src/app.ts
+  -> composition only
+```
+
+Measured Phase-2 structural change:
+
+| Metric | Original V1 | Phase-1 exit | Phase-2 exit |
+| --- | ---: | ---: | ---: |
+| `src/app.ts` lines | 3345 | 2239 | 183 |
+| inline public routes in `app.ts` | 43 | 0 | 0 |
+| raw runtime env access in `app.ts` | many | 0 | 0 |
+| raw runtime env access in execution builder | many | n/a | 0 |
+| app composition line budget | none | none | <=250 CI-enforced |
+
+Verification before PR:
+
+- focused Phase-2 cross-boundary suite: 80/80 passing;
+- full deterministic suite: 382/382 passing;
+- TypeScript, OpenAPI drift, architecture boundary and production build: passing;
+- `app.ts` inline-route budget: 0;
+- `app.ts` composition line budget: 250, actual 183;
+- raw env access gate prevents configuration reads from leaking back into composition/API/application/execution assembly.
+
 Next:
 
-1. run the complete repository gate and OpenAPI drift check;
-2. merge/release the Phase-1 completion as a patch release because public API semantics are unchanged;
-3. run exact-SHA real-provider lifecycle acceptance;
-4. start Phase 2 with P2-01 typed runtime config and P2-02 execution-runtime builder extraction.
+1. merge/release Phase 2 as v1.1.3 if PR/main CI remain green;
+2. run exact-SHA real-provider lifecycle acceptance on v1.1.3;
+3. enter Phase 3 focused reconciler extraction only after the release is ATTESTED.

@@ -9,6 +9,12 @@ const failures = [];
 const legacyCompositionRouteBudget = 0;
 const compositionSource = fs.readFileSync(path.join(sourceRoot, 'app.ts'), 'utf8');
 const inlineRoutes = compositionSource.match(/\bapp\.(?:get|post|put|patch|delete)\(/g)?.length ?? 0;
+const compositionLineBudget = 250;
+const compositionLines = compositionSource.split(/\r?\n/).length;
+if (compositionLines > compositionLineBudget)
+  failures.push(
+    `src/app.ts: composition root must remain thin (line budget ${compositionLineBudget}, found ${compositionLines})`,
+  );
 if (inlineRoutes > legacyCompositionRouteBudget)
   failures.push(
     `src/app.ts: new public routes must be Fastify modules under src/api (legacy inline route budget ${legacyCompositionRouteBudget}, found ${inlineRoutes})`,
@@ -45,7 +51,18 @@ function imports(file, text) {
 
 for (const file of visit(sourceRoot)) {
   const relative = path.relative(root, file).split(path.sep).join('/');
-  const moduleImports = imports(file, fs.readFileSync(file, 'utf8'));
+  const source = fs.readFileSync(file, 'utf8');
+  const moduleImports = imports(file, source);
+  const rawRuntimeConfigForbidden =
+    relative === 'src/app.ts' ||
+    relative === 'src/bootstrap/executionRuntime.ts' ||
+    relative.startsWith('src/api/') ||
+    relative.startsWith('src/application/');
+  if (
+    rawRuntimeConfigForbidden &&
+    (/\bprocess\.env\b/.test(source) || /\b[A-Za-z_][A-Za-z0-9_]*\.FORGEFLOW_[A-Z0-9_]+/.test(source))
+  )
+    failures.push(`${relative}: runtime configuration must flow through src/bootstrap/config.ts, not raw environment access`);
   for (const target of moduleImports) {
     if (relative.startsWith('src/core/')) {
       if (target.includes('/api/') || target.includes('/platform/') || /(?:^|\/)app\.js$/.test(target))

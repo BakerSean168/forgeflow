@@ -114,10 +114,11 @@ The current `src/app.ts` still contains legacy V1 route registrations. This is a
 
 ## Planned migration sequence
 
-1. **Foundation** — Project Registry, OpenAPI artifact, API module boundary, architecture gate.
-2. **HTTP modularization** — move Plans, Executions, Resources, Supervisor, Improvement, and system routes into feature plugins without changing `/api/v1` contracts.
-3. **Composition split** — move resource/execution/Supervisor assembly out of `app.ts` into bootstrap/application modules.
-4. **Integration packages** — move Git/OpenHands/LiteLLM/Antigravity/GitHub implementations behind explicit integration registries.
-5. **Typed client** — generate a standalone client/SDK from the committed OpenAPI contract for external orchestrators and future consumers.
+1. **Foundation — completed** — Project Registry, OpenAPI artifact, API module boundary, architecture gate.
+2. **HTTP modularization — completed** — Plans, Executions, Resources, Supervisor, Improvement, Projects, and system routes are feature modules; the `app.ts` inline-route budget is zero.
+3. **Composition split — completed** — typed config, execution/Supervisor/Improvement builders, application assembly, project scheduling, system projections, runtime lifecycle, and public runtime contracts live under `src/bootstrap/`; `app.ts` is a thin composition root.
+4. **Focused reconcilers — next** — replace interlinked interval callbacks with independently testable convergence controllers while preserving durable ownership.
+5. **Integration packages** — move Git/OpenHands/LiteLLM/Antigravity/GitHub implementations behind explicit integration registries.
+6. **Typed client** — generate a standalone client/SDK from the committed OpenAPI contract for external orchestrators and future consumers.
 
 Each stage must preserve durable database/event compatibility, exact-SHA review, resource selection provenance, worktree/lease safety, and release acceptance.
