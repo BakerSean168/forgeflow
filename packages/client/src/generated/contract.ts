@@ -6,4 +6,4 @@
  */
 export const FORGEFLOW_OPENAPI_SPEC_VERSION = "3.1.0" as const;
 export const FORGEFLOW_API_CONTRACT_VERSION = "1.1.0" as const;
-export const FORGEFLOW_API_CONTRACT_SHA256 = "e2b14a66bd69c7dfef141a0eb98ebbdb33fe46bbfeb9ab1f8a3f43afb16a42ba" as const;
+export const FORGEFLOW_API_CONTRACT_SHA256 = "188e8edb81b10619e873fc467020feeb6144f9e148d114ac0ac87cf2ab345878" as const;

@@ -1,7 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import swagger from '@fastify/swagger';
 
+import { registerApiOperationIds } from './operations.js';
+
 export async function registerOpenApi(app: FastifyInstance): Promise<void> {
+  registerApiOperationIds(app);
   await app.register(swagger, {
     openapi: {
       openapi: '3.1.0',
