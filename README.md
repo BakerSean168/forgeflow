@@ -3,7 +3,7 @@
 > **Autonomous software engineering with durable plans, isolated execution, independent review, recovery, and exact-revision release evidence.**
 
 <p align="left">
-  <a href="https://github.com/BakerSean168/forgeflow/releases/tag/v1.2.1"><strong>v1.2.1</strong></a> ·
+  <a href="https://github.com/BakerSean168/forgeflow/releases/tag/v1.3.0"><strong>v1.3.0</strong></a> ·
   <a href="./docs/getting-started.md"><strong>Getting Started</strong></a> ·
   <a href="./docs/platform-architecture-north-star.md"><strong>Platform Architecture</strong></a> ·
   <a href="./docs/architecture.md"><strong>Runtime Invariants</strong></a> ·
@@ -15,7 +15,7 @@
 <p align="left">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" />
   <img alt="Node.js 24+" src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg" />
-  <img alt="Release v1.2.1" src="https://img.shields.io/badge/release-v1.2.1-blue.svg" />
+  <img alt="Release v1.3.0" src="https://img.shields.io/badge/release-v1.3.0-blue.svg" />
 </p>
 
 Give ForgeFlow a software-engineering objective. It turns that objective into durable work, executes dependency-ready tasks through governed coding-agent resources, independently reviews exact revisions, repairs failures, integrates accepted changes, and closes the lifecycle with repository and release evidence.
@@ -141,20 +141,27 @@ For the detailed state machine, literal-worktree ACL/provenance model, retry sem
 
 ```text
 src/
-  api/                 versioned Fastify API modules + OpenAPI surface
+  api/                 versioned Fastify modules + operation/schema contract overlays
+  application/         command/query facades for public use cases
+  bootstrap/           typed configuration and explicit composition
   platform/            project registry and platform extension foundations
-  app.ts               composition root + legacy V1 route migration surface
+  reconcilers/         focused convergence controllers
+  integrations/        providers, workspaces, resources, delivery, release, intake
+  app.ts               thin control-plane composition root
   main.ts              production entrypoint
   core/
     domain/            plans, executions, reviews, resources, worktrees
     kernel/            deterministic state-changing operations
+    maintenance/       Improvement registry + provider-neutral maintenance contracts
     orchestration/     execution/review/repair/delivery progression
     supervisor/        bounded AI observation and typed decisions
-    adapters/          Git, OpenHands, providers, delivery and telemetry
     persistence/       SQLite schema, repositories and event store
 
 api/
   openapi.v1.json      deterministic external API contract
+  compat/              immutable compatibility floors for released V1 contracts
+packages/
+  client/              standalone generated @forgeflow/client
 deploy/
   projects.example.yaml declarative project-registry example
   gcp/                 hardened systemd deployment
@@ -200,7 +207,7 @@ Continue with:
 npm run check
 ```
 
-The deterministic gate runs product- and architecture-boundary validation, type checking, OpenAPI drift detection, the full test suite, and a clean production build.
+The deterministic gate runs product/architecture validation, OpenAPI drift + multi-baseline compatibility + operation/coverage checks, generated-client drift/type/runtime/pack checks, the full server test suite, and clean server/client production builds.
 
 Real-provider acceptance is intentionally separate:
 

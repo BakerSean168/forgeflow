@@ -108,8 +108,8 @@ The Agent Server owns execution behavior; consumers use an API/client boundary i
 Adopt in ForgeFlow:
 
 - the committed OpenAPI document is a release artifact;
-- every public route has request/response schemas;
-- future integrations consume a generated client instead of hand-built payloads;
+- every public route has request/response schemas and a stable operation identity;
+- integrations consume the generated `@forgeflow/client` instead of hand-built payloads;
 - API transport code cannot import persistence/adapters/orchestration internals;
 - runtime changes and client changes remain independently reviewable.
 
@@ -230,7 +230,7 @@ No global plugin context. A delivery extension gets delivery authority, not data
 
 ### P7 — Public API is a product contract
 
-`/api/v1` compatibility is protected independently from internal refactors. OpenAPI drift is CI-gated. Breaking changes require an explicit versioned migration.
+`/api/v1` compatibility is protected independently from internal refactors. OpenAPI drift, multi-baseline compatibility, stable operation IDs, and 45/45 schema coverage are CI-gated. Breaking changes require an explicit versioned migration.
 
 ### P8 — Composition root contains wiring, not behavior
 

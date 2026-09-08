@@ -27,7 +27,14 @@ const plan = await forgeflow.GET('/api/v1/plans/{planId}', {
 console.log(FORGEFLOW_API_CONTRACT_VERSION, FORGEFLOW_API_CONTRACT_SHA256);
 ```
 
-Unknown paths and missing required path parameters are rejected by TypeScript.
+Unknown paths and missing required path parameters are rejected by TypeScript. All 45 public operations also expose stable semantic identities through the generated `ForgeFlowOperations` type.
+
+```ts
+import type { ForgeFlowOperations } from '@forgeflow/client';
+
+type CreatePlan = ForgeFlowOperations['plansCreate'];
+type SupervisorDecision = ForgeFlowOperations['supervisorsDecide'];
+```
 
 ## Contract provenance
 
@@ -70,4 +77,4 @@ openapi-typescript
 openapi-fetch runtime
 ```
 
-Stable semantic `operationId` convenience methods can be added later when the public OpenAPI operations are explicitly named. They must delegate to the generated path client rather than create duplicate request/response models.
+The public OpenAPI operations are now explicitly named and schema-covered. If semantic convenience methods are added later, they must be generated from those `operationId` declarations and delegate to the generated path client rather than create duplicate request/response models.

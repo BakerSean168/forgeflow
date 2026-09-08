@@ -6,10 +6,21 @@ export const ACTION_STATUSES = [
 ] as const;
 export type ActionStatus = (typeof ACTION_STATUSES)[number];
 
-export type SupervisorActionType =
-  | 'NO_ACTION' | 'CREATE_EXECUTION' | 'CONTINUE_EXECUTION' | 'RETRY_EXECUTION' | 'SWITCH_ROUTE'
-  | 'REQUEST_REVIEW' | 'CREATE_REPAIR' | 'REPLAN_REMAINDER' | 'CREATE_CHILD_PLAN'
-  | 'PAUSE_FOR_RESOURCE' | 'PARK_EXTERNAL_GATE' | 'ESCALATE';
+export const SUPERVISOR_ACTION_TYPES = [
+  'NO_ACTION',
+  'CREATE_EXECUTION',
+  'CONTINUE_EXECUTION',
+  'RETRY_EXECUTION',
+  'SWITCH_ROUTE',
+  'REQUEST_REVIEW',
+  'CREATE_REPAIR',
+  'REPLAN_REMAINDER',
+  'CREATE_CHILD_PLAN',
+  'PAUSE_FOR_RESOURCE',
+  'PARK_EXTERNAL_GATE',
+  'ESCALATE',
+] as const;
+export type SupervisorActionType = (typeof SUPERVISOR_ACTION_TYPES)[number];
 
 export interface NoActionPayload { type: 'NO_ACTION'; reason: string; }
 export interface CreateExecutionPayload { type: 'CREATE_EXECUTION'; workItemId: string; route: string; }

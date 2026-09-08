@@ -9,6 +9,9 @@ ForgeFlow is an independent control plane. External integrations and orchestrato
 - `/api/openapi.json` exposes the live OpenAPI 3.1 contract.
 - [`../api/openapi.v1.json`](../api/openapi.v1.json) is the deterministic checked-in API artifact.
 - `npm run check:api-contract` fails when the generated contract drifts from the checked-in artifact.
+- `npm run check:api-compat` compares the candidate contract against every committed compatibility baseline under `api/compat/`.
+- `npm run check:api-operations` and `npm run check:api-coverage` require stable unique operation identities plus complete response/body coverage for all 45 public operations.
+- OpenAPI `info.version` is the HTTP contract version; it is intentionally independent from ForgeFlow/server and npm-package SemVer. The v1.3.0 release carries API contract version `1.2.0`.
 
 Within `v1`, changes should be additive and backward compatible. Removing or changing the meaning of an existing field, status, or route requires an explicit migration or a new API version.
 
@@ -42,23 +45,23 @@ New API modules should:
 5. regenerate and commit `api/openapi.v1.json`;
 6. add an API-level test using Fastify injection.
 
-The existing V1 routes predate the schema-first boundary and are being migrated incrementally. New routes are not allowed to expand that legacy pattern.
+All retained V1 public operations now have an explicit generated contract. The Phase-1 compatibility exception is **closed as of v1.3.0**.
 
-### Time-bounded V1 compatibility exception
+### Legacy V1 runtime compatibility
 
-Phase 1 moves legacy V1 routes behind API modules and application services **without tightening request validation or response serialization**, because changing validation while changing ownership would mix a contract migration with an architecture migration. Those moved legacy routes may therefore retain permissive/generated OpenAPI shapes until the dedicated contract-hardening/typed-client phase. This exception is time-bounded:
+The older V1 handlers originally performed validation inside their transport/application code rather than through Fastify JSON Schema. Replacing that validation in-place would change error timing, status handling, and response serialization. ForgeFlow therefore hardens those already-existing routes through a **documentation-only Swagger transform**:
 
-- it applies only to public routes that existed before the Phase-1 modularization baseline;
-- it does not allow new public routes without request/response JSON Schema;
-- public path/status/field semantics must remain backward compatible during ownership migration;
-- OpenAPI drift remains a mandatory CI gate;
-- the exception closes when the typed-client/contract-hardening phase gives every retained V1 route an explicit schema.
+- the final OpenAPI artifact carries explicit query/header/body/response schemas;
+- the typed client consumes those same schemas;
+- the legacy Fastify handlers keep their existing validation/serialization behavior;
+- the four historically optional bodies (`plansReconcile`, `executionsContinue`, `executionsReplaceProviderSession`, `improvementsAdopt`) remain optional in the generated contract;
+- historical generated response statuses are retained when the runtime also exposes a more accurate status, so hardening is monotonic rather than silently breaking old consumers.
 
-This separation keeps Phase 1 behavior-preserving while preventing the compatibility surface from growing.
+New routes do not get this compatibility path: they must be schema-first in their Fastify module. The committed v1.2.1 baseline protects the old documented floor, while the v1.3.0 hardened baseline protects the stronger operation IDs, request bodies, enums, response shapes, and requiredness guarantees introduced by this phase.
 
 ## Client strategy
 
-The checked-in OpenAPI artifact is the source from which typed clients can be generated. A future standalone SDK should be generated from this contract rather than duplicating HTTP payload definitions by hand. Until that package exists, integrations should still use only documented HTTP routes and must tolerate additive fields.
+The checked-in OpenAPI artifact is the only HTTP DTO authority. `@forgeflow/client` is generated from it; integrations should never mirror Plan/Execution/Supervisor payloads by hand. All 45 public operations now have stable unique `operationId` values, so `ForgeFlowOperations` exposes semantic operation identities in addition to the path/method client. Future convenience methods may be generated from those identities, but they must delegate to the same generated contract rather than create a second model layer.
 
 ## TypeScript client
 
@@ -75,4 +78,4 @@ The client is generated from the committed `api/openapi.v1.json` artifact with `
 
 The package exports the exact contract SHA-256 and API/OpenAPI versions used for generation. This lets external consumers identify the contract they were compiled against without coupling package SemVer to the server's internal implementation version.
 
-The initial SDK intentionally uses typed HTTP method/path calls instead of hand-authored DTO wrappers. Many V1 routes still carry compatibility-permissive schemas, and most operations do not yet have stable `operationId` values. Contract hardening and semantic convenience methods should therefore proceed monotonically: first tighten the OpenAPI schemas/operation identities, then generate ergonomics from those same declarations. No second DTO authority should be introduced.
+The SDK intentionally keeps typed HTTP method/path calls as its runtime surface instead of hand-authored DTO wrappers. As of v1.3.0, all V1 public operations have stable `operationId` values and explicit contract coverage; generated `ForgeFlowOperations` can be used for semantic compile-time identities. Convenience methods remain optional ergonomics and, if added, must be generated/delegated from these declarations. No second DTO authority is allowed.
