@@ -425,7 +425,7 @@ The first batch should materially reduce `app.ts` while keeping product behavior
 
 ### Batch 1 — HTTP/application foundation
 
-Status: **implemented on `refactor/north-star-platform-v2`, pending PR/release review**.
+Status: **completed and production-attested in v1.1.1**.
 
 Completed:
 
@@ -438,22 +438,48 @@ Measured structural change after Batch 1:
 
 | Metric | Before | After Batch 1 |
 | --- | ---: | ---: |
-| `src/app.ts` lines | 3345 | 2757 |
+| `src/app.ts` lines | 3345 | 2755 |
 | inline public routes in `app.ts` | 43 | 21 |
 | modular API route declarations | 3 | 25 |
 
-Verification completed during implementation:
+Verification:
 
-- focused `app-runtime` tests: 22/22 passing;
-- deployment contract tests: 15/15 passing after ownership assertions were migrated to the new modules;
-- full deterministic suite: 378/378 passing;
+- deterministic suite: 378/378 passing;
 - architecture dependency gate: passing;
-- OpenAPI drift gate: passing and now included in the default `npm run check` CI path.
+- OpenAPI drift is included in the default CI path;
+- v1.1.1 exact-SHA real-provider lifecycle acceptance: ATTESTED.
 
-Next batch:
+### Batch 2 — Complete Phase-1 API extraction
 
-1. P1-05 Plans API/application extraction;
-2. P1-06 Executions API/application extraction;
-3. P1-07 Supervisor API/application extraction;
-4. reduce inline route budget from 21 to 0;
-5. then enter Phase 2 bootstrap/composition split.
+Status: **implemented; closure requires the normal PR/CI/exact-SHA release and real-provider acceptance gates recorded by ForgeFlow release provenance**.
+
+Completed:
+
+- P1-05 Plans API/application extraction;
+- P1-06 Executions API/application extraction;
+- P1-07 Supervisor API/application extraction;
+- architecture route budget reduced from 21 to 0;
+- architecture import analysis upgraded to TypeScript AST parsing so multi-line imports cannot bypass dependency rules;
+- legacy V1 permissive-schema behavior documented as a time-bounded compatibility exception rather than silently treated as schema-first.
+
+Measured structural change after Batch 2:
+
+| Metric | Phase-1 start | After Batch 2 |
+| --- | ---: | ---: |
+| `src/app.ts` lines | 3345 | 2239 |
+| inline public routes in `app.ts` | 43 | 0 |
+| modular API route declarations | 3 | 46 |
+
+Focused verification completed during implementation:
+
+- Plans/queue/delivery/cancellation focused suite: 88/88 passing;
+- Executions/provider lifecycle/telemetry focused suite: 88/88 passing;
+- Supervisor/typed decision focused suite: 46/46 passing;
+- architecture boundary gate: passing with a zero inline-route budget.
+
+Next:
+
+1. run the complete repository gate and OpenAPI drift check;
+2. merge/release the Phase-1 completion as a patch release because public API semantics are unchanged;
+3. run exact-SHA real-provider lifecycle acceptance;
+4. start Phase 2 with P2-01 typed runtime config and P2-02 execution-runtime builder extraction.

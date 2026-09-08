@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 
 const root = path.resolve(import.meta.dirname, '..');
 const sourceRoot = path.join(root, 'src');
 const failures = [];
-const legacyCompositionRouteBudget = 21;
+const legacyCompositionRouteBudget = 0;
 const compositionSource = fs.readFileSync(path.join(sourceRoot, 'app.ts'), 'utf8');
 const inlineRoutes = compositionSource.match(/\bapp\.(?:get|post|put|patch|delete)\(/g)?.length ?? 0;
 if (inlineRoutes > legacyCompositionRouteBudget)
@@ -24,18 +25,27 @@ function visit(directory) {
   return files;
 }
 
-function imports(text) {
+function imports(file, text) {
+  const sourceFile = ts.createSourceFile(
+    file,
+    text,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TS,
+  );
   const values = [];
-  for (const line of text.split(/\r?\n/)) {
-    const match = line.match(/^\s*(?:import|export)\b.*?\bfrom\s+['"]([^'"]+)['"]/);
-    if (match?.[1]) values.push(match[1]);
+  for (const statement of sourceFile.statements) {
+    if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) {
+      const specifier = statement.moduleSpecifier;
+      if (specifier && ts.isStringLiteralLike(specifier)) values.push(specifier.text);
+    }
   }
   return values;
 }
 
 for (const file of visit(sourceRoot)) {
   const relative = path.relative(root, file).split(path.sep).join('/');
-  const moduleImports = imports(fs.readFileSync(file, 'utf8'));
+  const moduleImports = imports(file, fs.readFileSync(file, 'utf8'));
   for (const target of moduleImports) {
     if (relative.startsWith('src/core/')) {
       if (target.includes('/api/') || target.includes('/platform/') || /(?:^|\/)app\.js$/.test(target))
