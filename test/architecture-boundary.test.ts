@@ -12,5 +12,7 @@ test('architecture boundary uses the TypeScript AST and permanently forbids inli
   assert.match(checker, /ts\.isImportDeclaration/);
   assert.match(checker, /ts\.isExportDeclaration/);
   assert.match(checker, /legacyCompositionRouteBudget = 0/);
+  assert.match(checker, /runtime configuration must flow through src\/bootstrap\/config\.ts/);
+  assert.match(checker, /rawRuntimeConfigForbidden/);
   assert.doesNotMatch(checker, /function imports\(text\)/);
 });

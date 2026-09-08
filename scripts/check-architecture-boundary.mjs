@@ -45,7 +45,18 @@ function imports(file, text) {
 
 for (const file of visit(sourceRoot)) {
   const relative = path.relative(root, file).split(path.sep).join('/');
-  const moduleImports = imports(file, fs.readFileSync(file, 'utf8'));
+  const source = fs.readFileSync(file, 'utf8');
+  const moduleImports = imports(file, source);
+  const rawRuntimeConfigForbidden =
+    relative === 'src/app.ts' ||
+    relative === 'src/bootstrap/executionRuntime.ts' ||
+    relative.startsWith('src/api/') ||
+    relative.startsWith('src/application/');
+  if (
+    rawRuntimeConfigForbidden &&
+    (/\bprocess\.env\b/.test(source) || /\b[A-Za-z_][A-Za-z0-9_]*\.FORGEFLOW_[A-Z0-9_]+/.test(source))
+  )
+    failures.push(`${relative}: runtime configuration must flow through src/bootstrap/config.ts, not raw environment access`);
   for (const target of moduleImports) {
     if (relative.startsWith('src/core/')) {
       if (target.includes('/api/') || target.includes('/platform/') || /(?:^|\/)app\.js$/.test(target))

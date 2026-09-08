@@ -1,5 +1,3 @@
-import { execFileSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -7,7 +5,6 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 import { registerOpenApi } from './api/openapi.js';
 import { registerApiErrorHandler } from './api/shared/errors.js';
-import { requiredText } from './api/shared/input.js';
 import { registerApiModules } from './api/module.js';
 import { createProjectApiModule } from './api/v1/projects.js';
 import { createSystemApiModule } from './api/v1/system/index.js';
@@ -23,43 +20,19 @@ import { PlanApplication } from './application/plans/index.js';
 import { ExecutionApplication } from './application/executions/index.js';
 import { SupervisorApplication } from './application/supervisors/index.js';
 
-import {
-  AntigravityExecutionProvider,
-  AntigravityReviewProvider,
-} from './core/adapters/antigravity.js';
-import { LocalGitWorkspaceAdapter } from './core/adapters/gitWorkspace.js';
-import { LiteralWorktreeWorkspaceAdapter } from './core/adapters/literalWorktreeWorkspace.js';
-import { PlanWorktreeManager } from './core/adapters/planWorktrees.js';
-import { ProjectScopedWorkspaceAdapter } from './core/adapters/projectScopedWorkspace.js';
+import { buildExecutionAutomation, type ExecutionAutomationRuntime } from './bootstrap/executionRuntime.js';
+import { loadBootstrapConfig } from './bootstrap/config.js';
+import type { ProjectRegistry } from './platform/projects/index.js';
+
 import { LiteLlmExecutionTelemetry } from './core/adapters/liteLlmTelemetry.js';
-import { GitHubCliDeliveryAdapter } from './core/adapters/githubDelivery.js';
 import { MaintenanceCandidateRegistry } from './core/adapters/maintenance.js';
 import { ResourceSelectedImprovementDiagnosisClient } from './core/adapters/improvementDiagnosis.js';
 import { ExactShaSelfChangeCanary } from './core/adapters/selfChangeCanary.js';
 import { FileSelfChangePromotionQueue } from './core/adapters/selfChangePromotion.js';
 import {
-  createOpenHandsProviderFactory,
-  OpenHandsCodexBusinessReviewProvider,
-  OpenHandsCodexManagedExecutionProvider,
-  OpenHandsExecutionProvider,
-  OpenHandsReviewProvider,
-  type OpenHandsAgentBackend,
-} from './core/adapters/openHandsCoding.js';
-import {
   HttpOpenHandsSupervisorClient,
   OpenHandsSupervisorAdapter,
 } from './core/adapters/openhands.js';
-import {
-  CompositeResourceDirectory,
-  LiteLlmResourceDirectory,
-  LiteLlmResourceProbe,
-  LiteLlmResourceStateEffect,
-  ResourceLifecycleManager,
-  ResourceStateService,
-  StaticResourceDirectory,
-  providerNativeResources,
-  type ResourceProbePort,
-} from './core/adapters/resourceDirectory.js';
 import { ForgeFlowError } from './core/domain/errors.js';
 import { isTerminalPlanStatus } from './core/domain/plan.js';
 import {
@@ -76,7 +49,6 @@ import {
   ReviewKernel,
   WorkGraphKernel,
 } from './core/kernel/index.js';
-import { ExecutionWorker, type ExecutionWorkerRoute } from './core/orchestration/executionWorker.js';
 import { MaintenanceImprovementRuntime } from './core/orchestration/maintenanceRuntime.js';
 import { ProjectPlanQueueRuntime } from './core/orchestration/projectPlanQueueRuntime.js';
 import {
@@ -84,23 +56,11 @@ import {
   decodeAutonomousLifecycleAttestation,
   releaseAcceptanceAggregateId,
 } from './core/orchestration/releaseAcceptance.js';
-import type { ExecutionProviderPort, WorkspaceProviderPort } from './core/orchestration/contracts.js';
 import {
   ResourceSelector,
   selectExecutableProfile,
   type ResourceSelectionCandidate,
 } from './core/orchestration/resourceSelector.js';
-import {
-  RuntimeAdmissionRegistry,
-  createRuntimeAdmissionStatus,
-  requiresAcpRuntimeAdmission,
-  runtimeAdmissionKey,
-} from './core/orchestration/runtimeAdmission.js';
-import {
-  PlanAutomationRuntime,
-  StaticPlanAutomationPolicyResolver,
-  type PlanAutomationPolicy,
-} from './core/orchestration/planAutomationRuntime.js';
 import { bootstrapForgeFlow } from './core/persistence/bootstrap.js';
 import { createRepositories, type ForgeFlowRepositories } from './core/persistence/repositories.js';
 import { SupervisorActionExecutor, type SupervisorKernelPort } from './core/supervisor/executor.js';
@@ -113,10 +73,7 @@ import {
 } from './core/supervisor/admission.js';
 import { SupervisorRuntime } from './core/supervisor/runtime.js';
 import { SupervisorWakeScheduler } from './core/supervisor/scheduler.js';
-import {
-  loadProjectRegistry,
-  type ProjectRegistry,
-} from './platform/projects/index.js';
+
 
 export interface BuildControlPlaneOptions {
   env?: NodeJS.ProcessEnv;
@@ -125,35 +82,6 @@ export interface BuildControlPlaneOptions {
   environment?: 'test' | 'development' | 'staging' | 'production';
   allowDataReset?: boolean;
   fetchImpl?: typeof fetch;
-}
-
-export interface ExecutionAutomationRuntime {
-  workspace: WorkspaceProviderPort;
-  planWorktreeManager?: PlanWorktreeManager;
-  workspaceUid: number;
-  worker: ExecutionWorker;
-  plans: PlanAutomationRuntime;
-  policy: StaticPlanAutomationPolicyResolver;
-  compatibilityImplementationRoutes: string[];
-  compatibilityReviewRoutes: string[];
-  implementationRoutes: string[];
-  reviewRoutes: string[];
-  automationProjectKeys: string[];
-  literalWorktreeProjectKeys: string[];
-  requireDelivery: boolean;
-  routeModels: Record<string, string>;
-  resourceSelectorEnabled: boolean;
-  resources: CompositeResourceDirectory;
-  liteLlmResources: LiteLlmResourceDirectory;
-  resourceSelector: ResourceSelector;
-  resourceState: ResourceStateService;
-  resourceStateEffect: LiteLlmResourceStateEffect;
-  resourceLifecycle: ResourceLifecycleManager;
-  runtimeAdmissionEnabled: boolean;
-  runtimeAdmission: RuntimeAdmissionRegistry;
-  runtimeAdmissionHasDemand: () => boolean;
-  reconcileRuntimeAdmission: () => Promise<void>;
-  shutdownRuntimeAdmission: () => Promise<void>;
 }
 
 export interface ControlPlaneRuntime {
@@ -186,111 +114,6 @@ export interface ControlPlaneRuntime {
   projectPlanQueue?: ProjectPlanQueueRuntime;
   singleActivePlanEnabled: boolean;
   literalWorktreesEnabled: boolean;
-}
-
-interface RouteSpec {
-  route: string;
-  model: string;
-}
-
-function routeSpecs(value: string | undefined, fallback: string[]): RouteSpec[] {
-  const items = (value ? value.split(',') : fallback).map((item) => item.trim()).filter(Boolean);
-  const seen = new Set<string>();
-  return items.map((item) => {
-    const separator = item.indexOf('=');
-    const route = (separator < 0 ? item : item.slice(0, separator)).trim();
-    const model = (separator < 0 ? item : item.slice(separator + 1)).trim();
-    if (!route || !model) throw new ForgeFlowError('EXECUTION_ROUTE_SPEC_INVALID');
-    if (seen.has(route)) throw new ForgeFlowError('EXECUTION_ROUTE_DUPLICATE');
-    seen.add(route);
-    return { route, model };
-  });
-}
-
-function rootList(value: string | undefined): string[] {
-  return (value ?? '')
-    .split(path.delimiter)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function commaList(value: string | undefined): string[] {
-  return [
-    ...new Set(
-      (value ?? '')
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ),
-  ];
-}
-
-function assertOpenHandsGitCommonDirMounted(
-  repositoryPath: string,
-  container: string,
-  commandTimeoutMs: number,
-  maxBufferBytes: number,
-): void {
-  try {
-    const rawCommon = execFileSync(
-      '/usr/bin/git',
-      ['-c', `safe.directory=${repositoryPath}`, '-C', repositoryPath, 'rev-parse', '--git-common-dir'],
-      {
-        encoding: 'utf8',
-        timeout: commandTimeoutMs,
-        maxBuffer: maxBufferBytes,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    ).trim();
-    const common = fs.realpathSync(
-      path.isAbsolute(rawCommon) ? rawCommon : path.resolve(repositoryPath, rawCommon),
-    );
-    const rawMounts = execFileSync(
-      '/usr/bin/docker',
-      ['inspect', container, '--format', '{{json .Mounts}}'],
-      {
-        encoding: 'utf8',
-        timeout: commandTimeoutMs,
-        maxBuffer: maxBufferBytes,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    ).trim();
-    const mounts = JSON.parse(rawMounts) as Array<{
-      Source?: unknown;
-      Destination?: unknown;
-      RW?: unknown;
-    }>;
-    if (
-      !Array.isArray(mounts) ||
-      !mounts.some(
-        (mount) =>
-          mount.Source === common && mount.Destination === common && mount.RW === true,
-      )
-    )
-      throw new ForgeFlowError(
-        'WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED',
-        'Literal worktrees require the canonical Git common directory mounted read-write at the same path inside OpenHands.',
-      );
-  } catch (error) {
-    if (error instanceof ForgeFlowError) throw error;
-    throw new ForgeFlowError(
-      'WORKTREE_OPENHANDS_MOUNT_CHECK_FAILED',
-      'Unable to verify the OpenHands Git common-directory mount.',
-      error,
-    );
-  }
-}
-
-function integerValue(
-  value: string | undefined,
-  fallback: number,
-  minimum: number,
-  maximum: number,
-  code: string,
-): number {
-  const parsed = value === undefined ? fallback : Number(value);
-  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new ForgeFlowError(code);
-  return parsed;
 }
 
 type ReleaseProvenanceProjection =
@@ -450,896 +273,62 @@ function readHostCacheMaintenance(file: string | undefined): HostCacheMaintenanc
   }
 }
 
-async function buildExecutionAutomation(
-  env: NodeJS.ProcessEnv,
-  repositories: ForgeFlowRepositories,
-  fetchImpl: typeof fetch,
-  projects: ProjectRegistry,
-): Promise<ExecutionAutomationRuntime | undefined> {
-  if (env.FORGEFLOW_EXECUTION_RUNTIME_ENABLED !== 'true') return undefined;
-  const openHandsUrl = requiredText(env.FORGEFLOW_OPENHANDS_URL, 'OPENHANDS_BASE_URL_REQUIRED');
-  const sessionApiKey = requiredText(env.FORGEFLOW_OPENHANDS_TOKEN, 'OPENHANDS_SESSION_KEY_REQUIRED');
-  const liteLlmApiKey = requiredText(env.FORGEFLOW_LITELLM_API_KEY, 'OPENHANDS_LITELLM_KEY_REQUIRED');
-  const liteLlmBaseUrl = requiredText(
-    env.FORGEFLOW_LITELLM_BASE_URL,
-    'OPENHANDS_LITELLM_URL_REQUIRED',
-  );
-  const allowedRepositoryRoots = rootList(env.FORGEFLOW_ALLOWED_REPOSITORY_ROOTS);
-  if (allowedRepositoryRoots.length === 0) throw new ForgeFlowError('WORKSPACE_ALLOWED_ROOT_REQUIRED');
-  const managedHostRoot = requiredText(
-    env.FORGEFLOW_WORKSPACE_HOST_ROOT,
-    'WORKSPACE_MANAGED_ROOT_REQUIRED',
-  );
-  const executionRoot = requiredText(
-    env.FORGEFLOW_WORKSPACE_EXECUTION_ROOT ?? '/workspace',
-    'WORKSPACE_EXECUTION_ROOT_REQUIRED',
-  );
-  const automationProjectKeys = projects.automationProjectKeys();
-  const literalWorktreesEnabled = env.FORGEFLOW_LITERAL_WORKTREES_ENABLED === 'true';
-  const configuredLiteralProjects = projects.literalWorktreeProjectKeys();
-  if (projects.source() === 'manifest' && configuredLiteralProjects.length > 0 && !literalWorktreesEnabled)
-    throw new ForgeFlowError('PROJECT_MANIFEST_LITERAL_WORKTREES_DISABLED');
-  const literalWorktreeProjectKeys = literalWorktreesEnabled ? configuredLiteralProjects : [];
-  if (literalWorktreesEnabled && literalWorktreeProjectKeys.length === 0)
-    throw new ForgeFlowError('LITERAL_WORKTREE_PROJECTS_REQUIRED');
-  if (
-    automationProjectKeys.length > 0 &&
-    literalWorktreeProjectKeys.some((projectKey) => !automationProjectKeys.includes(projectKey))
-  )
-    throw new ForgeFlowError('LITERAL_WORKTREE_PROJECT_NOT_AUTOMATED');
-  const resourceSelectorEnabled = env.FORGEFLOW_RESOURCE_SELECTOR_ENABLED === 'true';
-  // Selector-enabled ForgeFlow never reads the legacy route ladders. They remain only
-  // as an explicit rollback path when the selector gate is disabled. This keeps
-  // exactly one routing authority for every newly-created execution.
-  const implementationSpecs = resourceSelectorEnabled
-    ? []
-    : routeSpecs(env.FORGEFLOW_IMPLEMENTATION_ROUTES, ['gpt-5.6-luna']);
-  const reviewSpecs = resourceSelectorEnabled
-    ? []
-    : routeSpecs(env.FORGEFLOW_REVIEW_ROUTES, [
-        'codex-business-review=gpt-5.6-sol',
-        'gpt-5.6-sol',
-      ]);
-  const compatibilityImplementationRoutes = implementationSpecs.map((item) => item.route);
-  const compatibilityReviewRoutes = reviewSpecs.map((item) => item.route);
-  if (compatibilityImplementationRoutes.some((route) => compatibilityReviewRoutes.includes(route)))
-    throw new ForgeFlowError('EXECUTION_ROUTE_ROLE_CONFLICT');
-  const implementationRoutes = resourceSelectorEnabled
-    ? DEFAULT_AFFINITY_POLICY.capabilities.IMPLEMENTATION.map((item) => item.modelFamily)
-    : compatibilityImplementationRoutes;
-  const reviewRoutes = resourceSelectorEnabled
-    ? DEFAULT_AFFINITY_POLICY.capabilities.REASONING.map((item) => item.modelFamily)
-    : compatibilityReviewRoutes;
-
-  const common = {
-    baseUrl: openHandsUrl,
-    sessionApiKey,
-    liteLlmApiKey,
-    liteLlmBaseUrl,
-    fetchImpl,
-    requestTimeoutMs: integerValue(
-      env.FORGEFLOW_PROVIDER_REQUEST_TIMEOUT_MS,
-      30_000,
-      1_000,
-      120_000,
-      'OPENHANDS_TIMEOUT_INVALID',
-    ),
-    llmTimeoutSeconds: integerValue(
-      env.FORGEFLOW_PROVIDER_LLM_TIMEOUT_SECONDS,
-      600,
-      30,
-      1_800,
-      'OPENHANDS_LLM_TIMEOUT_INVALID',
-    ),
-    maxIterations: integerValue(
-      env.FORGEFLOW_PROVIDER_MAX_ITERATIONS,
-      500,
-      1,
-      1_000,
-      'OPENHANDS_ITERATION_LIMIT_INVALID',
-    ),
-  };
-  const liteLlmAdminBaseUrl = (
-    env.FORGEFLOW_LITELLM_ADMIN_BASE_URL ??
-    env.FORGEFLOW_LITELLM_BASE_URL ??
-    liteLlmBaseUrl
-  )
-    .replace(/\/$/, '')
-    .replace(/\/v1$/, '');
-  const liteLlmResources = new LiteLlmResourceDirectory({
-    baseUrl: liteLlmAdminBaseUrl,
-    envFile: env.FORGEFLOW_LITELLM_ADMIN_ENV_FILE ?? '/etc/forgeflow/litellm.env',
-    keyName: env.FORGEFLOW_LITELLM_ADMIN_KEY_NAME ?? 'LITELLM_MASTER_KEY',
-    fetchImpl,
-    requestTimeoutMs: integerValue(
-      env.FORGEFLOW_RESOURCE_DIRECTORY_TIMEOUT_MS,
-      10_000,
-      1_000,
-      60_000,
-      'RESOURCE_DIRECTORY_TIMEOUT_INVALID',
-    ),
-  });
-  if (resourceSelectorEnabled) await liteLlmResources.refresh();
-
-  const businessAuthFile =
-    env.FORGEFLOW_BUSINESS_AUTH_FILE ??
-    '/var/lib/forgeflow/openhands/codex-business/auth.json';
-  const businessEnabled = env.FORGEFLOW_BUSINESS_RESOURCE_ENABLED !== 'false';
-  const businessReady = businessEnabled && fs.existsSync(businessAuthFile);
-  const antigravityBinary =
-    env.FORGEFLOW_ANTIGRAVITY_BIN ?? '/home/dev/.local/bin/agy';
-  const antigravityHome =
-    env.FORGEFLOW_ANTIGRAVITY_HOME ?? '/home/dev';
-  const antigravityAuthFile = path.join(
-    antigravityHome,
-    '.gemini/antigravity-cli/antigravity-oauth-token',
-  );
-  const antigravityEnabled = env.FORGEFLOW_ANTIGRAVITY_RESOURCE_ENABLED === 'true';
-  const antigravityReady =
-    antigravityEnabled && fs.existsSync(antigravityBinary) && fs.existsSync(antigravityAuthFile);
-  const nativeResources = new StaticResourceDirectory(
-    providerNativeResources({
-      businessEnabled,
-      businessReady,
-      antigravityEnabled,
-      antigravityReady,
-    }),
-  );
-  const sourceResources = new CompositeResourceDirectory([liteLlmResources, nativeResources]);
-  const resources = new CompositeResourceDirectory(
-    [liteLlmResources, nativeResources],
-    repositories.resourceStateOverrides,
-  );
-  const runtimeAdmissionEnabled =
-    resourceSelectorEnabled &&
-    (env.FORGEFLOW_RUNTIME_ADMISSION_ENABLED === 'true' ||
-      (env.FORGEFLOW_RUNTIME_ADMISSION_ENABLED !== 'false' && env.NODE_ENV !== 'test'));
-  const runtimeAdmissionTtlMs = integerValue(
-    env.FORGEFLOW_RUNTIME_ADMISSION_TTL_MS,
-    15 * 60_000,
-    60_000,
-    24 * 60 * 60_000,
-    'RUNTIME_ADMISSION_TTL_INVALID',
-  );
-  const runtimeAdmissionTransientFailureTtlMs = integerValue(
-    env.FORGEFLOW_RUNTIME_ADMISSION_TRANSIENT_FAILURE_TTL_MS,
-    15_000,
-    1_000,
-    runtimeAdmissionTtlMs,
-    'RUNTIME_ADMISSION_TRANSIENT_FAILURE_TTL_INVALID',
-  );
-  const runtimeAdmission = new RuntimeAdmissionRegistry();
-  if (runtimeAdmissionEnabled) runtimeAdmission.restore(repositories.runtimeAdmissions.list());
-  const runtimeAdmissionHasDemand = (): boolean => {
-    if (repositories.executions.listByStatuses(['QUEUED', 'RUNNING'], 1).length > 0) return true;
-    return (['READY', 'RUNNING', 'WAITING_FOR_RESOURCE'] as const).some(
-      (status) => repositories.plans.listPlans({ status, limit: 1 }).length > 0,
-    );
-  };
-  const resourceStateEffect = new LiteLlmResourceStateEffect({
-    baseUrl: liteLlmAdminBaseUrl,
-    envFile: env.FORGEFLOW_LITELLM_ADMIN_ENV_FILE ?? '/etc/forgeflow/litellm.env',
-    keyName: env.FORGEFLOW_LITELLM_ADMIN_KEY_NAME ?? 'LITELLM_MASTER_KEY',
-    fetchImpl,
-    requestTimeoutMs: integerValue(
-      env.FORGEFLOW_RESOURCE_DIRECTORY_TIMEOUT_MS,
-      10_000,
-      1_000,
-      60_000,
-      'RESOURCE_DIRECTORY_TIMEOUT_INVALID',
-    ),
-  });
-  const resourceState = new ResourceStateService(
-    resources,
-    repositories.resourceStateOverrides,
-    3,
-    resourceStateEffect,
-  );
-  const liteLlmResourceProbe = new LiteLlmResourceProbe({
-    baseUrl: liteLlmBaseUrl,
-    bearerToken: liteLlmApiKey,
-    fetchImpl,
-    timeoutMs: integerValue(
-      env.FORGEFLOW_RESOURCE_PROBE_TIMEOUT_MS,
-      30_000,
-      1_000,
-      120_000,
-      'RESOURCE_PROBE_TIMEOUT_INVALID',
-    ),
-  });
-  const resourceProbe: ResourceProbePort = {
-    probe: async (resource: ExecutionResource): Promise<boolean> => {
-      if (resource.resourceId === 'chatgpt-business-primary') return businessReady;
-      if (resource.resourceId === 'antigravity-primary') return antigravityReady;
-      return await liteLlmResourceProbe.probe(resource);
-    },
-  };
-  const resourceLifecycle = new ResourceLifecycleManager(
-    sourceResources,
-    repositories.resourceStateOverrides,
-    resourceProbe,
-    resourceStateEffect,
-  );
-  const routes: ExecutionWorkerRoute[] = [
-    ...implementationSpecs.map(({ route, model }) => ({
-      route,
-      provider:
-        model === 'gpt-5.6-luna'
-          ? new OpenHandsCodexManagedExecutionProvider({ ...common, implementationModel: model })
-          : new OpenHandsExecutionProvider({ ...common, implementationModel: model }),
-    })),
-    ...reviewSpecs.map(({ route, model }) => ({
-      route,
-      provider:
-        route === 'codex-business-review'
-          ? new OpenHandsCodexBusinessReviewProvider({ ...common, reviewModel: model })
-          : new OpenHandsReviewProvider({ ...common, reviewModel: model }),
-    })),
-  ];
-  const workspaceUid = integerValue(
-    env.FORGEFLOW_WORKSPACE_UID,
-    10_001,
-    0,
-    2 ** 31 - 1,
-    'WORKSPACE_OWNER_INVALID',
-  );
-  const workspaceGid = integerValue(
-    env.FORGEFLOW_WORKSPACE_GID,
-    10_001,
-    0,
-    2 ** 31 - 1,
-    'WORKSPACE_OWNER_INVALID',
-  );
-  const gitTimeoutMs = integerValue(
-    env.FORGEFLOW_GIT_TIMEOUT_MS,
-    120_000,
-    1_000,
-    15 * 60_000,
-    'WORKSPACE_GIT_TIMEOUT_INVALID',
-  );
-  const gitMaxBufferBytes = integerValue(
-    env.FORGEFLOW_GIT_MAX_BUFFER_BYTES,
-    8 * 1024 * 1024,
-    64 * 1024,
-    64 * 1024 * 1024,
-    'WORKSPACE_GIT_BUFFER_INVALID',
-  );
-  const workspaceMinimumFreeBytes = integerValue(
-    env.FORGEFLOW_WORKSPACE_MIN_FREE_BYTES,
-    8 * 1024 * 1024 * 1024,
-    0,
-    1024 ** 5,
-    'WORKSPACE_CAPACITY_THRESHOLD_INVALID',
-  );
-  const legacyWorkspace = new LocalGitWorkspaceAdapter({
-    allowedRepositoryRoots,
-    managedHostRoot,
-    executionRoot,
-    commandTimeoutMs: gitTimeoutMs,
-    maxBufferBytes: gitMaxBufferBytes,
-    minimumFreeBytes: workspaceMinimumFreeBytes,
-    workspaceUid,
-    workspaceGid,
-  });
-  const planWorktreeManager =
-    literalWorktreeProjectKeys.length > 0
-      ? new PlanWorktreeManager({
-          repositories,
-          allowedRepositoryRoots,
-          managedHostRoot,
-          executionRoot,
-          commandTimeoutMs: gitTimeoutMs,
-          maxBufferBytes: gitMaxBufferBytes,
-          projectAdmission: (repositoryPath) => {
-            const harnessctl =
-              env.FORGEFLOW_AGENT_HARNESS_CTL ??
-              '/home/dev/projects/agent-harness/bin/harnessctl.py';
-            try {
-              execFileSync(
-                '/usr/bin/python3',
-                [harnessctl, 'plan', repositoryPath, '--profile', 'openhands', '--json'],
-                {
-                  cwd: repositoryPath,
-                  encoding: 'utf8',
-                  timeout: gitTimeoutMs,
-                  maxBuffer: gitMaxBufferBytes,
-                  stdio: ['ignore', 'pipe', 'pipe'],
-                },
-              );
-            } catch (error) {
-              throw new ForgeFlowError(
-                'WORKTREE_AGENT_HARNESS_PROJECT_UNREGISTERED',
-                'Literal worktree projects must resolve through Agent Harness before activation.',
-                error,
-              );
-            }
-            if (env.NODE_ENV !== 'test')
-              assertOpenHandsGitCommonDirMounted(
-                repositoryPath,
-                env.FORGEFLOW_OPENHANDS_CONTAINER ?? 'forgeflow-openhands',
-                gitTimeoutMs,
-                gitMaxBufferBytes,
-              );
-          },
-        })
-      : undefined;
-  const literalWorkspace = planWorktreeManager
-    ? new LiteralWorktreeWorkspaceAdapter({
-        repositories,
-        manager: planWorktreeManager,
-        managedHostRoot,
-        executionRoot,
-        workspaceUid,
-        workspaceGid,
-        minimumFreeBytes: workspaceMinimumFreeBytes,
-        commandTimeoutMs: gitTimeoutMs,
-        maxBufferBytes: gitMaxBufferBytes,
-      })
-    : undefined;
-  const workspace: WorkspaceProviderPort = literalWorkspace
-    ? new ProjectScopedWorkspaceAdapter({
-        repositories,
-        legacy: legacyWorkspace,
-        literal: literalWorkspace,
-        literalProjects: literalWorktreeProjectKeys,
-      })
-    : legacyWorkspace;
-  const openHandsProviderFactory = createOpenHandsProviderFactory(common);
-  const antigravityBase = {
-    binary: antigravityBinary,
-    stateRoot:
-      env.FORGEFLOW_ANTIGRAVITY_STATE_ROOT ??
-      '/var/lib/forgeflow/antigravity',
-    workspaceHostRoot: managedHostRoot,
-    home: antigravityHome,
-    uid: integerValue(
-      env.FORGEFLOW_ANTIGRAVITY_UID,
-      10_001,
-      1,
-      2 ** 31 - 1,
-      'ANTIGRAVITY_UID_INVALID',
-    ),
-    gid: integerValue(
-      env.FORGEFLOW_ANTIGRAVITY_GID,
-      10_001,
-      1,
-      2 ** 31 - 1,
-      'ANTIGRAVITY_GID_INVALID',
-    ),
-    authUid: integerValue(
-      env.FORGEFLOW_ANTIGRAVITY_AUTH_UID,
-      1001,
-      1,
-      2 ** 31 - 1,
-      'ANTIGRAVITY_AUTH_UID_INVALID',
-    ),
-    authGid: integerValue(
-      env.FORGEFLOW_ANTIGRAVITY_AUTH_GID,
-      1002,
-      1,
-      2 ** 31 - 1,
-      'ANTIGRAVITY_AUTH_GID_INVALID',
-    ),
-    workspaceGid,
-    user: env.FORGEFLOW_ANTIGRAVITY_USER ?? 'forgeflow-worker',
-    printTimeout:
-      env.FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT ??
-      env.FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT ??
-      '20m',
-    sandboxWrapper:
-      env.FORGEFLOW_ANTIGRAVITY_SANDBOX_WRAPPER ??
-      '/usr/local/libexec/forgeflow-antigravity-sandbox.sh',
-    systemdUnitTemplate:
-      env.FORGEFLOW_ANTIGRAVITY_SYSTEMD_UNIT ?? 'forgeflow-antigravity@%i.service',
-  };
-  const providerFactory = (selection: ExecutionResourceSelection): ExecutionProviderPort => {
-    if (
-      selection.agentBackend === 'antigravity-worker' ||
-      selection.agentBackend === 'antigravity-review'
-    ) {
-      const options = { ...antigravityBase, model: selection.modelFamily };
-      return selection.agentBackend === 'antigravity-review'
-        ? new AntigravityReviewProvider(options)
-        : new AntigravityExecutionProvider(options);
-    }
-    if (!['IMPLEMENT', 'IMPLEMENT_FIX', 'REVIEW'].includes(selection.phase))
-      throw new ForgeFlowError('EXECUTION_RESOURCE_SELECTION_PHASE_UNSUPPORTED');
-    return openHandsProviderFactory({
-      backend: selection.agentBackend as OpenHandsAgentBackend,
-      model: selection.routeModel ?? selection.modelFamily,
-      modelFamily: selection.modelFamily,
-      transport: selection.transport,
-      phase: selection.phase as 'IMPLEMENT' | 'IMPLEMENT_FIX' | 'REVIEW',
-      capability: selection.capability,
-      resourceId: selection.resourceId,
-    });
-  };
-  const admissionCandidates = (): ResourceSelectionCandidate[] => {
-    const selected = new Map<string, ResourceSelectionCandidate>();
-    for (const phase of ['IMPLEMENT', 'REVIEW'] as const) {
-      const priorAttempts: Array<{ resourceId: string; bindingId?: string; modelFamily?: string }> =
-        [];
-      for (let index = 0; index < 100; index += 1) {
-        const result = selectExecutableProfile(resources, {
-          phase,
-          includeProviderNativeProfiles: true,
-          policy: {
-            allowProviderNative: true,
-            allowedPolicyKeys: ['provider-native-trusted-input'],
-          },
-          priorAttempts,
-        });
-        if (result.status !== 'SELECTED') break;
-        selected.set(runtimeAdmissionKey(result.candidate), result.candidate);
-        priorAttempts.push({
-          resourceId: result.profile.resourceId,
-          ...(result.profile.bindingId ? { bindingId: result.profile.bindingId } : {}),
-          modelFamily: result.profile.modelFamily,
-        });
-      }
-    }
-    return [...selected.values()].filter(requiresAcpRuntimeAdmission);
-  };
-
-  const createAdmissionWorkspace = (_candidate: ResourceSelectionCandidate, probeId: string) => {
-    const executionsRoot = path.join(managedHostRoot, 'forgeflow', 'executions');
-    const root = path.join(executionsRoot, probeId);
-    const repository = path.join(root, 'repo');
-    fs.mkdirSync(executionsRoot, { recursive: true, mode: 0o755 });
-    fs.rmSync(root, { recursive: true, force: true });
-    fs.mkdirSync(root, { mode: 0o750 });
-    fs.chownSync(root, workspaceUid, workspaceGid);
-    fs.mkdirSync(repository, { mode: 0o750 });
-    fs.chownSync(repository, workspaceUid, workspaceGid);
-    const git = (args: string[]) =>
-      execFileSync('/usr/bin/git', ['-C', repository, ...args], {
-        encoding: 'utf8',
-        uid: workspaceUid,
-        gid: workspaceGid,
-        env: { ...process.env, HOME: '/tmp' },
-      }).trim();
-    git(['init', '-q', '-b', 'main']);
-    const readme = path.join(repository, 'README.md');
-    fs.writeFileSync(readme, '# ForgeFlow runtime admission probe\n');
-    fs.chownSync(readme, workspaceUid, workspaceGid);
-    const harnessManifest = path.join(repository, '.agent-harness.json');
-    fs.writeFileSync(
-      harnessManifest,
-      JSON.stringify(
-        {
-          version: 1,
-          id: 'forgeflow-runtime-admission',
-          sharedMcpProfile: 'common',
-          packs: [],
-          capabilities: [],
-        },
-        null,
-        2,
-      ) + '\n',
-      { mode: 0o640 },
-    );
-    fs.chownSync(harnessManifest, workspaceUid, workspaceGid);
-    git(['add', 'README.md', '.agent-harness.json']);
-    git([
-      '-c',
-      'user.name=ForgeFlow Runtime Probe',
-      '-c',
-      'user.email=forgeflow-runtime-probe@localhost',
-      'commit',
-      '-q',
-      '-m',
-      'chore: runtime admission probe',
-    ]);
-    const sourceRevision = git(['rev-parse', '--verify', 'HEAD^{commit}']);
-    const executionPath = path.join(executionRoot, 'forgeflow', 'executions', probeId, 'repo');
-    return {
-      root,
-      sourceRevision,
-      workspace: {
-        executionId: probeId,
-        hostPath: repository,
-        executionPath,
-        evidenceHostPath: path.join(root, 'completion-evidence.json'),
-        evidenceExecutionPath: path.join(
-          executionRoot,
-          'forgeflow',
-          'executions',
-          probeId,
-          'completion-evidence.json',
-        ),
-        sourceRepositoryPath: repository,
-        sourceRevision,
-        createdAt: new Date().toISOString(),
-      },
-      git,
-    };
-  };
-
-  const pruneAdmissionWorkspaces = (probeGroupId: string, currentRoot: string): number => {
-    const executionsRoot = path.join(managedHostRoot, 'forgeflow', 'executions');
-    if (!fs.existsSync(executionsRoot)) return 0;
-    let removed = 0;
-    for (const entry of fs.readdirSync(executionsRoot, { withFileTypes: true })) {
-      if (entry.name !== probeGroupId && !entry.name.startsWith(probeGroupId + '-')) continue;
-      const candidate = path.join(executionsRoot, entry.name);
-      if (candidate === currentRoot) continue;
-      const stat = fs.lstatSync(candidate);
-      if (stat.isSymbolicLink() || !stat.isDirectory())
-        throw new ForgeFlowError('RUNTIME_ADMISSION_STALE_WORKSPACE_UNSAFE');
-      fs.rmSync(candidate, { recursive: true, force: true });
-      removed += 1;
-    }
-    return removed;
-  };
-
-  const recordRuntimeAdmission = (
-    candidate: ResourceSelectionCandidate,
-    input: { ready: boolean; checkedAt?: string; errorCode?: string },
-  ) => {
-    const status = createRuntimeAdmissionStatus(candidate, input);
-    const persisted = repositories.runtimeAdmissions.record(status);
-    if (!persisted.value || persisted.status === 'rejected')
-      throw new ForgeFlowError(persisted.reason ?? 'RUNTIME_ADMISSION_STALE');
-    runtimeAdmission.restore([persisted.value]);
-    return persisted.value;
-  };
-
-  const probeAdmissionCandidate = async (
-    candidate: ResourceSelectionCandidate,
-    signal?: AbortSignal,
-  ): Promise<void> => {
-    const key = runtimeAdmissionKey(candidate);
-    const probeGroupId =
-      'runtime-admission-' + createHash('sha256').update(key).digest('hex').slice(0, 20);
-    const probeId = probeGroupId + '-' + randomUUID().slice(0, 8);
-    let probeRoot: string | undefined;
-    try {
-      const prepared = createAdmissionWorkspace(candidate, probeId);
-      probeRoot = prepared.root;
-      const provider = providerFactory(
-        createExecutionResourceSelection(probeId, candidate.profile, new Date().toISOString()),
-      );
-      if (!provider.probeRuntime) throw new ForgeFlowError('RUNTIME_ADMISSION_PROBE_UNSUPPORTED');
-      const result = await provider.probeRuntime({
-        probeId,
-        probeGroupId,
-        workspace: prepared.workspace,
-        sourceRevision: prepared.sourceRevision,
-        signal,
-      });
-      // probeRuntime returning means its stable-group OpenHands cleanup completed.
-      // Only then is it safe to remove crash residue from older attempts, including
-      // the pre-attempt-id deterministic directory used by older ForgeFlow builds.
-      pruneAdmissionWorkspaces(probeGroupId, prepared.root);
-      const clean = prepared.git(['status', '--porcelain=v1']) === '';
-      const head = prepared.git(['rev-parse', '--verify', 'HEAD^{commit}']);
-      const ready = result.ready && clean && head === prepared.sourceRevision;
-      recordRuntimeAdmission(candidate, {
-        ready,
-        ...(!ready
-          ? {
-              errorCode:
-                result.errorCode ??
-                (!clean
-                  ? 'RUNTIME_PROBE_WORKSPACE_DIRTY'
-                  : head !== prepared.sourceRevision
-                    ? 'RUNTIME_PROBE_HEAD_DRIFT'
-                    : 'RUNTIME_ADMISSION_PROBE_FAILED'),
-            }
-          : {}),
-      });
-    } catch (error) {
-      if (signal?.aborted) return;
-      recordRuntimeAdmission(candidate, {
-        ready: false,
-        errorCode: error instanceof ForgeFlowError ? error.code : 'RUNTIME_ADMISSION_PROBE_FAILED',
-      });
-    } finally {
-      if (probeRoot) fs.rmSync(probeRoot, { recursive: true, force: true });
-    }
-  };
-
-  let runtimeAdmissionCycle: Promise<void> | undefined;
-  let runtimeAdmissionAbortController: AbortController | undefined;
-  let runtimeAdmissionShuttingDown = false;
-  const reconcileRuntimeAdmission = async (): Promise<void> => {
-    if (!runtimeAdmissionEnabled || runtimeAdmissionShuttingDown) return;
-    const candidates = admissionCandidates();
-    runtimeAdmission.retain(candidates);
-    repositories.runtimeAdmissions.retain(candidates.map(runtimeAdmissionKey));
-    if (!runtimeAdmissionHasDemand()) return;
-    if (runtimeAdmissionCycle) return await runtimeAdmissionCycle;
-    const abortController = new AbortController();
-    runtimeAdmissionAbortController = abortController;
-    runtimeAdmissionCycle = (async () => {
-      const now = Date.now();
-      const queue = candidates.filter((candidate) =>
-        runtimeAdmission.isStale(
-          candidate,
-          now,
-          runtimeAdmissionTtlMs,
-          runtimeAdmissionTransientFailureTtlMs,
-        ),
-      );
-      // Admission is a readiness gate, not a startup dependency or throughput path.
-      // Probe serially so provider-native OAuth homes and ACP runtime caches are never
-      // mutated concurrently by sibling probes. The selector fails closed until a
-      // candidate has a positive admission record.
-      for (const candidate of queue) {
-        if (abortController.signal.aborted) break;
-        await probeAdmissionCandidate(candidate, abortController.signal);
-      }
-    })();
-    try {
-      await runtimeAdmissionCycle;
-    } finally {
-      if (runtimeAdmissionAbortController === abortController)
-        runtimeAdmissionAbortController = undefined;
-      runtimeAdmissionCycle = undefined;
-    }
-  };
-  const shutdownRuntimeAdmission = async (): Promise<void> => {
-    runtimeAdmissionShuttingDown = true;
-    runtimeAdmissionAbortController?.abort();
-    if (runtimeAdmissionCycle) await runtimeAdmissionCycle;
-  };
-
-  const resourceSelector = new ResourceSelector(
-    resources,
-    DEFAULT_AFFINITY_POLICY,
-    runtimeAdmissionEnabled ? runtimeAdmission : undefined,
-  );
-  const worker = new ExecutionWorker(repositories, workspace, routes, {
-    leaseTtlMs: integerValue(
-      env.FORGEFLOW_EXECUTION_LEASE_TTL_MS,
-      30_000,
-      1_000,
-      5 * 60_000,
-      'EXECUTION_LEASE_TTL_INVALID',
-    ),
-    maxExecutionsPerCycle: integerValue(
-      env.FORGEFLOW_MAX_EXECUTIONS_PER_CYCLE,
-      20,
-      1,
-      1_000,
-      'EXECUTION_CYCLE_LIMIT_INVALID',
-    ),
-    meaningfulProgressTimeoutMs: integerValue(
-      env.FORGEFLOW_MEANINGFUL_PROGRESS_TIMEOUT_MS,
-      15 * 60_000,
-      30_000,
-      24 * 60 * 60_000,
-      'EXECUTION_MEANINGFUL_PROGRESS_TIMEOUT_INVALID',
-    ),
-    providerOnlyProgressTimeoutMs: integerValue(
-      env.FORGEFLOW_PROVIDER_ONLY_PROGRESS_TIMEOUT_MS,
-      10 * 60_000,
-      30_000,
-      24 * 60 * 60_000,
-      'EXECUTION_PROVIDER_ONLY_PROGRESS_TIMEOUT_INVALID',
-    ),
-    opportunisticMeaningfulProgressTimeoutMs: integerValue(
-      env.FORGEFLOW_OPPORTUNISTIC_MEANINGFUL_PROGRESS_TIMEOUT_MS,
-      5 * 60_000,
-      30_000,
-      15 * 60_000,
-      'EXECUTION_OPPORTUNISTIC_PROGRESS_TIMEOUT_INVALID',
-    ),
-    maxStallRecoveries: integerValue(
-      env.FORGEFLOW_MAX_STALL_RECOVERIES,
-      2,
-      0,
-      10,
-      'EXECUTION_STALL_RECOVERY_LIMIT_INVALID',
-    ),
-    opportunisticMaxStallRecoveries: integerValue(
-      env.FORGEFLOW_OPPORTUNISTIC_MAX_STALL_RECOVERIES,
-      0,
-      0,
-      10,
-      'EXECUTION_OPPORTUNISTIC_STALL_RECOVERY_LIMIT_INVALID',
-    ),
-    ...(resourceSelectorEnabled
-      ? {
-          providerFactory,
-          resourceFeedback: resourceState,
-          requireResourceSelection: true,
-        }
-      : {}),
-  });
-  const maxParallelWorkItems = integerValue(
-    env.FORGEFLOW_MAX_PARALLEL_WORK_ITEMS,
-    1,
-    1,
-    32,
-    'PLAN_AUTOMATION_LIMIT_INVALID',
-  );
-  const defaultPolicy: PlanAutomationPolicy = {
-    ...(resourceSelectorEnabled
-      ? {}
-      : {
-          implementationRoutes: compatibilityImplementationRoutes,
-          reviewRoutes: compatibilityReviewRoutes,
-        }),
-    resourceSelection: {
-      includeProviderNativeProfiles: false,
-    },
-    requireDelivery: env.FORGEFLOW_REQUIRE_DELIVERY !== 'false',
-    maxImplementationAttempts: integerValue(
-      env.FORGEFLOW_MAX_IMPLEMENTATION_ATTEMPTS,
-      3,
-      1,
-      20,
-      'PLAN_AUTOMATION_LIMIT_INVALID',
-    ),
-    maxReviewAttempts: integerValue(
-      env.FORGEFLOW_MAX_REVIEW_ATTEMPTS,
-      4,
-      1,
-      20,
-      'PLAN_AUTOMATION_LIMIT_INVALID',
-    ),
-    maxRepairCycles: integerValue(
-      env.FORGEFLOW_MAX_REPAIR_CYCLES,
-      3,
-      1,
-      20,
-      'PLAN_AUTOMATION_LIMIT_INVALID',
-    ),
-    maxParallelWorkItems: 1,
-  };
-  const antigravityProjectKeys = new Set(projects.providerNativeProjectKeys());
-  const literalProjectSet = new Set(literalWorktreeProjectKeys);
-  const policyOverrides = Object.fromEntries(
-    automationProjectKeys
-      .filter(
-        (projectKey) =>
-          literalProjectSet.has(projectKey) ||
-          (antigravityEnabled && antigravityProjectKeys.has(projectKey)),
-      )
-      .map((projectKey) => [
-        projectKey,
-        {
-          ...defaultPolicy,
-          maxParallelWorkItems: literalProjectSet.has(projectKey)
-            ? Math.min(
-                maxParallelWorkItems,
-                projects.get(projectKey)?.execution.maxParallelWorkItems ?? maxParallelWorkItems,
-              )
-            : 1,
-          ...(antigravityEnabled && antigravityProjectKeys.has(projectKey)
-            ? {
-                resourceSelection: {
-                  includeProviderNativeProfiles: true,
-                  allowedPolicyKeys: ['provider-native-trusted-input'],
-                },
-              }
-            : {}),
-        } satisfies PlanAutomationPolicy,
-      ]),
-  );
-  const policy = new StaticPlanAutomationPolicyResolver(
-    defaultPolicy,
-    policyOverrides,
-    automationProjectKeys.length > 0 ? automationProjectKeys : undefined,
-  );
-  const delivery = new GitHubCliDeliveryAdapter({
-    allowedRepositoryRoots,
-    allowedWorkspaceRoots: [managedHostRoot],
-    commandTimeoutMs: integerValue(
-      env.FORGEFLOW_DELIVERY_TIMEOUT_MS,
-      120_000,
-      1_000,
-      15 * 60_000,
-      'DELIVERY_TIMEOUT_INVALID',
-    ),
-    maxBufferBytes: integerValue(
-      env.FORGEFLOW_DELIVERY_MAX_BUFFER_BYTES,
-      8 * 1024 * 1024,
-      64 * 1024,
-      64 * 1024 * 1024,
-      'DELIVERY_BUFFER_INVALID',
-    ),
-  });
-  const plans = new PlanAutomationRuntime(
-    repositories,
-    worker,
-    workspace,
-    policy,
-    delivery,
-    resourceSelectorEnabled ? resourceSelector : undefined,
-  );
-  return {
-    workspace,
-    ...(planWorktreeManager ? { planWorktreeManager } : {}),
-    workspaceUid,
-    worker,
-    plans,
-    policy,
-    compatibilityImplementationRoutes,
-    compatibilityReviewRoutes,
-    implementationRoutes,
-    reviewRoutes,
-    automationProjectKeys,
-    literalWorktreeProjectKeys,
-    requireDelivery: defaultPolicy.requireDelivery === true,
-    routeModels: Object.fromEntries(
-      [...implementationSpecs, ...reviewSpecs].map(({ route, model }) => [route, model]),
-    ),
-    resourceSelectorEnabled,
-    resources,
-    liteLlmResources,
-    resourceSelector,
-    resourceState,
-    resourceStateEffect,
-    resourceLifecycle,
-    runtimeAdmissionEnabled,
-    runtimeAdmission,
-    runtimeAdmissionHasDemand,
-    reconcileRuntimeAdmission,
-    shutdownRuntimeAdmission,
-  };
-}
-
 export async function buildControlPlane(
   options: BuildControlPlaneOptions = {},
 ): Promise<ControlPlaneRuntime> {
-  const env = options.env ?? process.env;
-  const allowedRepositoryRoots = rootList(env.FORGEFLOW_ALLOWED_REPOSITORY_ROOTS);
-  const projects = loadProjectRegistry(env, allowedRepositoryRoots);
-  const selfChangeEnabled = env.FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED === 'true';
-  const selfPromotionEnabled = env.FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_ENABLED === 'true';
-  const selfAutoPromotionEnabled =
-    env.FORGEFLOW_IMPROVEMENT_SELF_AUTO_PROMOTION_ENABLED === 'true';
-  const improvementAiDiagnosisEnabled =
-    env.FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_ENABLED === 'true';
+  const { config, projects } = loadBootstrapConfig(options.env, {
+    ...(options.environment ? { environment: options.environment } : {}),
+    ...(options.dbFile ? { dbFile: options.dbFile } : {}),
+    ...(options.allowDataReset === undefined ? {} : { allowDataReset: options.allowDataReset }),
+  });
+  const allowedRepositoryRoots = config.repositories.allowedRoots;
+  const selfChangeEnabled = config.improvement.selfChangeEnabled;
+  const selfPromotionEnabled = config.improvement.selfPromotionEnabled;
+  const selfAutoPromotionEnabled = config.improvement.selfAutoPromotionEnabled;
+  const improvementAiDiagnosisEnabled = config.improvement.aiDiagnosisEnabled;
   const improvementProjectKeys = projects.improvementProjectKeys();
   if (improvementAiDiagnosisEnabled && improvementProjectKeys.length === 0)
     throw new ForgeFlowError('IMPROVEMENT_AI_DIAGNOSIS_PROJECTS_REQUIRED');
   if (
     improvementAiDiagnosisEnabled &&
-    env.FORGEFLOW_EXECUTION_RUNTIME_ENABLED !== 'true'
+    !config.execution.enabled
   )
     throw new ForgeFlowError('IMPROVEMENT_AI_DIAGNOSIS_EXECUTION_RUNTIME_REQUIRED');
   if (
     improvementAiDiagnosisEnabled &&
-    env.FORGEFLOW_RESOURCE_SELECTOR_ENABLED !== 'true'
+    !config.execution.resourceSelectorEnabled
   )
     throw new ForgeFlowError('IMPROVEMENT_AI_DIAGNOSIS_RESOURCE_SELECTOR_REQUIRED');
   if (selfPromotionEnabled && !selfChangeEnabled)
     throw new ForgeFlowError('IMPROVEMENT_SELF_PROMOTION_REQUIRES_SELF_CHANGE');
   if (selfAutoPromotionEnabled && !selfPromotionEnabled)
     throw new ForgeFlowError('IMPROVEMENT_SELF_AUTO_PROMOTION_REQUIRES_PROMOTION');
-  const selfRepositoryPath = env.FORGEFLOW_IMPROVEMENT_SELF_REPOSITORY ?? process.cwd();
-  const selfPromotionRequestFile =
-    env.FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_REQUEST_FILE ??
-    '/var/lib/forgeflow/self-promotion-request.json';
+  const selfRepositoryPath = config.improvement.selfRepositoryPath;
+  const selfPromotionRequestFile = config.improvement.selfPromotionRequestFile;
   if (
     selfPromotionEnabled &&
-    (options.environment === 'production' || env.NODE_ENV === 'production') &&
+    config.environment === 'production' &&
     path.resolve(selfPromotionRequestFile) !== '/var/lib/forgeflow/self-promotion-request.json'
   )
     throw new ForgeFlowError('IMPROVEMENT_SELF_PROMOTION_REQUEST_PATH_UNSUPPORTED');
   const releaseProvenance = bindReleaseProvenance(
-    env.FORGEFLOW_RELEASE_PROVENANCE_FILE ?? '/var/lib/forgeflow/release-provenance.json',
+    config.release.provenanceFile,
   );
   const boot = bootstrapForgeFlow({
-    dbFile: options.dbFile,
-    env,
-    environment: options.environment,
-    allowDataReset: options.allowDataReset,
+    ...(config.database.file ? { dbFile: config.database.file } : {}),
+    env: {},
+    environment: config.environment,
+    allowDataReset: config.database.allowDataReset,
   });
   const db = boot.db;
   const repositories = createRepositories(db);
-  const singleActivePlanEnabled = env.FORGEFLOW_SINGLE_ACTIVE_PLAN_ENABLED === 'true';
-  const literalWorktreesEnabled = env.FORGEFLOW_LITERAL_WORKTREES_ENABLED === 'true';
+  const singleActivePlanEnabled = config.scheduling.singleActivePlanEnabled;
+  const literalWorktreesEnabled = config.scheduling.literalWorktreesEnabled;
   if (literalWorktreesEnabled && !singleActivePlanEnabled)
     throw new ForgeFlowError('LITERAL_WORKTREES_REQUIRE_SINGLE_ACTIVE_PLAN');
   const projectPlanQueue = singleActivePlanEnabled
     ? new ProjectPlanQueueRuntime(repositories)
     : undefined;
-  const testTelemetryBaseUrl =
-    options.environment === 'test' || env.NODE_ENV === 'test' ? 'http://127.0.0.1:4000' : undefined;
   const autonomousLifecycleAcceptanceProjection = () => {
     const release = releaseProvenance();
     if (release.status !== 'HEALTHY')
@@ -1378,20 +367,11 @@ export async function buildControlPlane(
   };
 
   const executionTelemetry = new LiteLlmExecutionTelemetry({
-    baseUrl: requiredText(
-      env.FORGEFLOW_LITELLM_BASE_URL ?? testTelemetryBaseUrl,
-      'LITELLM_TELEMETRY_URL_REQUIRED',
-    ),
-    envFile: env.FORGEFLOW_LITELLM_ADMIN_ENV_FILE ?? '/etc/forgeflow/litellm.env',
-    keyName: env.FORGEFLOW_LITELLM_ADMIN_KEY_NAME ?? 'LITELLM_MASTER_KEY',
+    baseUrl: config.telemetry.baseUrl,
+    envFile: config.telemetry.adminEnvFile,
+    keyName: config.telemetry.adminKeyName,
     fetchImpl: options.fetchImpl ?? fetch,
-    requestTimeoutMs: integerValue(
-      env.FORGEFLOW_LITELLM_TELEMETRY_TIMEOUT_MS,
-      10_000,
-      1_000,
-      60_000,
-      'LITELLM_TELEMETRY_TIMEOUT_INVALID',
-    ),
+    requestTimeoutMs: config.telemetry.requestTimeoutMs,
   });
   const kernels = {
     plan: new PlanKernel(repositories),
@@ -1406,14 +386,8 @@ export async function buildControlPlane(
     ? new ExactShaSelfChangeCanary({
         repositoryPath: selfRepositoryPath,
         worktreeRoot:
-          env.FORGEFLOW_IMPROVEMENT_SELF_CANARY_ROOT ?? '/var/lib/forgeflow/self-canary',
-        commandTimeoutMs: integerValue(
-          env.FORGEFLOW_IMPROVEMENT_SELF_CANARY_TIMEOUT_MS,
-          15 * 60_000,
-          30_000,
-          60 * 60_000,
-          'IMPROVEMENT_CANARY_TIMEOUT_INVALID',
-        ),
+          config.improvement.selfCanaryRoot,
+        commandTimeoutMs: config.improvement.selfCanaryTimeoutMs,
       })
     : undefined;
   const selfPromotionQueue = selfPromotionEnabled
@@ -1426,22 +400,16 @@ export async function buildControlPlane(
     kernels.plan,
     projectPlanQueue,
     {
-      discoveryEnabled: env.FORGEFLOW_IMPROVEMENT_DISCOVERY_ENABLED === 'true',
-      adoptionEnabled: env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true',
-      autoAdoptLowRisk: env.FORGEFLOW_IMPROVEMENT_AUTO_ADOPT_LOW_RISK === 'true',
+      discoveryEnabled: config.improvement.discoveryEnabled,
+      adoptionEnabled: config.improvement.adoptionEnabled,
+      autoAdoptLowRisk: config.improvement.autoAdoptLowRisk,
       allowedProjectKeys: improvementProjectKeys,
       selfChangeEnabled,
       selfPromotionEnabled,
       selfAutoPromotionEnabled,
       aiDiagnosisEnabled: improvementAiDiagnosisEnabled,
-      aiDiagnosisMaxPerCycle: integerValue(
-        env.FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_MAX_PER_CYCLE,
-        2,
-        1,
-        20,
-        'IMPROVEMENT_DIAGNOSIS_CYCLE_LIMIT_INVALID',
-      ),
-      selfProjectKey: env.FORGEFLOW_IMPROVEMENT_SELF_PROJECT_KEY ?? 'forgeflow',
+      aiDiagnosisMaxPerCycle: config.improvement.aiDiagnosisMaxPerCycle,
+      selfProjectKey: config.improvement.selfProjectKey,
       selfRepositoryPath,
     },
     selfCanary,
@@ -1449,7 +417,7 @@ export async function buildControlPlane(
     releaseProvenance,
   );
   const automation = await buildExecutionAutomation(
-    env,
+    config.execution,
     repositories,
     options.fetchImpl ?? fetch,
     projects,
@@ -1594,27 +562,19 @@ export async function buildControlPlane(
     repositories.supervisors,
   );
   const openHands = new OpenHandsSupervisorAdapter(
-    env.FORGEFLOW_OPENHANDS_URL
+    config.supervisor.openHandsUrl
       ? new HttpOpenHandsSupervisorClient(
-          env.FORGEFLOW_OPENHANDS_URL,
-          env.FORGEFLOW_OPENHANDS_TOKEN,
+          config.supervisor.openHandsUrl,
+          config.supervisor.openHandsToken,
         )
       : undefined,
   );
   const scheduler = new SupervisorWakeScheduler(repositories.supervisors, db);
-  const supervisorRuntimeEnabled = env.FORGEFLOW_SUPERVISOR_RUNTIME_ENABLED === 'true';
-  const supervisorMaxResourceAttempts = integerValue(
-    env.FORGEFLOW_SUPERVISOR_MAX_RESOURCE_ATTEMPTS,
-    3,
-    1,
-    20,
-    'SUPERVISOR_RESOURCE_ATTEMPT_LIMIT_INVALID',
-  );
+  const supervisorRuntimeEnabled = config.supervisor.enabled;
+  const supervisorMaxResourceAttempts = config.supervisor.maxResourceAttempts;
   if (
     supervisorRuntimeEnabled &&
-    (env.FORGEFLOW_SUPERVISOR_ENDPOINT ||
-      env.FORGEFLOW_SUPERVISOR_TOKEN ||
-      env.FORGEFLOW_SUPERVISOR_MODEL)
+    config.supervisor.hasRetiredStaticRoute
   )
     throw new ForgeFlowError('SUPERVISOR_STATIC_ROUTE_UNSUPPORTED');
   if (supervisorRuntimeEnabled && !automation?.resourceSelectorEnabled)
@@ -1625,38 +585,14 @@ export async function buildControlPlane(
     Boolean(automation?.resourceSelectorEnabled);
   if (supervisorDirectAdmissionEnabled)
     supervisorDirectAdmission.restore(repositories.supervisorDirectAdmissions.list());
-  const supervisorDirectAdmissionReadyTtlMs = integerValue(
-    env.FORGEFLOW_SUPERVISOR_ADMISSION_TTL_MS,
-    15 * 60_000,
-    30_000,
-    24 * 60 * 60_000,
-    'SUPERVISOR_ADMISSION_TTL_INVALID',
-  );
-  const supervisorDirectAdmissionFailureTtlMs = integerValue(
-    env.FORGEFLOW_SUPERVISOR_ADMISSION_FAILURE_TTL_MS,
-    5 * 60_000,
-    10_000,
-    supervisorDirectAdmissionReadyTtlMs,
-    'SUPERVISOR_ADMISSION_FAILURE_TTL_INVALID',
-  );
+  const supervisorDirectAdmissionReadyTtlMs = config.supervisor.admissionReadyTtlMs;
+  const supervisorDirectAdmissionFailureTtlMs = config.supervisor.admissionFailureTtlMs;
   const supervisorDirectAdmissionProbe = supervisorDirectAdmissionEnabled
     ? new SupervisorDirectAdmissionProbe({
-        baseUrl: requiredText(
-          env.FORGEFLOW_LITELLM_BASE_URL,
-          'SUPERVISOR_DIRECT_ADMISSION_BASE_URL_REQUIRED',
-        ),
-        bearerToken: requiredText(
-          env.FORGEFLOW_LITELLM_API_KEY,
-          'SUPERVISOR_DIRECT_ADMISSION_KEY_REQUIRED',
-        ),
+        baseUrl: config.supervisor.directAdmission.baseUrl,
+        bearerToken: config.supervisor.directAdmission.apiKey,
         fetchImpl: options.fetchImpl ?? fetch,
-        timeoutMs: integerValue(
-          env.FORGEFLOW_SUPERVISOR_ADMISSION_TIMEOUT_MS,
-          30_000,
-          1_000,
-          120_000,
-          'SUPERVISOR_ADMISSION_TIMEOUT_INVALID',
-        ),
+        timeoutMs: config.supervisor.directAdmission.timeoutMs,
       })
     : undefined;
   const supervisorAdmissionCandidates = (): ResourceSelectionCandidate[] => {
@@ -1733,31 +669,13 @@ export async function buildControlPlane(
     improvements.configureDiagnosisClient(
       new ResourceSelectedImprovementDiagnosisClient(
         reasoningResourceSelector!,
-        requiredText(
-          env.FORGEFLOW_LITELLM_BASE_URL,
-          'IMPROVEMENT_DIAGNOSIS_BASE_URL_REQUIRED',
-        ),
-        requiredText(
-          env.FORGEFLOW_LITELLM_API_KEY,
-          'IMPROVEMENT_DIAGNOSIS_KEY_REQUIRED',
-        ),
+        config.improvement.diagnosis.baseUrl,
+        config.improvement.diagnosis.apiKey,
         repositories.events,
         automation!.resourceState,
         options.fetchImpl ?? fetch,
-        integerValue(
-          env.FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_TIMEOUT_MS,
-          60_000,
-          1_000,
-          300_000,
-          'IMPROVEMENT_DIAGNOSIS_TIMEOUT_INVALID',
-        ),
-        integerValue(
-          env.FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_MAX_RESOURCE_ATTEMPTS,
-          3,
-          1,
-          20,
-          'IMPROVEMENT_DIAGNOSIS_ATTEMPT_LIMIT_INVALID',
-        ),
+        config.improvement.diagnosis.timeoutMs,
+        config.improvement.diagnosis.maxResourceAttempts,
         reconcileSupervisorDirectAdmission,
       ),
     );
@@ -1765,18 +683,12 @@ export async function buildControlPlane(
   const modelClient = supervisorRuntimeEnabled
     ? new ResourceSelectedSupervisorDecisionClient(
         supervisorResourceSelector!,
-        requiredText(env.FORGEFLOW_LITELLM_BASE_URL, 'SUPERVISOR_RESOURCE_BASE_URL_REQUIRED'),
-        requiredText(env.FORGEFLOW_LITELLM_API_KEY, 'SUPERVISOR_RESOURCE_KEY_REQUIRED'),
+        config.supervisor.reasoning.baseUrl,
+        config.supervisor.reasoning.apiKey,
         repositories.events,
         automation!.resourceState,
         options.fetchImpl ?? fetch,
-        integerValue(
-          env.FORGEFLOW_SUPERVISOR_REQUEST_TIMEOUT_MS,
-          60_000,
-          1_000,
-          300_000,
-          'SUPERVISOR_RESOURCE_TIMEOUT_INVALID',
-        ),
+        config.supervisor.reasoning.timeoutMs,
         supervisorMaxResourceAttempts,
       )
     : undefined;
@@ -1869,7 +781,7 @@ export async function buildControlPlane(
   });
   const workspaceStorage = () => automation?.workspace.storageStatus?.() ?? null;
   const hostCacheMaintenance = () =>
-    readHostCacheMaintenance(env.FORGEFLOW_HOST_CACHE_STATE_FILE);
+    readHostCacheMaintenance(config.release.hostCacheStateFile);
   const runWorkspaceStorageMaintenance = async () => {
     if (!automation?.workspace.storageStatus || !automation.workspace.pruneTerminalCaches)
       return null;
@@ -1916,7 +828,7 @@ export async function buildControlPlane(
     improvementStatus: () => improvements.status(),
     ...(automation ? { executionRuntime: automation } : {}),
     autonomousPollingEnabled: Boolean(
-      automation && env.FORGEFLOW_AUTOMATION_RUNTIME_ENABLED === 'true',
+      automation && config.automation.enabled,
     ),
   });
 
@@ -1996,13 +908,7 @@ export async function buildControlPlane(
                 ),
               );
           },
-          integerValue(
-            env.FORGEFLOW_SUPERVISOR_POLL_MS,
-            5_000,
-            1_000,
-            300_000,
-            'SUPERVISOR_POLL_INVALID',
-          ),
+          config.supervisor.pollMs,
         )
       : undefined;
 
@@ -2060,19 +966,13 @@ export async function buildControlPlane(
               resourceCycleRunning = false;
             });
         },
-        integerValue(
-          env.FORGEFLOW_RESOURCE_REFRESH_MS,
-          60_000,
-          10_000,
-          3_600_000,
-          'RESOURCE_REFRESH_INVALID',
-        ),
+        config.automation.resourceRefreshMs,
       )
     : undefined;
 
   const improvementRuntimeEnabled =
-    env.FORGEFLOW_IMPROVEMENT_DISCOVERY_ENABLED === 'true' ||
-    env.FORGEFLOW_IMPROVEMENT_ADOPTION_ENABLED === 'true' ||
+    config.improvement.discoveryEnabled ||
+    config.improvement.adoptionEnabled ||
     improvementAiDiagnosisEnabled ||
     selfPromotionEnabled;
   let improvementCycleRunning = false;
@@ -2122,19 +1022,13 @@ export async function buildControlPlane(
   const improvementInterval = improvementRuntimeEnabled
     ? setInterval(
         runImprovementCycle,
-        integerValue(
-          env.FORGEFLOW_IMPROVEMENT_CYCLE_MS ?? env.FORGEFLOW_IMPROVEMENT_RECONCILE_MS,
-          30_000,
-          5_000,
-          3_600_000,
-          'IMPROVEMENT_CYCLE_INTERVAL_INVALID',
-        ),
+        config.improvement.cycleMs,
       )
     : undefined;
 
   let automationCycleRunning = false;
   const automationInterval =
-    automation && env.FORGEFLOW_AUTOMATION_RUNTIME_ENABLED === 'true'
+    automation && config.automation.enabled
       ? setInterval(
           () => {
             if (automationCycleRunning) return;
@@ -2179,13 +1073,7 @@ export async function buildControlPlane(
                 automationCycleRunning = false;
               });
           },
-          integerValue(
-            env.FORGEFLOW_AUTOMATION_POLL_MS,
-            5_000,
-            1_000,
-            300_000,
-            'AUTOMATION_POLL_INVALID',
-          ),
+          config.automation.pollMs,
         )
       : undefined;
 
@@ -2207,8 +1095,7 @@ export async function buildControlPlane(
     db.close();
   });
 
-  const host = env.FORGEFLOW_HOST ?? '127.0.0.1';
-  const port = Number(env.FORGEFLOW_PORT ?? 8420);
+  const { host, port } = config.server;
   return {
     app,
     db,

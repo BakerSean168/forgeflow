@@ -24,6 +24,8 @@ const launcher = read('openhands_tools/harness_agent_launcher.sh');
 const forgeFlowEnv = read('deploy/forgeflow.env.example');
 const planWorktrees = read('src/core/adapters/planWorktrees.ts');
 const appSource = read('src/app.ts');
+const executionRuntimeSource = read('src/bootstrap/executionRuntime.ts');
+const bootstrapConfigSource = read('src/bootstrap/config.ts');
 const systemApplicationSource = read('src/application/system/systemApplication.ts');
 const systemApiSource = read('src/api/v1/system/routes.ts');
 const literalSmoke = read('scripts/smoke-literal-worktree.mjs');
@@ -36,7 +38,8 @@ test('ForgeFlow service is standalone, headless, and fail-closed around host wri
   assert.match(service, /FORGEFLOW_PORT=8420/);
   assert.doesNotMatch(appSource, /model-control-plane\/scripts\/run-antigravity-sandbox\.sh/);
   assert.doesNotMatch(antigravityRunner, /model-control-plane\/scripts\/run-antigravity-sandbox\.sh/);
-  assert.match(appSource, /\/usr\/local\/libexec\/forgeflow-antigravity-sandbox\.sh/);
+  assert.match(bootstrapConfigSource, /\/usr\/local\/libexec\/forgeflow-antigravity-sandbox\.sh/);
+  assert.match(executionRuntimeSource, /config\.antigravity\.sandboxWrapper/);
   assert.match(antigravityUnit, /FORGEFLOW_ANTIGRAVITY_SANDBOX_WRAPPER=\/usr\/local\/libexec\/forgeflow-antigravity-sandbox\.sh/);
   assert.match(installer, /run-antigravity-sandbox\.sh.*\/usr\/local\/libexec\/forgeflow-antigravity-sandbox\.sh/);
   assert.match(service, /FORGEFLOW_DB=\/var\/lib\/forgeflow\/forgeflow\.sqlite/);
@@ -208,10 +211,10 @@ test('project registry is the preferred deployment authority with legacy compati
 test('literal worktree deployment is project-mounted, runtime-verified, and smokeable in the live container', () => {
   assert.match(forgeFlowEnv, /FORGEFLOW_LITERAL_WORKTREE_REPOSITORIES=\n/);
   assert.match(forgeFlowEnv, /FORGEFLOW_OPENHANDS_CONTAINER=forgeflow-openhands/);
-  assert.match(appSource, /WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED/);
-  assert.match(appSource, /safe\.directory=\$\{repositoryPath\}/);
-  assert.match(appSource, /docker'[\s\S]*inspect'[\s\S]*\{\{json \.Mounts\}\}/);
-  assert.match(appSource, /mount\.Source === common && mount\.Destination === common && mount\.RW === true/);
+  assert.match(executionRuntimeSource, /WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED/);
+  assert.match(executionRuntimeSource, /safe\.directory=\$\{repositoryPath\}/);
+  assert.match(executionRuntimeSource, /docker'[\s\S]*inspect'[\s\S]*\{\{json \.Mounts\}\}/);
+  assert.match(executionRuntimeSource, /mount\.Source === common && mount\.Destination === common && mount\.RW === true/);
   assert.match(appSource, /plan\.status !== 'SAFETY_HOLD'/);
   assert.match(appSource, /!isTerminalPlanStatus\(plan\.status\)/);
   assert.match(literalSmoke, /FORGEFLOW_WORKTREE_SMOKE_USE_RUNNING_CONTAINER/);
