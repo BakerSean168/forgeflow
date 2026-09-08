@@ -3836,6 +3836,78 @@ export class ProjectPlanSchedulerRepository {
     return rows.map(projectPlanLeaseFrom);
   }
 
+  adoptIdleCommittedRevision(input: {
+    projectKey: string;
+    repositoryPath: string;
+    expectedVersion: number;
+    expectedCommittedRevision: string;
+    nextCommittedRevision: string;
+  }): MutationResult<ProjectPlanLease> {
+    failClosed(input.projectKey.trim().length > 0, 'PROJECT_PLAN_PROJECT_REQUIRED');
+    failClosed(input.repositoryPath.trim().length > 0, 'PROJECT_PLAN_REPOSITORY_REQUIRED');
+    failClosed(
+      Number.isInteger(input.expectedVersion) && input.expectedVersion >= 0,
+      'PROJECT_PLAN_LEASE_VERSION_INVALID',
+    );
+    failClosed(
+      input.expectedCommittedRevision.trim().length > 0 &&
+        input.nextCommittedRevision.trim().length > 0,
+      'PROJECT_PLAN_COMMITTED_REVISION_INVALID',
+    );
+    return withTransaction(this.db, () => {
+      const current = this.getLease(input.projectKey);
+      if (!current) return { status: 'rejected', reason: 'PROJECT_PLAN_LEASE_NOT_FOUND' };
+      if (current.repositoryPath !== input.repositoryPath)
+        throw new ForgeFlowError('PROJECT_PLAN_REPOSITORY_MISMATCH');
+      if (current.activeRootPlanId)
+        return { status: 'rejected', value: current, reason: 'PROJECT_PLAN_LEASE_HELD' };
+      if (current.version !== input.expectedVersion)
+        return { status: 'rejected', value: current, reason: 'STALE_VERSION' };
+      if (current.committedRevision !== input.expectedCommittedRevision)
+        return {
+          status: 'rejected',
+          value: current,
+          reason: 'PROJECT_PLAN_COMMITTED_REVISION_STALE',
+        };
+      if (current.committedRevision === input.nextCommittedRevision)
+        return { status: 'existing', value: current };
+
+      const at = iso();
+      const result = this.db
+        .prepare(
+          'UPDATE project_plan_leases SET committed_revision=?,version=version+1,updated_at=? WHERE project_key=? AND version=? AND active_root_plan_id IS NULL AND committed_revision=?',
+        )
+        .run(
+          input.nextCommittedRevision,
+          at,
+          input.projectKey,
+          input.expectedVersion,
+          input.expectedCommittedRevision,
+        );
+      if (Number(result.changes) !== 1)
+        return {
+          status: 'rejected',
+          value: this.getLease(input.projectKey),
+          reason: 'PROJECT_PLAN_EXTERNAL_HEAD_ADOPTION_STALE',
+        };
+      const adopted = this.getLease(input.projectKey)!;
+      this.events.appendInTransaction(
+        makeEvent(
+          'project-head:' + input.projectKey,
+          'MAINTENANCE',
+          'PROJECT_PLAN_EXTERNAL_HEAD_ADOPTED',
+          {
+            projectKey: input.projectKey,
+            from: input.expectedCommittedRevision,
+            to: input.nextCommittedRevision,
+            leaseVersion: adopted.version,
+          },
+        ),
+      );
+      return { status: 'updated', value: adopted };
+    });
+  }
+
   getQueueEntry(planId: string): ProjectPlanQueueEntry | undefined {
     const row = this.db.prepare('SELECT * FROM project_plan_queue WHERE plan_id=?').get(planId) as
       ProjectPlanQueueRow | undefined;

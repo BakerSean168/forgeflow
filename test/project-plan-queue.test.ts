@@ -380,6 +380,84 @@ test('project lease is version fenced, repository bound and cannot be double acq
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+
+test('idle project head adoption is version fenced and cannot cross an active lease', async () => {
+  const db = openDatabase(':memory:', { environment: 'test' });
+  const repositories = createRepositories(db);
+  const runtime = new ProjectPlanQueueRuntime(repositories);
+  const repositoryPath = '/home/dev/projects/project-gamma';
+
+  repositories.plans.createPlan({
+    planId: 'external-head-seed',
+    idempotencyKey: 'external-head-seed',
+    projectKey: 'project-gamma',
+    objective: 'seed logical head',
+    repositoryPath,
+    baseRevision: 'head-a',
+  });
+  runtime.scheduleRootPlan('external-head-seed');
+  finish(repositories, 'external-head-seed');
+  await runtime.reconcile();
+  const idleLease = repositories.projectPlans.getLease('project-gamma')!;
+  assert.equal(idleLease.activeRootPlanId, undefined);
+  assert.equal(idleLease.committedRevision, 'head-a');
+
+  repositories.plans.createPlan({
+    planId: 'external-head-adopt',
+    idempotencyKey: 'external-head-adopt',
+    projectKey: 'project-gamma',
+    objective: 'adopt verified external head',
+    repositoryPath,
+    baseRevision: 'head-b',
+  });
+  const adopted = repositories.projectPlans.adoptIdleCommittedRevision({
+    projectKey: 'project-gamma',
+    repositoryPath,
+    expectedVersion: idleLease.version,
+    expectedCommittedRevision: 'head-a',
+    nextCommittedRevision: 'head-b',
+  });
+  assert.equal(adopted.status, 'updated');
+  assert.equal(adopted.value?.committedRevision, 'head-b');
+  assert.equal(adopted.value?.version, idleLease.version + 1);
+  assert.ok(
+    repositories.events
+      .listRecentByAggregate('project-head:project-gamma', 20)
+      .some((event) => event.type === 'PROJECT_PLAN_EXTERNAL_HEAD_ADOPTED'),
+  );
+
+  const stale = repositories.projectPlans.adoptIdleCommittedRevision({
+    projectKey: 'project-gamma',
+    repositoryPath,
+    expectedVersion: idleLease.version,
+    expectedCommittedRevision: 'head-a',
+    nextCommittedRevision: 'head-b',
+  });
+  assert.equal(stale.status, 'rejected');
+  assert.equal(stale.reason, 'STALE_VERSION');
+
+  runtime.scheduleRootPlan('external-head-adopt');
+  repositories.plans.createPlan({
+    planId: 'external-head-blocked',
+    idempotencyKey: 'external-head-blocked',
+    projectKey: 'project-gamma',
+    objective: 'must not advance an active project lease',
+    repositoryPath,
+    baseRevision: 'head-c',
+  });
+  const held = repositories.projectPlans.adoptIdleCommittedRevision({
+    projectKey: 'project-gamma',
+    repositoryPath,
+    expectedVersion: adopted.value!.version + 1,
+    expectedCommittedRevision: 'head-b',
+    nextCommittedRevision: 'head-c',
+  });
+  assert.equal(held.status, 'rejected');
+  assert.equal(held.reason, 'PROJECT_PLAN_LEASE_HELD');
+  assert.equal(repositories.projectPlans.getLease('project-gamma')?.committedRevision, 'head-b');
+  db.close();
+});
+
 test('queued plan reprioritization is deterministic and cancellation provisions no supervisor', () => {
   const db = openDatabase(':memory:', { environment: 'test' });
   const repositories = createRepositories(db);
