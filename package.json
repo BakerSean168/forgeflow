@@ -28,7 +28,7 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Autonomous software engineering system with durable planning, execution, review, recovery, delivery, and self-improvement.",
   "engines": {
     "node": ">=24"
