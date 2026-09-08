@@ -6,7 +6,7 @@ import { parseSupervisorDecision } from './protocol.js';
 import type { SupervisorActionExecutor } from './executor.js';
 import { SupervisorWakeScheduler, type WakeRequest } from './scheduler.js';
 import type { SupervisorRepository } from '../persistence/repositories.js';
-import type { OpenHandsSupervisorAdapter } from '../adapters/openhands.js';
+import type { SupervisorConversationHost } from './host.js';
 import { ForgeFlowError } from '../domain/errors.js';
 
 export interface SupervisorDecisionInput {
@@ -112,7 +112,7 @@ export class SupervisorRuntime {
     readonly db: DatabaseSync,
     readonly supervisors: SupervisorRepository,
     readonly scheduler: SupervisorWakeScheduler,
-    readonly host: OpenHandsSupervisorAdapter,
+    readonly host: SupervisorConversationHost,
     readonly actions: SupervisorActionExecutor,
     readonly client?: SupervisorDecisionClient,
     readonly ownerId = 'supervisor-worker-' + randomUUID(),

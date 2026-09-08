@@ -6,7 +6,7 @@ import { PlanApplication } from '../application/plans/index.js';
 import { ResourceApplication } from '../application/resources/index.js';
 import { SupervisorApplication } from '../application/supervisors/index.js';
 import { SystemApplication } from '../application/system/index.js';
-import { LiteLlmExecutionTelemetry } from '../core/adapters/liteLlmTelemetry.js';
+import { LiteLlmExecutionTelemetry } from '../integrations/resources/index.js';
 import { ForgeFlowError } from '../core/domain/errors.js';
 import type {
   DeliveryKernel,

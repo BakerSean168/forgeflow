@@ -3,34 +3,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import {
-  AntigravityExecutionProvider,
-  AntigravityReviewProvider,
-} from '../core/adapters/antigravity.js';
-import { LocalGitWorkspaceAdapter } from '../core/adapters/gitWorkspace.js';
-import { LiteralWorktreeWorkspaceAdapter } from '../core/adapters/literalWorktreeWorkspace.js';
-import { PlanWorktreeManager } from '../core/adapters/planWorktrees.js';
-import { ProjectScopedWorkspaceAdapter } from '../core/adapters/projectScopedWorkspace.js';
-import { GitHubCliDeliveryAdapter } from '../core/adapters/githubDelivery.js';
-import {
-  createOpenHandsProviderFactory,
-  OpenHandsCodexBusinessReviewProvider,
-  OpenHandsCodexManagedExecutionProvider,
-  OpenHandsExecutionProvider,
-  OpenHandsReviewProvider,
-  type OpenHandsAgentBackend,
-} from '../core/adapters/openHandsCoding.js';
-import {
-  CompositeResourceDirectory,
-  LiteLlmResourceDirectory,
-  LiteLlmResourceProbe,
-  LiteLlmResourceStateEffect,
-  ResourceLifecycleManager,
-  ResourceStateService,
-  StaticResourceDirectory,
-  providerNativeResources,
-  type ResourceProbePort,
-} from '../core/adapters/resourceDirectory.js';
+import { GitHubCliDeliveryAdapter } from '../integrations/delivery/githubDelivery.js';
+import { createExecutionProviderIntegrationRegistry, createLegacyOpenHandsRouteProvider } from '../integrations/providers/index.js';
+import { buildWorkspaceIntegrationAssembly } from '../integrations/workspaces/index.js';
+import type { PlanWorktreeManager } from '../integrations/workspaces/index.js';
+import type { CompositeResourceDirectory, LiteLlmResourceDirectory, LiteLlmResourceStateEffect, ResourceLifecycleManager, ResourceStateService } from '../integrations/resources/index.js';
+import { buildResourceIntegrationAssembly } from '../integrations/resources/index.js';
 import { ForgeFlowError } from '../core/domain/errors.js';
 import {
   DEFAULT_AFFINITY_POLICY,
@@ -85,61 +63,6 @@ export interface ExecutionAutomationRuntime {
   shutdownRuntimeAdmission: () => Promise<void>;
 }
 
-function assertOpenHandsGitCommonDirMounted(
-  repositoryPath: string,
-  container: string,
-  commandTimeoutMs: number,
-  maxBufferBytes: number,
-): void {
-  try {
-    const rawCommon = execFileSync(
-      '/usr/bin/git',
-      ['-c', `safe.directory=${repositoryPath}`, '-C', repositoryPath, 'rev-parse', '--git-common-dir'],
-      {
-        encoding: 'utf8',
-        timeout: commandTimeoutMs,
-        maxBuffer: maxBufferBytes,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    ).trim();
-    const common = fs.realpathSync(
-      path.isAbsolute(rawCommon) ? rawCommon : path.resolve(repositoryPath, rawCommon),
-    );
-    const rawMounts = execFileSync(
-      '/usr/bin/docker',
-      ['inspect', container, '--format', '{{json .Mounts}}'],
-      {
-        encoding: 'utf8',
-        timeout: commandTimeoutMs,
-        maxBuffer: maxBufferBytes,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    ).trim();
-    const mounts = JSON.parse(rawMounts) as Array<{
-      Source?: unknown;
-      Destination?: unknown;
-      RW?: unknown;
-    }>;
-    if (
-      !Array.isArray(mounts) ||
-      !mounts.some(
-        (mount) =>
-          mount.Source === common && mount.Destination === common && mount.RW === true,
-      )
-    )
-      throw new ForgeFlowError(
-        'WORKTREE_OPENHANDS_COMMON_DIR_NOT_MOUNTED',
-        'Literal worktrees require the canonical Git common directory mounted read-write at the same path inside OpenHands.',
-      );
-  } catch (error) {
-    if (error instanceof ForgeFlowError) throw error;
-    throw new ForgeFlowError(
-      'WORKTREE_OPENHANDS_MOUNT_CHECK_FAILED',
-      'Unable to verify the OpenHands Git common-directory mount.',
-      error,
-    );
-  }
-}
 export async function buildExecutionAutomation(
   config: ExecutionRuntimeConfig,
   repositories: ForgeFlowRepositories,
@@ -199,44 +122,30 @@ export async function buildExecutionAutomation(
     llmTimeoutSeconds: config.openHands.llmTimeoutSeconds,
     maxIterations: config.openHands.maxIterations,
   };
-  const liteLlmAdminBaseUrl = config.resources.liteLlmAdminBaseUrl;
-  const liteLlmResources = new LiteLlmResourceDirectory({
-    baseUrl: liteLlmAdminBaseUrl,
-    envFile: config.resources.adminEnvFile,
-    keyName: config.resources.adminKeyName,
+  const resourceIntegrations = await buildResourceIntegrationAssembly({
+    enabled: resourceSelectorEnabled,
+    repositories,
+    liteLlmAdminBaseUrl: config.resources.liteLlmAdminBaseUrl,
+    liteLlmBaseUrl,
+    liteLlmApiKey,
+    adminEnvFile: config.resources.adminEnvFile,
+    adminKeyName: config.resources.adminKeyName,
+    directoryTimeoutMs: config.resources.directoryTimeoutMs,
+    probeTimeoutMs: config.resources.probeTimeoutMs,
     fetchImpl,
-    requestTimeoutMs: config.resources.directoryTimeoutMs,
+    businessEnabled: config.resources.businessEnabled,
+    businessAuthFile: config.resources.businessAuthFile,
+    antigravityEnabled: config.resources.antigravityEnabled,
+    antigravityBinary: config.antigravity.binary,
+    antigravityHome: config.antigravity.home,
   });
-  if (resourceSelectorEnabled) await liteLlmResources.refresh();
-
-  const businessAuthFile =
-    config.resources.businessAuthFile;
-  const businessEnabled = config.resources.businessEnabled;
-  const businessReady = businessEnabled && fs.existsSync(businessAuthFile);
-  const antigravityBinary =
-    config.antigravity.binary;
-  const antigravityHome =
-    config.antigravity.home;
-  const antigravityAuthFile = path.join(
-    antigravityHome,
-    '.gemini/antigravity-cli/antigravity-oauth-token',
-  );
-  const antigravityEnabled = config.resources.antigravityEnabled;
-  const antigravityReady =
-    antigravityEnabled && fs.existsSync(antigravityBinary) && fs.existsSync(antigravityAuthFile);
-  const nativeResources = new StaticResourceDirectory(
-    providerNativeResources({
-      businessEnabled,
-      businessReady,
-      antigravityEnabled,
-      antigravityReady,
-    }),
-  );
-  const sourceResources = new CompositeResourceDirectory([liteLlmResources, nativeResources]);
-  const resources = new CompositeResourceDirectory(
-    [liteLlmResources, nativeResources],
-    repositories.resourceStateOverrides,
-  );
+  const {
+    resources,
+    liteLlmResources,
+    resourceState,
+    resourceStateEffect,
+    resourceLifecycle,
+  } = resourceIntegrations;
   const runtimeAdmissionEnabled =
     config.runtimeAdmission.enabled;
   const runtimeAdmissionTtlMs = config.runtimeAdmission.ttlMs;
@@ -249,173 +158,56 @@ export async function buildExecutionAutomation(
       (status) => repositories.plans.listPlans({ status, limit: 1 }).length > 0,
     );
   };
-  const resourceStateEffect = new LiteLlmResourceStateEffect({
-    baseUrl: liteLlmAdminBaseUrl,
-    envFile: config.resources.adminEnvFile,
-    keyName: config.resources.adminKeyName,
-    fetchImpl,
-    requestTimeoutMs: config.resources.directoryTimeoutMs,
-  });
-  const resourceState = new ResourceStateService(
-    resources,
-    repositories.resourceStateOverrides,
-    3,
-    resourceStateEffect,
-  );
-  const liteLlmResourceProbe = new LiteLlmResourceProbe({
-    baseUrl: liteLlmBaseUrl,
-    bearerToken: liteLlmApiKey,
-    fetchImpl,
-    timeoutMs: config.resources.probeTimeoutMs,
-  });
-  const resourceProbe: ResourceProbePort = {
-    probe: async (resource: ExecutionResource): Promise<boolean> => {
-      if (resource.resourceId === 'chatgpt-business-primary') return businessReady;
-      if (resource.resourceId === 'antigravity-primary') return antigravityReady;
-      return await liteLlmResourceProbe.probe(resource);
-    },
-  };
-  const resourceLifecycle = new ResourceLifecycleManager(
-    sourceResources,
-    repositories.resourceStateOverrides,
-    resourceProbe,
-    resourceStateEffect,
-  );
   const routes: ExecutionWorkerRoute[] = [
     ...implementationSpecs.map(({ route, model }) => ({
       route,
-      provider:
-        model === 'gpt-5.6-luna'
-          ? new OpenHandsCodexManagedExecutionProvider({ ...common, implementationModel: model })
-          : new OpenHandsExecutionProvider({ ...common, implementationModel: model }),
+      provider: createLegacyOpenHandsRouteProvider(common, {
+        role: 'IMPLEMENTATION',
+        route,
+        model,
+      }),
     })),
     ...reviewSpecs.map(({ route, model }) => ({
       route,
-      provider:
-        route === 'codex-business-review'
-          ? new OpenHandsCodexBusinessReviewProvider({ ...common, reviewModel: model })
-          : new OpenHandsReviewProvider({ ...common, reviewModel: model }),
+      provider: createLegacyOpenHandsRouteProvider(common, { role: 'REVIEW', route, model }),
     })),
   ];
-  const workspaceUid = config.workspace.uid;
-  const workspaceGid = config.workspace.gid;
-  const gitTimeoutMs = config.workspace.gitTimeoutMs;
-  const gitMaxBufferBytes = config.workspace.gitMaxBufferBytes;
-  const workspaceMinimumFreeBytes = config.workspace.minimumFreeBytes;
-  const legacyWorkspace = new LocalGitWorkspaceAdapter({
+  const workspaceIntegrations = buildWorkspaceIntegrationAssembly({
+    repositories,
     allowedRepositoryRoots,
     managedHostRoot,
     executionRoot,
-    commandTimeoutMs: gitTimeoutMs,
-    maxBufferBytes: gitMaxBufferBytes,
-    minimumFreeBytes: workspaceMinimumFreeBytes,
-    workspaceUid,
-    workspaceGid,
+    literalProjectKeys: literalWorktreeProjectKeys,
+    workspaceUid: config.workspace.uid,
+    workspaceGid: config.workspace.gid,
+    commandTimeoutMs: config.workspace.gitTimeoutMs,
+    maxBufferBytes: config.workspace.gitMaxBufferBytes,
+    minimumFreeBytes: config.workspace.minimumFreeBytes,
+    agentHarnessCtl: config.workspace.agentHarnessCtl,
+    openHandsContainer: config.openHands.container,
+    ...(config.nodeEnv ? { nodeEnv: config.nodeEnv } : {}),
   });
-  const planWorktreeManager =
-    literalWorktreeProjectKeys.length > 0
-      ? new PlanWorktreeManager({
-          repositories,
-          allowedRepositoryRoots,
-          managedHostRoot,
-          executionRoot,
-          commandTimeoutMs: gitTimeoutMs,
-          maxBufferBytes: gitMaxBufferBytes,
-          projectAdmission: (repositoryPath) => {
-            const harnessctl =
-              config.workspace.agentHarnessCtl;
-            try {
-              execFileSync(
-                '/usr/bin/python3',
-                [harnessctl, 'plan', repositoryPath, '--profile', 'openhands', '--json'],
-                {
-                  cwd: repositoryPath,
-                  encoding: 'utf8',
-                  timeout: gitTimeoutMs,
-                  maxBuffer: gitMaxBufferBytes,
-                  stdio: ['ignore', 'pipe', 'pipe'],
-                },
-              );
-            } catch (error) {
-              throw new ForgeFlowError(
-                'WORKTREE_AGENT_HARNESS_PROJECT_UNREGISTERED',
-                'Literal worktree projects must resolve through Agent Harness before activation.',
-                error,
-              );
-            }
-            if (config.nodeEnv !== 'test')
-              assertOpenHandsGitCommonDirMounted(
-                repositoryPath,
-                config.openHands.container,
-                gitTimeoutMs,
-                gitMaxBufferBytes,
-              );
-          },
-        })
-      : undefined;
-  const literalWorkspace = planWorktreeManager
-    ? new LiteralWorktreeWorkspaceAdapter({
-        repositories,
-        manager: planWorktreeManager,
-        managedHostRoot,
-        executionRoot,
-        workspaceUid,
-        workspaceGid,
-        minimumFreeBytes: workspaceMinimumFreeBytes,
-        commandTimeoutMs: gitTimeoutMs,
-        maxBufferBytes: gitMaxBufferBytes,
-      })
-    : undefined;
-  const workspace: WorkspaceProviderPort = literalWorkspace
-    ? new ProjectScopedWorkspaceAdapter({
-        repositories,
-        legacy: legacyWorkspace,
-        literal: literalWorkspace,
-        literalProjects: literalWorktreeProjectKeys,
-      })
-    : legacyWorkspace;
-  const openHandsProviderFactory = createOpenHandsProviderFactory(common);
-  const antigravityBase = {
-    binary: antigravityBinary,
-    stateRoot:
-      config.antigravity.stateRoot,
-    workspaceHostRoot: managedHostRoot,
-    home: antigravityHome,
-    uid: config.antigravity.uid,
-    gid: config.antigravity.gid,
-    authUid: config.antigravity.authUid,
-    authGid: config.antigravity.authGid,
-    workspaceGid,
-    user: config.antigravity.user,
-    printTimeout:
-      config.antigravity.printTimeout,
-    sandboxWrapper:
-      config.antigravity.sandboxWrapper,
-    systemdUnitTemplate:
-      config.antigravity.systemdUnitTemplate,
-  };
-  const providerFactory = (selection: ExecutionResourceSelection): ExecutionProviderPort => {
-    if (
-      selection.agentBackend === 'antigravity-worker' ||
-      selection.agentBackend === 'antigravity-review'
-    ) {
-      const options = { ...antigravityBase, model: selection.modelFamily };
-      return selection.agentBackend === 'antigravity-review'
-        ? new AntigravityReviewProvider(options)
-        : new AntigravityExecutionProvider(options);
-    }
-    if (!['IMPLEMENT', 'IMPLEMENT_FIX', 'REVIEW'].includes(selection.phase))
-      throw new ForgeFlowError('EXECUTION_RESOURCE_SELECTION_PHASE_UNSUPPORTED');
-    return openHandsProviderFactory({
-      backend: selection.agentBackend as OpenHandsAgentBackend,
-      model: selection.routeModel ?? selection.modelFamily,
-      modelFamily: selection.modelFamily,
-      transport: selection.transport,
-      phase: selection.phase as 'IMPLEMENT' | 'IMPLEMENT_FIX' | 'REVIEW',
-      capability: selection.capability,
-      resourceId: selection.resourceId,
-    });
-  };
+  const { workspace, planWorktreeManager, workspaceUid, workspaceGid } = workspaceIntegrations;
+  const providerIntegrations = createExecutionProviderIntegrationRegistry({
+    openHands: common,
+    antigravity: {
+      binary: config.antigravity.binary,
+      stateRoot: config.antigravity.stateRoot,
+      workspaceHostRoot: managedHostRoot,
+      home: config.antigravity.home,
+      uid: config.antigravity.uid,
+      gid: config.antigravity.gid,
+      authUid: config.antigravity.authUid,
+      authGid: config.antigravity.authGid,
+      workspaceGid,
+      user: config.antigravity.user,
+      printTimeout: config.antigravity.printTimeout,
+      sandboxWrapper: config.antigravity.sandboxWrapper,
+      systemdUnitTemplate: config.antigravity.systemdUnitTemplate,
+    },
+  });
+  const providerFactory = (selection: ExecutionResourceSelection): ExecutionProviderPort =>
+    providerIntegrations.resolve(selection);
   const admissionCandidates = (): ResourceSelectionCandidate[] => {
     const selected = new Map<string, ResourceSelectionCandidate>();
     for (const phase of ['IMPLEMENT', 'REVIEW'] as const) {

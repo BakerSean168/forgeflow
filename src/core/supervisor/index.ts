@@ -1,3 +1,4 @@
+export * from './host.js';
 export * from './protocol.js';
 export * from './projection.js';
 export * from './decision.js';

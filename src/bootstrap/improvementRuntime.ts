@@ -1,11 +1,11 @@
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
-import { ResourceSelectedImprovementDiagnosisClient } from '../core/adapters/improvementDiagnosis.js';
+import { ResourceSelectedImprovementDiagnosisClient } from '../integrations/providers/index.js';
 import { MaintenanceCandidateRegistry } from '../core/adapters/maintenance.js';
-import { ResourceStateService } from '../core/adapters/resourceDirectory.js';
-import { ExactShaSelfChangeCanary } from '../core/adapters/selfChangeCanary.js';
-import { FileSelfChangePromotionQueue } from '../core/adapters/selfChangePromotion.js';
+import { ResourceStateService } from '../integrations/resources/index.js';
+import { ExactShaSelfChangeCanary } from '../integrations/release/index.js';
+import { FileSelfChangePromotionQueue } from '../integrations/release/index.js';
 import { ForgeFlowError } from '../core/domain/errors.js';
 import type { PlanKernel } from '../core/kernel/planKernel.js';
 import {
