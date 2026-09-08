@@ -12,7 +12,7 @@
     "check:boundary": "npm run check:product-boundary && npm run check:architecture",
     "smoke:improvement-diagnosis": "tsx scripts/smoke-improvement-diagnosis.mts",
     "smoke:autonomous-lifecycle": "node scripts/smoke-autonomous-lifecycle.mjs",
-    "check": "npm run check:boundary && npm run check:api-contract && npm run check:api-compat && npm run check:api-operations && npm run check:client-contract && npm run check-types && npm test && npm run test:client && npm run build && npm run build:client && npm run check:client-package",
+    "check": "npm run check:boundary && npm run check:api-contract && npm run check:api-compat && npm run check:api-operations && npm run check:api-coverage && npm run check:client-contract && npm run check-types && npm test && npm run test:client && npm run build && npm run build:client && npm run check:client-package",
     "check:product-boundary": "node scripts/check-product-boundary.mjs",
     "check:architecture": "node scripts/check-architecture-boundary.mjs",
     "api:spec": "tsx scripts/generate-openapi.mts",
@@ -23,7 +23,8 @@
     "build:client": "npm run build --workspace @forgeflow/client",
     "check:client-package": "npm pack --workspace @forgeflow/client --dry-run --json",
     "check:api-compat": "tsx scripts/check-openapi-compat.mts",
-    "check:api-operations": "tsx scripts/check-api-operations.mts"
+    "check:api-operations": "tsx scripts/check-api-operations.mts",
+    "check:api-coverage": "tsx scripts/check-api-contract-coverage.mts"
   },
   "dependencies": {
     "@fastify/swagger": "^9.8.1",

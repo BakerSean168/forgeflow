@@ -1034,7 +1034,11 @@ export interface operations {
     };
     readonly improvementsList: {
         readonly parameters: {
-            readonly query?: never;
+            readonly query?: {
+                readonly limit?: number | string;
+                readonly programId?: string;
+                readonly status?: "DISCOVERED" | "QUEUED" | "ADOPTED" | "REJECTED" | "STALE" | "COMPLETED";
+            };
             readonly header?: never;
             readonly path?: never;
             readonly cookie?: never;
@@ -1046,7 +1050,27 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly count: number;
+                        readonly items: readonly {
+                            readonly candidateId: string;
+                            readonly evidence: readonly string[];
+                            readonly fingerprint: string;
+                            readonly planId?: string;
+                            readonly programId: string;
+                            readonly pullRequestId?: string;
+                            /** @enum {string} */
+                            readonly risk: "LOW" | "MEDIUM" | "HIGH";
+                            /** @enum {string} */
+                            readonly status: "DISCOVERED" | "QUEUED" | "ADOPTED" | "REJECTED" | "STALE" | "COMPLETED";
+                            readonly title: string;
+                        }[];
+                        readonly runtime: {
+                            readonly [key: string]: unknown;
+                        };
+                    };
+                };
             };
         };
     };
@@ -1066,7 +1090,61 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly candidate: {
+                            readonly candidateId: string;
+                            readonly evidence: readonly string[];
+                            readonly fingerprint: string;
+                            readonly planId?: string;
+                            readonly programId: string;
+                            readonly pullRequestId?: string;
+                            /** @enum {string} */
+                            readonly risk: "LOW" | "MEDIUM" | "HIGH";
+                            /** @enum {string} */
+                            readonly status: "DISCOVERED" | "QUEUED" | "ADOPTED" | "REJECTED" | "STALE" | "COMPLETED";
+                            readonly title: string;
+                        };
+                        readonly diagnoses: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                        readonly plan: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                        readonly program: {
+                            readonly autoMerge: boolean;
+                            /** @enum {string} */
+                            readonly autonomousScope: "CONSERVATIVE" | "STANDARD";
+                            /** @enum {string} */
+                            readonly candidateRisk?: "LOW" | "MEDIUM" | "HIGH";
+                            readonly enabled: boolean;
+                            readonly failureCodePrefixes?: readonly string[];
+                            readonly failureThreshold?: number;
+                            readonly implementationRoutes?: readonly string[];
+                            readonly programId: string;
+                            readonly projectKey: string;
+                            readonly recentExecutionLimit?: number;
+                            readonly repositoryPath?: string;
+                            readonly reviewRoutes?: readonly string[];
+                        };
+                        readonly selfChange: {
+                            readonly canaries: readonly {
+                                readonly [key: string]: unknown;
+                            }[];
+                            readonly promotion: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly promotionRequest: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly releaseProvenance: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly selfChange: boolean;
+                            readonly selfPromotionEnabled: boolean;
+                        };
+                    };
+                };
             };
         };
     };
@@ -1079,14 +1157,60 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody?: {
+            readonly content: {
+                readonly "application/json": ({
+                    readonly acknowledgeHighRisk?: boolean;
+                    readonly baseRevision?: string;
+                    readonly delivery?: {
+                        readonly autoMerge: boolean;
+                        readonly branch: string;
+                        /** @enum {string} */
+                        readonly mergeMethod?: "merge" | "squash" | "rebase";
+                        readonly remote?: string;
+                        readonly requiredChecks?: readonly string[];
+                        readonly targetBranch?: string;
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                    readonly priority?: number;
+                    readonly repositoryPath?: string;
+                } & {
+                    readonly [key: string]: unknown;
+                }) | null;
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly candidate: {
+                            readonly candidateId: string;
+                            readonly evidence: readonly string[];
+                            readonly fingerprint: string;
+                            readonly planId?: string;
+                            readonly programId: string;
+                            readonly pullRequestId?: string;
+                            /** @enum {string} */
+                            readonly risk: "LOW" | "MEDIUM" | "HIGH";
+                            /** @enum {string} */
+                            readonly status: "DISCOVERED" | "QUEUED" | "ADOPTED" | "REJECTED" | "STALE" | "COMPLETED";
+                            readonly title: string;
+                        };
+                        readonly plan: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly scheduling?: {
+                            readonly [key: string]: unknown;
+                        };
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -1106,7 +1230,13 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly diagnosis: {
+                            readonly [key: string]: unknown;
+                        };
+                    };
+                };
             };
         };
     };
@@ -1126,7 +1256,23 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly candidate: {
+                            readonly candidateId: string;
+                            readonly evidence: readonly string[];
+                            readonly fingerprint: string;
+                            readonly planId?: string;
+                            readonly programId: string;
+                            readonly pullRequestId?: string;
+                            /** @enum {string} */
+                            readonly risk: "LOW" | "MEDIUM" | "HIGH";
+                            /** @enum {string} */
+                            readonly status: "DISCOVERED" | "QUEUED" | "ADOPTED" | "REJECTED" | "STALE" | "COMPLETED";
+                            readonly title: string;
+                        };
+                    };
+                };
             };
         };
     };
@@ -1146,7 +1292,23 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly candidate: {
+                            readonly candidateId: string;
+                            readonly evidence: readonly string[];
+                            readonly fingerprint: string;
+                            readonly planId?: string;
+                            readonly programId: string;
+                            readonly pullRequestId?: string;
+                            /** @enum {string} */
+                            readonly risk: "LOW" | "MEDIUM" | "HIGH";
+                            /** @enum {string} */
+                            readonly status: "DISCOVERED" | "QUEUED" | "ADOPTED" | "REJECTED" | "STALE" | "COMPLETED";
+                            readonly title: string;
+                        };
+                    };
+                };
             };
         };
     };
@@ -1166,7 +1328,29 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly canary: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly selfChange: {
+                            readonly canaries: readonly {
+                                readonly [key: string]: unknown;
+                            }[];
+                            readonly promotion: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly promotionRequest: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly releaseProvenance: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly selfChange: boolean;
+                            readonly selfPromotionEnabled: boolean;
+                        };
+                    };
+                };
             };
         };
     };
@@ -1186,7 +1370,58 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly promotionRequest: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly selfChange: {
+                            readonly canaries: readonly {
+                                readonly [key: string]: unknown;
+                            }[];
+                            readonly promotion: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly promotionRequest: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly releaseProvenance: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly selfChange: boolean;
+                            readonly selfPromotionEnabled: boolean;
+                        };
+                    };
+                };
+            };
+            /** @description Default Response */
+            readonly 202: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly promotionRequest: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly selfChange: {
+                            readonly canaries: readonly {
+                                readonly [key: string]: unknown;
+                            }[];
+                            readonly promotion: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly promotionRequest: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly releaseProvenance: {
+                                readonly [key: string]: unknown;
+                            } | null;
+                            readonly selfChange: boolean;
+                            readonly selfPromotionEnabled: boolean;
+                        };
+                    };
+                };
             };
         };
     };
@@ -1204,7 +1439,11 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -1215,14 +1454,85 @@ export interface operations {
             readonly path?: never;
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @default false */
+                    readonly autoMerge?: boolean;
+                    /**
+                     * @default CONSERVATIVE
+                     * @enum {string}
+                     */
+                    readonly autonomousScope?: "CONSERVATIVE" | "STANDARD";
+                    /**
+                     * @default LOW
+                     * @enum {string}
+                     */
+                    readonly candidateRisk?: "LOW" | "MEDIUM" | "HIGH";
+                    /** @default true */
+                    readonly enabled?: boolean;
+                    readonly failureCodePrefixes?: readonly string[];
+                    /** @default 3 */
+                    readonly failureThreshold?: number;
+                    readonly implementationRoutes?: readonly string[];
+                    readonly programId: string;
+                    readonly projectKey: string;
+                    /** @default 200 */
+                    readonly recentExecutionLimit?: number;
+                    readonly repositoryPath?: string;
+                    readonly reviewRoutes?: readonly string[];
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly count: number;
+                        readonly items: readonly {
+                            readonly candidate: {
+                                readonly candidateId: string;
+                                readonly evidence: readonly string[];
+                                readonly fingerprint: string;
+                                readonly planId?: string;
+                                readonly programId: string;
+                                readonly pullRequestId?: string;
+                                /** @enum {string} */
+                                readonly risk: "LOW" | "MEDIUM" | "HIGH";
+                                /** @enum {string} */
+                                readonly status: "DISCOVERED" | "QUEUED" | "ADOPTED" | "REJECTED" | "STALE" | "COMPLETED";
+                                readonly title: string;
+                            };
+                            readonly errorCode: string;
+                            /** @enum {string} */
+                            readonly mutation: "created" | "existing";
+                            readonly observedCount: number;
+                            readonly phase: string;
+                        }[];
+                        readonly program: {
+                            readonly autoMerge: boolean;
+                            /** @enum {string} */
+                            readonly autonomousScope: "CONSERVATIVE" | "STANDARD";
+                            /** @enum {string} */
+                            readonly candidateRisk?: "LOW" | "MEDIUM" | "HIGH";
+                            readonly enabled: boolean;
+                            readonly failureCodePrefixes?: readonly string[];
+                            readonly failureThreshold?: number;
+                            readonly implementationRoutes?: readonly string[];
+                            readonly programId: string;
+                            readonly projectKey: string;
+                            readonly recentExecutionLimit?: number;
+                            readonly repositoryPath?: string;
+                            readonly reviewRoutes?: readonly string[];
+                        };
+                    };
+                };
             };
         };
     };
@@ -1240,7 +1550,26 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly {
+                            readonly autoMerge: boolean;
+                            /** @enum {string} */
+                            readonly autonomousScope: "CONSERVATIVE" | "STANDARD";
+                            /** @enum {string} */
+                            readonly candidateRisk?: "LOW" | "MEDIUM" | "HIGH";
+                            readonly enabled: boolean;
+                            readonly failureCodePrefixes?: readonly string[];
+                            readonly failureThreshold?: number;
+                            readonly implementationRoutes?: readonly string[];
+                            readonly programId: string;
+                            readonly projectKey: string;
+                            readonly recentExecutionLimit?: number;
+                            readonly repositoryPath?: string;
+                            readonly reviewRoutes?: readonly string[];
+                        }[];
+                    };
+                };
             };
         };
     };
@@ -1253,14 +1582,41 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly enabled: boolean;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly program: {
+                            readonly autoMerge: boolean;
+                            /** @enum {string} */
+                            readonly autonomousScope: "CONSERVATIVE" | "STANDARD";
+                            /** @enum {string} */
+                            readonly candidateRisk?: "LOW" | "MEDIUM" | "HIGH";
+                            readonly enabled: boolean;
+                            readonly failureCodePrefixes?: readonly string[];
+                            readonly failureThreshold?: number;
+                            readonly implementationRoutes?: readonly string[];
+                            readonly programId: string;
+                            readonly projectKey: string;
+                            readonly recentExecutionLimit?: number;
+                            readonly repositoryPath?: string;
+                            readonly reviewRoutes?: readonly string[];
+                        };
+                    };
+                };
             };
         };
     };
@@ -2369,14 +2725,51 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly action: {
+                        readonly actionId?: string;
+                        readonly payload: {
+                            readonly [key: string]: unknown;
+                        };
+                        /** @enum {string} */
+                        readonly type: "NO_ACTION" | "CREATE_EXECUTION" | "CONTINUE_EXECUTION" | "RETRY_EXECUTION" | "SWITCH_ROUTE" | "REQUEST_REVIEW" | "CREATE_REPAIR" | "REPLAN_REMAINDER" | "CREATE_CHILD_PLAN" | "PAUSE_FOR_RESOURCE" | "PARK_EXTERNAL_GATE" | "ESCALATE";
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                    readonly decisionId?: string;
+                    readonly idempotencyKey: string;
+                    readonly observationCursor: number;
+                    readonly planId: string;
+                    readonly preconditionSnapshot?: {
+                        readonly [key: string]: unknown;
+                    };
+                    readonly projectionDigest: string;
+                    readonly supervisorId: string;
+                    readonly version: 1 | "FORGEFLOW_SUPERVISOR_DECISION_V1";
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly action?: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly actionId: string;
+                        readonly code: string;
+                        /** @enum {string} */
+                        readonly status: "SUCCEEDED" | "FAILED" | "REJECTED" | "DUPLICATE";
+                    };
+                };
             };
         };
     };
@@ -2396,7 +2789,55 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly cursor: number;
+                        readonly delivery?: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly digest: string;
+                        readonly executions: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                        readonly graph: {
+                            readonly graphVersionId?: string;
+                            readonly items: readonly {
+                                readonly [key: string]: unknown;
+                            }[];
+                            readonly version?: number;
+                        };
+                        readonly plan: {
+                            readonly baseRevision: string;
+                            readonly currentRevision: string;
+                            readonly objective: string;
+                            readonly planId: string;
+                            readonly projectKey: string;
+                            readonly repositoryPath: string;
+                            /** @enum {string} */
+                            readonly status: "DRAFT" | "QUEUED" | "READY" | "RUNNING" | "WAITING_FOR_RESOURCE" | "WAITING_FOR_SYSTEM_REPAIR" | "WAITING_FOR_EXTERNAL_EVIDENCE" | "SAFETY_HOLD" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+                        };
+                        /** @enum {integer} */
+                        readonly projectionVersion: 1;
+                        readonly recentEvents: readonly {
+                            readonly aggregateId: string;
+                            readonly aggregateType: string;
+                            readonly cursor: number;
+                            readonly occurredAt: string;
+                            readonly type: string;
+                        }[];
+                        readonly reviews: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                        readonly supervisor: {
+                            readonly allowedActions: readonly ("NO_ACTION" | "CREATE_EXECUTION" | "CONTINUE_EXECUTION" | "RETRY_EXECUTION" | "SWITCH_ROUTE" | "REQUEST_REVIEW" | "CREATE_REPAIR" | "REPLAN_REMAINDER" | "CREATE_CHILD_PLAN" | "PAUSE_FOR_RESOURCE" | "PARK_EXTERNAL_GATE" | "ESCALATE")[];
+                            readonly observationCursor: number;
+                            /** @enum {string} */
+                            readonly status: "CREATED" | "ACTIVE" | "SLEEPING" | "OBSERVING" | "DIAGNOSING" | "ACTION_PENDING" | "RECOVERING" | "WAITING_FOR_RESOURCE" | "WAITING_FOR_SYSTEM_REPAIR" | "WAITING_FOR_EXTERNAL_EVIDENCE" | "SAFETY_HOLD" | "COMPLETED" | "CANCELLED";
+                            readonly supervisorId: string;
+                        };
+                        readonly truncated: boolean;
+                    };
+                };
             };
         };
     };

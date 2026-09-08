@@ -601,8 +601,135 @@
     "/api/v1/improvements": {
       "get": {
         "operationId": "improvementsList",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "programId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "DISCOVERED",
+                "QUEUED",
+                "ADOPTED",
+                "REJECTED",
+                "STALE",
+                "COMPLETED"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "candidateId": {
+                            "type": "string"
+                          },
+                          "evidence": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "fingerprint": {
+                            "type": "string"
+                          },
+                          "planId": {
+                            "type": "string"
+                          },
+                          "programId": {
+                            "type": "string"
+                          },
+                          "pullRequestId": {
+                            "type": "string"
+                          },
+                          "risk": {
+                            "enum": [
+                              "LOW",
+                              "MEDIUM",
+                              "HIGH"
+                            ],
+                            "type": "string"
+                          },
+                          "status": {
+                            "enum": [
+                              "DISCOVERED",
+                              "QUEUED",
+                              "ADOPTED",
+                              "REJECTED",
+                              "STALE",
+                              "COMPLETED"
+                            ],
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "candidateId",
+                          "programId",
+                          "fingerprint",
+                          "title",
+                          "evidence",
+                          "risk",
+                          "status"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "runtime": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "count",
+                    "runtime"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -623,6 +750,226 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "candidate": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "candidateId": {
+                          "type": "string"
+                        },
+                        "evidence": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "fingerprint": {
+                          "type": "string"
+                        },
+                        "planId": {
+                          "type": "string"
+                        },
+                        "programId": {
+                          "type": "string"
+                        },
+                        "pullRequestId": {
+                          "type": "string"
+                        },
+                        "risk": {
+                          "enum": [
+                            "LOW",
+                            "MEDIUM",
+                            "HIGH"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "DISCOVERED",
+                            "QUEUED",
+                            "ADOPTED",
+                            "REJECTED",
+                            "STALE",
+                            "COMPLETED"
+                          ],
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "candidateId",
+                        "programId",
+                        "fingerprint",
+                        "title",
+                        "evidence",
+                        "risk",
+                        "status"
+                      ],
+                      "type": "object"
+                    },
+                    "diagnoses": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "plan": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "program": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "autoMerge": {
+                          "type": "boolean"
+                        },
+                        "autonomousScope": {
+                          "enum": [
+                            "CONSERVATIVE",
+                            "STANDARD"
+                          ],
+                          "type": "string"
+                        },
+                        "candidateRisk": {
+                          "enum": [
+                            "LOW",
+                            "MEDIUM",
+                            "HIGH"
+                          ],
+                          "type": "string"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "failureCodePrefixes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "failureThreshold": {
+                          "type": "integer"
+                        },
+                        "implementationRoutes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "programId": {
+                          "type": "string"
+                        },
+                        "projectKey": {
+                          "type": "string"
+                        },
+                        "recentExecutionLimit": {
+                          "type": "integer"
+                        },
+                        "repositoryPath": {
+                          "type": "string"
+                        },
+                        "reviewRoutes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "programId",
+                        "projectKey",
+                        "autonomousScope",
+                        "autoMerge",
+                        "enabled"
+                      ],
+                      "type": "object"
+                    },
+                    "selfChange": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "canaries": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "promotion": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "promotionRequest": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "releaseProvenance": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "selfChange": {
+                          "type": "boolean"
+                        },
+                        "selfPromotionEnabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "selfChange",
+                        "selfPromotionEnabled",
+                        "canaries",
+                        "promotionRequest",
+                        "promotion",
+                        "releaseProvenance"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "candidate",
+                    "program",
+                    "plan",
+                    "diagnoses",
+                    "selfChange"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -641,8 +988,156 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "acknowledgeHighRisk": {
+                        "type": "boolean"
+                      },
+                      "baseRevision": {
+                        "type": "string"
+                      },
+                      "delivery": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "autoMerge": {
+                            "type": "boolean"
+                          },
+                          "branch": {
+                            "type": "string"
+                          },
+                          "mergeMethod": {
+                            "enum": [
+                              "merge",
+                              "squash",
+                              "rebase"
+                            ],
+                            "type": "string"
+                          },
+                          "remote": {
+                            "type": "string"
+                          },
+                          "requiredChecks": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "targetBranch": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "branch",
+                          "autoMerge"
+                        ],
+                        "type": "object"
+                      },
+                      "priority": {
+                        "type": "integer"
+                      },
+                      "repositoryPath": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "candidate": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "candidateId": {
+                          "type": "string"
+                        },
+                        "evidence": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "fingerprint": {
+                          "type": "string"
+                        },
+                        "planId": {
+                          "type": "string"
+                        },
+                        "programId": {
+                          "type": "string"
+                        },
+                        "pullRequestId": {
+                          "type": "string"
+                        },
+                        "risk": {
+                          "enum": [
+                            "LOW",
+                            "MEDIUM",
+                            "HIGH"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "DISCOVERED",
+                            "QUEUED",
+                            "ADOPTED",
+                            "REJECTED",
+                            "STALE",
+                            "COMPLETED"
+                          ],
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "candidateId",
+                        "programId",
+                        "fingerprint",
+                        "title",
+                        "evidence",
+                        "risk",
+                        "status"
+                      ],
+                      "type": "object"
+                    },
+                    "plan": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "scheduling": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "candidate",
+                    "plan"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -663,6 +1158,23 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "diagnosis": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "diagnosis"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -683,6 +1195,77 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "candidate": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "candidateId": {
+                          "type": "string"
+                        },
+                        "evidence": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "fingerprint": {
+                          "type": "string"
+                        },
+                        "planId": {
+                          "type": "string"
+                        },
+                        "programId": {
+                          "type": "string"
+                        },
+                        "pullRequestId": {
+                          "type": "string"
+                        },
+                        "risk": {
+                          "enum": [
+                            "LOW",
+                            "MEDIUM",
+                            "HIGH"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "DISCOVERED",
+                            "QUEUED",
+                            "ADOPTED",
+                            "REJECTED",
+                            "STALE",
+                            "COMPLETED"
+                          ],
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "candidateId",
+                        "programId",
+                        "fingerprint",
+                        "title",
+                        "evidence",
+                        "risk",
+                        "status"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "candidate"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -703,6 +1286,77 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "candidate": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "candidateId": {
+                          "type": "string"
+                        },
+                        "evidence": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "fingerprint": {
+                          "type": "string"
+                        },
+                        "planId": {
+                          "type": "string"
+                        },
+                        "programId": {
+                          "type": "string"
+                        },
+                        "pullRequestId": {
+                          "type": "string"
+                        },
+                        "risk": {
+                          "enum": [
+                            "LOW",
+                            "MEDIUM",
+                            "HIGH"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "DISCOVERED",
+                            "QUEUED",
+                            "ADOPTED",
+                            "REJECTED",
+                            "STALE",
+                            "COMPLETED"
+                          ],
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "candidateId",
+                        "programId",
+                        "fingerprint",
+                        "title",
+                        "evidence",
+                        "risk",
+                        "status"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "candidate"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -723,6 +1377,84 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "canary": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "selfChange": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "canaries": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "promotion": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "promotionRequest": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "releaseProvenance": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "selfChange": {
+                          "type": "boolean"
+                        },
+                        "selfPromotionEnabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "selfChange",
+                        "selfPromotionEnabled",
+                        "canaries",
+                        "promotionRequest",
+                        "promotion",
+                        "releaseProvenance"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "canary",
+                    "selfChange"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -743,6 +1475,165 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "promotionRequest": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "selfChange": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "canaries": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "promotion": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "promotionRequest": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "releaseProvenance": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "selfChange": {
+                          "type": "boolean"
+                        },
+                        "selfPromotionEnabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "selfChange",
+                        "selfPromotionEnabled",
+                        "canaries",
+                        "promotionRequest",
+                        "promotion",
+                        "releaseProvenance"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "promotionRequest",
+                    "selfChange"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "promotionRequest": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "selfChange": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "canaries": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "promotion": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "promotionRequest": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "releaseProvenance": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "selfChange": {
+                          "type": "boolean"
+                        },
+                        "selfPromotionEnabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "selfChange",
+                        "selfPromotionEnabled",
+                        "canaries",
+                        "promotionRequest",
+                        "promotion",
+                        "releaseProvenance"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "promotionRequest",
+                    "selfChange"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -753,6 +1644,14 @@
         "operationId": "improvementsRunCycle",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -761,8 +1660,262 @@
     "/api/v1/improvements/discover": {
       "post": {
         "operationId": "improvementsDiscover",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "autoMerge": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "autonomousScope": {
+                    "default": "CONSERVATIVE",
+                    "enum": [
+                      "CONSERVATIVE",
+                      "STANDARD"
+                    ],
+                    "type": "string"
+                  },
+                  "candidateRisk": {
+                    "default": "LOW",
+                    "enum": [
+                      "LOW",
+                      "MEDIUM",
+                      "HIGH"
+                    ],
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "default": true,
+                    "type": "boolean"
+                  },
+                  "failureCodePrefixes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "failureThreshold": {
+                    "default": 3,
+                    "type": "integer"
+                  },
+                  "implementationRoutes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "programId": {
+                    "type": "string"
+                  },
+                  "projectKey": {
+                    "type": "string"
+                  },
+                  "recentExecutionLimit": {
+                    "default": 200,
+                    "type": "integer"
+                  },
+                  "repositoryPath": {
+                    "type": "string"
+                  },
+                  "reviewRoutes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "programId",
+                  "projectKey"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "candidate": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "candidateId": {
+                                "type": "string"
+                              },
+                              "evidence": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "fingerprint": {
+                                "type": "string"
+                              },
+                              "planId": {
+                                "type": "string"
+                              },
+                              "programId": {
+                                "type": "string"
+                              },
+                              "pullRequestId": {
+                                "type": "string"
+                              },
+                              "risk": {
+                                "enum": [
+                                  "LOW",
+                                  "MEDIUM",
+                                  "HIGH"
+                                ],
+                                "type": "string"
+                              },
+                              "status": {
+                                "enum": [
+                                  "DISCOVERED",
+                                  "QUEUED",
+                                  "ADOPTED",
+                                  "REJECTED",
+                                  "STALE",
+                                  "COMPLETED"
+                                ],
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "candidateId",
+                              "programId",
+                              "fingerprint",
+                              "title",
+                              "evidence",
+                              "risk",
+                              "status"
+                            ],
+                            "type": "object"
+                          },
+                          "errorCode": {
+                            "type": "string"
+                          },
+                          "mutation": {
+                            "enum": [
+                              "created",
+                              "existing"
+                            ],
+                            "type": "string"
+                          },
+                          "observedCount": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "phase": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "candidate",
+                          "mutation",
+                          "observedCount",
+                          "errorCode",
+                          "phase"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "program": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "autoMerge": {
+                          "type": "boolean"
+                        },
+                        "autonomousScope": {
+                          "enum": [
+                            "CONSERVATIVE",
+                            "STANDARD"
+                          ],
+                          "type": "string"
+                        },
+                        "candidateRisk": {
+                          "enum": [
+                            "LOW",
+                            "MEDIUM",
+                            "HIGH"
+                          ],
+                          "type": "string"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "failureCodePrefixes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "failureThreshold": {
+                          "type": "integer"
+                        },
+                        "implementationRoutes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "programId": {
+                          "type": "string"
+                        },
+                        "projectKey": {
+                          "type": "string"
+                        },
+                        "recentExecutionLimit": {
+                          "type": "integer"
+                        },
+                        "repositoryPath": {
+                          "type": "string"
+                        },
+                        "reviewRoutes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "programId",
+                        "projectKey",
+                        "autonomousScope",
+                        "autoMerge",
+                        "enabled"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "program",
+                    "items",
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -773,6 +1926,89 @@
         "operationId": "maintenanceProgramsList",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "autoMerge": {
+                            "type": "boolean"
+                          },
+                          "autonomousScope": {
+                            "enum": [
+                              "CONSERVATIVE",
+                              "STANDARD"
+                            ],
+                            "type": "string"
+                          },
+                          "candidateRisk": {
+                            "enum": [
+                              "LOW",
+                              "MEDIUM",
+                              "HIGH"
+                            ],
+                            "type": "string"
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "failureCodePrefixes": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "failureThreshold": {
+                            "type": "integer"
+                          },
+                          "implementationRoutes": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "programId": {
+                            "type": "string"
+                          },
+                          "projectKey": {
+                            "type": "string"
+                          },
+                          "recentExecutionLimit": {
+                            "type": "integer"
+                          },
+                          "repositoryPath": {
+                            "type": "string"
+                          },
+                          "reviewRoutes": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "required": [
+                          "programId",
+                          "projectKey",
+                          "autonomousScope",
+                          "autoMerge",
+                          "enabled"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -791,8 +2027,107 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "program": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "autoMerge": {
+                          "type": "boolean"
+                        },
+                        "autonomousScope": {
+                          "enum": [
+                            "CONSERVATIVE",
+                            "STANDARD"
+                          ],
+                          "type": "string"
+                        },
+                        "candidateRisk": {
+                          "enum": [
+                            "LOW",
+                            "MEDIUM",
+                            "HIGH"
+                          ],
+                          "type": "string"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "failureCodePrefixes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "failureThreshold": {
+                          "type": "integer"
+                        },
+                        "implementationRoutes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "programId": {
+                          "type": "string"
+                        },
+                        "projectKey": {
+                          "type": "string"
+                        },
+                        "recentExecutionLimit": {
+                          "type": "integer"
+                        },
+                        "repositoryPath": {
+                          "type": "string"
+                        },
+                        "reviewRoutes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "programId",
+                        "projectKey",
+                        "autonomousScope",
+                        "autoMerge",
+                        "enabled"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "program"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -3750,8 +5085,137 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "action": {
+                    "additionalProperties": true,
+                    "properties": {
+                      "actionId": {
+                        "type": "string"
+                      },
+                      "payload": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": {
+                        "enum": [
+                          "NO_ACTION",
+                          "CREATE_EXECUTION",
+                          "CONTINUE_EXECUTION",
+                          "RETRY_EXECUTION",
+                          "SWITCH_ROUTE",
+                          "REQUEST_REVIEW",
+                          "CREATE_REPAIR",
+                          "REPLAN_REMAINDER",
+                          "CREATE_CHILD_PLAN",
+                          "PAUSE_FOR_RESOURCE",
+                          "PARK_EXTERNAL_GATE",
+                          "ESCALATE"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "payload"
+                    ],
+                    "type": "object"
+                  },
+                  "decisionId": {
+                    "type": "string"
+                  },
+                  "idempotencyKey": {
+                    "type": "string"
+                  },
+                  "observationCursor": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "planId": {
+                    "type": "string"
+                  },
+                  "preconditionSnapshot": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "projectionDigest": {
+                    "type": "string"
+                  },
+                  "supervisorId": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          1
+                        ],
+                        "type": "integer"
+                      },
+                      {
+                        "enum": [
+                          "FORGEFLOW_SUPERVISOR_DECISION_V1"
+                        ],
+                        "type": "string"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "version",
+                  "planId",
+                  "supervisorId",
+                  "observationCursor",
+                  "projectionDigest",
+                  "idempotencyKey",
+                  "action"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "action": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "actionId": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "SUCCEEDED",
+                        "FAILED",
+                        "REJECTED",
+                        "DUPLICATE"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "actionId",
+                    "status",
+                    "code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -3772,6 +5236,222 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cursor": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "delivery": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "digest": {
+                      "type": "string"
+                    },
+                    "executions": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "graph": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "graphVersionId": {
+                          "type": "string"
+                        },
+                        "items": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "items"
+                      ],
+                      "type": "object"
+                    },
+                    "plan": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "baseRevision": {
+                          "type": "string"
+                        },
+                        "currentRevision": {
+                          "type": "string"
+                        },
+                        "objective": {
+                          "type": "string"
+                        },
+                        "planId": {
+                          "type": "string"
+                        },
+                        "projectKey": {
+                          "type": "string"
+                        },
+                        "repositoryPath": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "DRAFT",
+                            "QUEUED",
+                            "READY",
+                            "RUNNING",
+                            "WAITING_FOR_RESOURCE",
+                            "WAITING_FOR_SYSTEM_REPAIR",
+                            "WAITING_FOR_EXTERNAL_EVIDENCE",
+                            "SAFETY_HOLD",
+                            "SUCCEEDED",
+                            "FAILED",
+                            "CANCELLED"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "planId",
+                        "projectKey",
+                        "objective",
+                        "repositoryPath",
+                        "baseRevision",
+                        "currentRevision",
+                        "status"
+                      ],
+                      "type": "object"
+                    },
+                    "projectionVersion": {
+                      "enum": [
+                        1
+                      ],
+                      "type": "integer"
+                    },
+                    "recentEvents": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "aggregateId": {
+                            "type": "string"
+                          },
+                          "aggregateType": {
+                            "type": "string"
+                          },
+                          "cursor": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "occurredAt": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "cursor",
+                          "type",
+                          "aggregateType",
+                          "aggregateId",
+                          "occurredAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "reviews": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "supervisor": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "allowedActions": {
+                          "items": {
+                            "enum": [
+                              "NO_ACTION",
+                              "CREATE_EXECUTION",
+                              "CONTINUE_EXECUTION",
+                              "RETRY_EXECUTION",
+                              "SWITCH_ROUTE",
+                              "REQUEST_REVIEW",
+                              "CREATE_REPAIR",
+                              "REPLAN_REMAINDER",
+                              "CREATE_CHILD_PLAN",
+                              "PAUSE_FOR_RESOURCE",
+                              "PARK_EXTERNAL_GATE",
+                              "ESCALATE"
+                            ],
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "observationCursor": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "status": {
+                          "enum": [
+                            "CREATED",
+                            "ACTIVE",
+                            "SLEEPING",
+                            "OBSERVING",
+                            "DIAGNOSING",
+                            "ACTION_PENDING",
+                            "RECOVERING",
+                            "WAITING_FOR_RESOURCE",
+                            "WAITING_FOR_SYSTEM_REPAIR",
+                            "WAITING_FOR_EXTERNAL_EVIDENCE",
+                            "SAFETY_HOLD",
+                            "COMPLETED",
+                            "CANCELLED"
+                          ],
+                          "type": "string"
+                        },
+                        "supervisorId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "supervisorId",
+                        "status",
+                        "observationCursor",
+                        "allowedActions"
+                      ],
+                      "type": "object"
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "projectionVersion",
+                    "plan",
+                    "graph",
+                    "executions",
+                    "reviews",
+                    "supervisor",
+                    "recentEvents",
+                    "cursor",
+                    "digest",
+                    "truncated"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }

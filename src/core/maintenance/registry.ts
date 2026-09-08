@@ -12,7 +12,7 @@ export interface MaintenanceProgram {
   /** Legacy route hints are retained for durable compatibility. Normal improvement Plans use Resource Selector policy. */
   implementationRoutes?: string[];
   reviewRoutes?: string[];
-  autonomousScope: 'CONSERVATIVE' | 'STANDARD';
+  autonomousScope: MaintenanceProgramScope;
   autoMerge: boolean;
   enabled: boolean;
   failureCodePrefixes?: string[];
@@ -102,14 +102,28 @@ export interface ImprovementDiagnosisAttestation extends ImprovementDiagnosisPro
   createdAt: string;
 }
 
+export const IMPROVEMENT_CANDIDATE_RISKS = ['LOW', 'MEDIUM', 'HIGH'] as const;
+export type ImprovementCandidateRisk = (typeof IMPROVEMENT_CANDIDATE_RISKS)[number];
+export const IMPROVEMENT_CANDIDATE_STATUSES = [
+  'DISCOVERED',
+  'QUEUED',
+  'ADOPTED',
+  'REJECTED',
+  'STALE',
+  'COMPLETED',
+] as const;
+export type ImprovementCandidateStatus = (typeof IMPROVEMENT_CANDIDATE_STATUSES)[number];
+export const MAINTENANCE_PROGRAM_SCOPES = ['CONSERVATIVE', 'STANDARD'] as const;
+export type MaintenanceProgramScope = (typeof MAINTENANCE_PROGRAM_SCOPES)[number];
+
 export interface ImprovementCandidate {
   candidateId: string;
   programId: string;
   fingerprint: string;
   title: string;
   evidence: string[];
-  risk: 'LOW' | 'MEDIUM' | 'HIGH';
-  status: 'DISCOVERED' | 'QUEUED' | 'ADOPTED' | 'REJECTED' | 'STALE' | 'COMPLETED';
+  risk: ImprovementCandidateRisk;
+  status: ImprovementCandidateStatus;
   planId?: string;
   pullRequestId?: string;
 }
@@ -133,7 +147,7 @@ interface CandidateRow {
   pull_request_id: string | null;
 }
 
-const CANDIDATE_RISKS = new Set<ImprovementCandidate['risk']>(['LOW', 'MEDIUM', 'HIGH']);
+const CANDIDATE_RISKS = new Set<ImprovementCandidate['risk']>(IMPROVEMENT_CANDIDATE_RISKS);
 const DIAGNOSIS_CLASSIFICATIONS = new Set<ImprovementDiagnosisClassification>(
   IMPROVEMENT_DIAGNOSIS_CLASSIFICATIONS,
 );
@@ -143,15 +157,8 @@ const DIAGNOSIS_DISPOSITIONS = new Set<ImprovementDiagnosisDisposition>(
 const DIAGNOSIS_CONFIDENCES = new Set<ImprovementDiagnosisConfidence>(
   IMPROVEMENT_DIAGNOSIS_CONFIDENCES,
 );
-const CANDIDATE_STATUSES = new Set<ImprovementCandidate['status']>([
-  'DISCOVERED',
-  'QUEUED',
-  'ADOPTED',
-  'REJECTED',
-  'STALE',
-  'COMPLETED',
-]);
-const PROGRAM_SCOPES = new Set<MaintenanceProgram['autonomousScope']>(['CONSERVATIVE', 'STANDARD']);
+const CANDIDATE_STATUSES = new Set<ImprovementCandidate['status']>(IMPROVEMENT_CANDIDATE_STATUSES);
+const PROGRAM_SCOPES = new Set<MaintenanceProgram['autonomousScope']>(MAINTENANCE_PROGRAM_SCOPES);
 const CANDIDATE_TRANSITIONS: Readonly<Record<ImprovementCandidate['status'], readonly ImprovementCandidate['status'][]>> = {
   DISCOVERED: ['QUEUED', 'ADOPTED', 'REJECTED', 'STALE'],
   QUEUED: ['ADOPTED', 'REJECTED', 'STALE'],

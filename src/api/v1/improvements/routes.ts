@@ -4,20 +4,14 @@ import type { ForgeFlowApiModule } from '../../module.js';
 import { planDeliveryConfig } from '../../shared/delivery.js';
 import { bodyRecord, requiredText } from '../../shared/input.js';
 import { ForgeFlowError } from '../../../core/domain/errors.js';
+import { IMPROVEMENT_CANDIDATE_STATUSES } from '../../../core/maintenance/index.js';
 import type {
   ImprovementApplication,
   ImprovementCandidateStatus,
 } from '../../../application/improvements/index.js';
 import { maintenanceProgramBody } from './input.js';
 
-const CANDIDATE_STATUSES = new Set<ImprovementCandidateStatus>([
-  'DISCOVERED',
-  'QUEUED',
-  'ADOPTED',
-  'REJECTED',
-  'STALE',
-  'COMPLETED',
-]);
+const CANDIDATE_STATUSES = new Set<ImprovementCandidateStatus>(IMPROVEMENT_CANDIDATE_STATUSES);
 
 function listLimit(value: string | undefined): number {
   if (value === undefined) return 100;

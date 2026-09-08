@@ -108,3 +108,87 @@ void client.POST('/api/v1/executions/{executionId}/replace-provider-session', {
     header: { 'idempotency-key': 'replacement-key' },
   },
 });
+
+
+type ImprovementListQuery = NonNullable<ForgeFlowOperations['improvementsList']['parameters']['query']>;
+const improvementListQuery: ImprovementListQuery = {
+  programId: 'forgeflow-maintenance',
+  status: 'DISCOVERED',
+  limit: '25',
+};
+void improvementListQuery;
+
+// @ts-expect-error Improvement status is closed over the durable candidate state set.
+const invalidImprovementStatus: ImprovementListQuery = { status: 'NOT_A_STATUS' };
+void invalidImprovementStatus;
+
+type ImprovementDiscoverBody = ForgeFlowOperations['improvementsDiscover']['requestBody']['content']['application/json'];
+const improvementDiscoverBody: ImprovementDiscoverBody = {
+  programId: 'forgeflow-maintenance',
+  projectKey: 'forgeflow',
+  autonomousScope: 'CONSERVATIVE',
+  candidateRisk: 'LOW',
+};
+void improvementDiscoverBody;
+
+// @ts-expect-error Discovery requires both the program and project authority.
+const incompleteImprovementDiscoverBody: ImprovementDiscoverBody = { programId: 'forgeflow-maintenance' };
+void incompleteImprovementDiscoverBody;
+
+// Improvement adoption preserves the legacy absent-body path.
+void client.POST('/api/v1/improvements/{candidateId}/adopt', {
+  params: { path: { candidateId: 'candidate-example' } },
+});
+void client.POST('/api/v1/improvements/{candidateId}/adopt', {
+  params: { path: { candidateId: 'candidate-example' } },
+  body: null,
+});
+
+type SupervisorDecisionBody = ForgeFlowOperations['supervisorsDecide']['requestBody']['content']['application/json'];
+const supervisorDecisionBody: SupervisorDecisionBody = {
+  version: 1,
+  planId: 'plan-example',
+  supervisorId: 'supervisor-example',
+  observationCursor: 3,
+  projectionDigest: 'projection-digest',
+  idempotencyKey: 'decision-key',
+  preconditionSnapshot: {},
+  action: {
+    type: 'NO_ACTION',
+    payload: { type: 'NO_ACTION', reason: 'No safe mutation is required.' },
+  },
+};
+void supervisorDecisionBody;
+
+const supervisorDecisionBodyStringVersion: SupervisorDecisionBody = {
+  ...supervisorDecisionBody,
+  version: 'FORGEFLOW_SUPERVISOR_DECISION_V1',
+};
+void supervisorDecisionBodyStringVersion;
+
+const invalidSupervisorAction: SupervisorDecisionBody = {
+  ...supervisorDecisionBody,
+  action: {
+    // @ts-expect-error Supervisor action types are generated from the core protocol vocabulary.
+    type: 'RUN_ARBITRARY_SHELL',
+    payload: {},
+  },
+};
+void invalidSupervisorAction;
+
+type SupervisorProjectionResponse = ForgeFlowOperations['supervisorsGetProjection']['responses'][200]['content']['application/json'];
+declare const supervisorProjectionResponse: SupervisorProjectionResponse;
+const allowedSupervisorAction:
+  | 'NO_ACTION'
+  | 'CREATE_EXECUTION'
+  | 'CONTINUE_EXECUTION'
+  | 'RETRY_EXECUTION'
+  | 'SWITCH_ROUTE'
+  | 'REQUEST_REVIEW'
+  | 'CREATE_REPAIR'
+  | 'REPLAN_REMAINDER'
+  | 'CREATE_CHILD_PLAN'
+  | 'PAUSE_FOR_RESOURCE'
+  | 'PARK_EXTERNAL_GATE'
+  | 'ESCALATE' = supervisorProjectionResponse.supervisor.allowedActions[0]!;
+void allowedSupervisorAction;

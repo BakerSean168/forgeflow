@@ -39,7 +39,7 @@ test('Swagger transform documents Resource body while Fastify runtime remains un
   }
 });
 
-test('schema-hardening batches cover System, Resource, Plan and Execution while leaving later features untouched', () => {
+test('legacy schema-hardening overlay covers every non-Project V1 operation', () => {
   const ids = documentedOperationIds();
   assert.ok(ids.includes('systemHealth'));
   assert.ok(ids.includes('resourcesList'));
@@ -47,8 +47,9 @@ test('schema-hardening batches cover System, Resource, Plan and Execution while 
   assert.ok(ids.includes('releaseAcceptanceRecordAutonomousLifecycle'));
   assert.ok(ids.includes('plansCreate'));
   assert.ok(ids.includes('executionsRun'));
-  assert.equal(ids.includes('improvementsDiscover'), false);
-  assert.equal(ids.includes('supervisorsDecide'), false);
+  assert.ok(ids.includes('improvementsDiscover'));
+  assert.ok(ids.includes('supervisorsDecide'));
+  assert.equal(ids.length, 43);
 });
 
 
@@ -58,6 +59,7 @@ test('final OpenAPI contract keeps legacy optional request bodies optional', asy
   app.post('/api/v1/plans/:planId/reconcile', async () => ({ statusUrl: '/api/v1/plans/example' }));
   app.post('/api/v1/executions/:executionId/continue', async () => ({}));
   app.post('/api/v1/executions/:executionId/replace-provider-session', async () => ({}));
+  app.post('/api/v1/improvements/:candidateId/adopt', async () => ({}));
   await app.ready();
   try {
     const openapi = (await app.inject({ method: 'GET', url: '/api/openapi.json' })).json();
@@ -67,6 +69,7 @@ test('final OpenAPI contract keeps legacy optional request bodies optional', asy
       openapi.paths['/api/v1/executions/{executionId}/replace-provider-session'].post.requestBody.required,
       false,
     );
+    assert.equal(openapi.paths['/api/v1/improvements/{candidateId}/adopt'].post.requestBody.required, false);
   } finally {
     await app.close();
   }

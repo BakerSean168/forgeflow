@@ -2,17 +2,12 @@ import { randomUUID } from 'node:crypto';
 
 import { assertSafeEventPayload } from '../domain/events.js';
 import { ForgeFlowError } from '../domain/errors.js';
-import { validateActionShape, type SupervisorAction, type SupervisorActionPayload, type SupervisorActionType } from '../domain/action.js';
+import { SUPERVISOR_ACTION_TYPES, validateActionShape, type SupervisorAction, type SupervisorActionPayload, type SupervisorActionType } from '../domain/action.js';
 import type { SupervisorDecision } from '../domain/supervisor.js';
 
 export const SUPERVISOR_PROTOCOL_VERSION = 1 as const;
 const MAX_BYTES = 32_000;
 const MAX_STRING = 8_000;
-const ACTION_TYPES: readonly SupervisorActionType[] = [
-  'NO_ACTION', 'CREATE_EXECUTION', 'CONTINUE_EXECUTION', 'RETRY_EXECUTION', 'SWITCH_ROUTE', 'REQUEST_REVIEW',
-  'CREATE_REPAIR', 'REPLAN_REMAINDER', 'CREATE_CHILD_PLAN', 'PAUSE_FOR_RESOURCE',
-  'PARK_EXTERNAL_GATE', 'ESCALATE',
-];
 
 function skipWhitespace(input: string, index: number): number {
   while (index < input.length && /\s/.test(input[index] ?? '')) index++;
@@ -90,7 +85,7 @@ function text(value: unknown, code: string, max = MAX_STRING): string {
 }
 
 function isActionType(value: unknown): value is SupervisorActionType {
-  return typeof value === 'string' && ACTION_TYPES.includes(value as SupervisorActionType);
+  return typeof value === 'string' && SUPERVISOR_ACTION_TYPES.includes(value as SupervisorActionType);
 }
 
 function parsePayload(type: SupervisorActionType, value: unknown): SupervisorActionPayload {

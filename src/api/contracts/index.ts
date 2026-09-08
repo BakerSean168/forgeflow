@@ -2,8 +2,10 @@ import type { FastifySchema } from 'fastify';
 
 import type { ForgeFlowApiOperationId } from '../operations.js';
 import { EXECUTION_OPENAPI_SCHEMAS } from './executions.js';
+import { IMPROVEMENT_OPENAPI_SCHEMAS } from './improvements.js';
 import { PLAN_OPENAPI_SCHEMAS } from './plans.js';
 import { RESOURCE_OPENAPI_SCHEMAS } from './resources.js';
+import { SUPERVISOR_OPENAPI_SCHEMAS } from './supervisors.js';
 import { SYSTEM_OPENAPI_SCHEMAS } from './system.js';
 
 const overlays: Partial<Record<ForgeFlowApiOperationId, FastifySchema>> = Object.freeze({
@@ -11,6 +13,8 @@ const overlays: Partial<Record<ForgeFlowApiOperationId, FastifySchema>> = Object
   ...RESOURCE_OPENAPI_SCHEMAS,
   ...PLAN_OPENAPI_SCHEMAS,
   ...EXECUTION_OPENAPI_SCHEMAS,
+  ...IMPROVEMENT_OPENAPI_SCHEMAS,
+  ...SUPERVISOR_OPENAPI_SCHEMAS,
 });
 
 export function openApiContractOverlay(schema: FastifySchema): FastifySchema {
@@ -27,10 +31,32 @@ export function openApiContractOverlay(schema: FastifySchema): FastifySchema {
   };
 }
 
+export const REQUEST_BODY_OPERATION_IDS = Object.freeze(new Set<ForgeFlowApiOperationId>([
+  'releaseAcceptanceRecordAutonomousLifecycle',
+  'resourcesSetState',
+  'resourcesSetBindingState',
+  'plansReprioritize',
+  'plansCancel',
+  'plansCreate',
+  'plansCreateChild',
+  'plansAttachDelivery',
+  'plansReconcile',
+  'executionsContinue',
+  'executionsAdoptWorkspace',
+  'executionsAbortPausedProvider',
+  'executionsProviderCleanup',
+  'executionsReplaceProviderSession',
+  'maintenanceProgramsSetState',
+  'improvementsDiscover',
+  'improvementsAdopt',
+  'supervisorsDecide',
+]));
+
 export const OPTIONAL_REQUEST_BODY_OPERATION_IDS = Object.freeze(new Set<ForgeFlowApiOperationId>([
   'plansReconcile',
   'executionsContinue',
   'executionsReplaceProviderSession',
+  'improvementsAdopt',
 ]));
 
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
