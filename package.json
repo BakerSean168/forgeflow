@@ -12,7 +12,7 @@
     "check:boundary": "npm run check:product-boundary && npm run check:architecture",
     "smoke:improvement-diagnosis": "tsx scripts/smoke-improvement-diagnosis.mts",
     "smoke:autonomous-lifecycle": "node scripts/smoke-autonomous-lifecycle.mjs",
-    "check": "npm run check:boundary && npm run check-types && npm run check:api-contract && npm test && npm run build",
+    "check": "npm run check:boundary && npm run check:api-contract && npm run check-types && npm test && npm run build",
     "check:product-boundary": "node scripts/check-product-boundary.mjs",
     "check:architecture": "node scripts/check-architecture-boundary.mjs",
     "api:spec": "tsx scripts/generate-openapi.mts",
@@ -28,7 +28,7 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Autonomous software engineering system with durable planning, execution, review, recovery, delivery, and self-improvement.",
   "engines": {
     "node": ">=24"

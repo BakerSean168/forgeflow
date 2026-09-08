@@ -24,6 +24,8 @@ const launcher = read('openhands_tools/harness_agent_launcher.sh');
 const forgeFlowEnv = read('deploy/forgeflow.env.example');
 const planWorktrees = read('src/core/adapters/planWorktrees.ts');
 const appSource = read('src/app.ts');
+const systemApplicationSource = read('src/application/system/systemApplication.ts');
+const systemApiSource = read('src/api/v1/system/routes.ts');
 const literalSmoke = read('scripts/smoke-literal-worktree.mjs');
 const autonomousLifecycleSmoke = read('scripts/smoke-autonomous-lifecycle.mjs');
 
@@ -329,7 +331,7 @@ test('autonomous lifecycle smoke is explicit, public-API driven, and checks term
   assert.match(autonomousLifecycleSmoke, /release-acceptance\/autonomous-lifecycle/);
   assert.match(autonomousLifecycleSmoke, /SESSION_API_KEY missing inside OpenHands container/);
   assert.doesNotMatch(autonomousLifecycleSmoke, /process\.env\.FORGEFLOW_OPENHANDS_TOKEN/);
-  assert.match(appSource, /autonomousLifecycleAcceptance:/);
-  assert.match(appSource, /release-acceptance\/autonomous-lifecycle/);
+  assert.match(systemApplicationSource, /autonomousLifecycleAcceptance:/);
+  assert.match(systemApiSource, /release-acceptance\/autonomous-lifecycle/);
   assert.doesNotMatch(autonomousLifecycleSmoke, /forgeflow\.sqlite|better-sqlite3|node:sqlite/);
 });

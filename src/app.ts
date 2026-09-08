@@ -6,8 +6,17 @@ import path from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { registerOpenApi } from './api/openapi.js';
+import { registerApiErrorHandler } from './api/shared/errors.js';
+import { bodyRecord, requiredText } from './api/shared/input.js';
+import { planDeliveryConfig } from './api/shared/delivery.js';
 import { registerApiModules } from './api/module.js';
 import { createProjectApiModule } from './api/v1/projects.js';
+import { createSystemApiModule } from './api/v1/system/index.js';
+import { createResourceApiModule } from './api/v1/resources/index.js';
+import { createImprovementApiModule } from './api/v1/improvements/index.js';
+import { SystemApplication } from './application/system/index.js';
+import { ResourceApplication } from './application/resources/index.js';
+import { ImprovementApplication } from './application/improvements/index.js';
 
 import {
   AntigravityExecutionProvider,
@@ -19,7 +28,7 @@ import { PlanWorktreeManager } from './core/adapters/planWorktrees.js';
 import { ProjectScopedWorkspaceAdapter } from './core/adapters/projectScopedWorkspace.js';
 import { LiteLlmExecutionTelemetry } from './core/adapters/liteLlmTelemetry.js';
 import { GitHubCliDeliveryAdapter } from './core/adapters/githubDelivery.js';
-import { MaintenanceCandidateRegistry, type MaintenanceProgram } from './core/adapters/maintenance.js';
+import { MaintenanceCandidateRegistry } from './core/adapters/maintenance.js';
 import { ResourceSelectedImprovementDiagnosisClient } from './core/adapters/improvementDiagnosis.js';
 import { ExactShaSelfChangeCanary } from './core/adapters/selfChangeCanary.js';
 import { FileSelfChangePromotionQueue } from './core/adapters/selfChangePromotion.js';
@@ -46,7 +55,6 @@ import {
   providerNativeResources,
   type ResourceProbePort,
 } from './core/adapters/resourceDirectory.js';
-import type { PlanDeliveryConfig } from './core/domain/delivery.js';
 import { ForgeFlowError } from './core/domain/errors.js';
 import { EXECUTION_STATUSES, type ExecutionStatus } from './core/domain/execution.js';
 import { isTerminalPlanStatus, PLAN_STATUSES, type PlanStatus } from './core/domain/plan.js';
@@ -55,7 +63,6 @@ import {
   createExecutionResourceSelection,
   type ExecutionResource,
   type ExecutionResourceSelection,
-  type ResourceState,
 } from './core/domain/resourceRouting.js';
 import {
   DeliveryKernel,
@@ -72,7 +79,6 @@ import {
   AUTONOMOUS_ACCEPTANCE_EVENT,
   decodeAutonomousLifecycleAttestation,
   releaseAcceptanceAggregateId,
-  validateAutonomousLifecycleAcceptance,
 } from './core/orchestration/releaseAcceptance.js';
 import type { ExecutionProviderPort, WorkspaceProviderPort } from './core/orchestration/contracts.js';
 import {
@@ -85,7 +91,6 @@ import {
   createRuntimeAdmissionStatus,
   requiresAcpRuntimeAdmission,
   runtimeAdmissionKey,
-  runtimeAdmissionPhase,
 } from './core/orchestration/runtimeAdmission.js';
 import {
   PlanAutomationRuntime,
@@ -178,85 +183,6 @@ export interface ControlPlaneRuntime {
   projectPlanQueue?: ProjectPlanQueueRuntime;
   singleActivePlanEnabled: boolean;
   literalWorktreesEnabled: boolean;
-}
-
-function bodyRecord(value: unknown): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value))
-    throw new ForgeFlowError('REQUEST_OBJECT_REQUIRED');
-  return value as Record<string, unknown>;
-}
-
-function requiredText(value: unknown, code: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) throw new ForgeFlowError(code);
-  return value.trim();
-}
-
-function optionalTextArray(value: unknown, code: string): string[] | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (!Array.isArray(value)) throw new ForgeFlowError(code);
-  return value.map((item) => requiredText(item, code));
-}
-
-function maintenanceProgramBody(value: unknown): MaintenanceProgram {
-  const body = bodyRecord(value);
-  const scope = body.autonomousScope ?? 'CONSERVATIVE';
-  if (scope !== 'CONSERVATIVE' && scope !== 'STANDARD')
-    throw new ForgeFlowError('MAINTENANCE_PROGRAM_SCOPE_INVALID');
-  const risk = body.candidateRisk ?? 'LOW';
-  if (risk !== 'LOW' && risk !== 'MEDIUM' && risk !== 'HIGH')
-    throw new ForgeFlowError('CANDIDATE_RISK_INVALID');
-  const integer = (input: unknown, fallback: number, code: string) => {
-    if (input === undefined || input === null) return fallback;
-    if (typeof input !== 'number' || !Number.isInteger(input)) throw new ForgeFlowError(code);
-    return input;
-  };
-  return {
-    programId: requiredText(body.programId, 'MAINTENANCE_PROGRAM_REQUIRED'),
-    projectKey: requiredText(body.projectKey, 'PLAN_PROJECT_REQUIRED'),
-    ...(typeof body.repositoryPath === 'string' && body.repositoryPath.trim()
-      ? { repositoryPath: body.repositoryPath.trim() }
-      : {}),
-    ...(optionalTextArray(body.implementationRoutes, 'MAINTENANCE_IMPLEMENTATION_ROUTE_INVALID')
-      ? { implementationRoutes: optionalTextArray(body.implementationRoutes, 'MAINTENANCE_IMPLEMENTATION_ROUTE_INVALID')! }
-      : {}),
-    ...(optionalTextArray(body.reviewRoutes, 'MAINTENANCE_REVIEW_ROUTE_INVALID')
-      ? { reviewRoutes: optionalTextArray(body.reviewRoutes, 'MAINTENANCE_REVIEW_ROUTE_INVALID')! }
-      : {}),
-    autonomousScope: scope,
-    autoMerge: body.autoMerge === true,
-    enabled: body.enabled !== false,
-    ...(optionalTextArray(body.failureCodePrefixes, 'MAINTENANCE_FAILURE_PREFIX_INVALID')
-      ? { failureCodePrefixes: optionalTextArray(body.failureCodePrefixes, 'MAINTENANCE_FAILURE_PREFIX_INVALID')! }
-      : {}),
-    failureThreshold: integer(body.failureThreshold, 3, 'MAINTENANCE_FAILURE_THRESHOLD_INVALID'),
-    recentExecutionLimit: integer(body.recentExecutionLimit, 200, 'MAINTENANCE_EXECUTION_LIMIT_INVALID'),
-    candidateRisk: risk,
-  };
-}
-
-function planDeliveryConfig(value: unknown): PlanDeliveryConfig | undefined {
-  if (value === undefined || value === null) return undefined;
-  const body = bodyRecord(value);
-  if (typeof body.autoMerge !== 'boolean') throw new ForgeFlowError('DELIVERY_AUTO_MERGE_INVALID');
-  const mergeMethod = requiredText(body.mergeMethod ?? 'merge', 'DELIVERY_MERGE_METHOD_INVALID');
-  if (mergeMethod !== 'merge' && mergeMethod !== 'squash' && mergeMethod !== 'rebase')
-    throw new ForgeFlowError('DELIVERY_MERGE_METHOD_INVALID');
-  const requiredChecks =
-    body.requiredChecks === undefined
-      ? []
-      : Array.isArray(body.requiredChecks)
-        ? body.requiredChecks.map((item) => requiredText(item, 'DELIVERY_REQUIRED_CHECKS_INVALID'))
-        : (() => {
-            throw new ForgeFlowError('DELIVERY_REQUIRED_CHECKS_INVALID');
-          })();
-  return {
-    remote: requiredText(body.remote ?? 'origin', 'DELIVERY_REMOTE_REQUIRED'),
-    branch: requiredText(body.branch, 'DELIVERY_BRANCH_REQUIRED'),
-    targetBranch: requiredText(body.targetBranch ?? 'main', 'DELIVERY_TARGET_BRANCH_REQUIRED'),
-    autoMerge: body.autoMerge,
-    mergeMethod,
-    requiredChecks,
-  };
 }
 
 interface RouteSpec {
@@ -519,19 +445,6 @@ function readHostCacheMaintenance(file: string | undefined): HostCacheMaintenanc
   } catch {
     return fs.existsSync(file) ? { status: 'INVALID' } : { status: 'MISSING' };
   }
-}
-
-function statusFor(error: ForgeFlowError): number {
-  if (error.code.endsWith('_NOT_FOUND')) return 404;
-  if (
-    error.code.includes('STALE') ||
-    error.code.includes('DUPLICATE') ||
-    error.code.includes('CONFLICT') ||
-    error.code.includes('ACTIVE')
-  )
-    return 409;
-  if (error.code.includes('UNAVAILABLE') || error.code.includes('DISABLED')) return 503;
-  return 400;
 }
 
 async function buildExecutionAutomation(
@@ -1873,6 +1786,7 @@ export async function buildControlPlane(
     modelClient,
   );
   const app = Fastify({ logger: options.logger ?? true });
+  registerApiErrorHandler(app);
   await registerOpenApi(app);
   const availableSupervisorResourceIds = (): string[] =>
     automation
@@ -1950,51 +1864,6 @@ export async function buildControlPlane(
     checkedAt: item.checkedAt,
     errorCode: item.errorCode ?? null,
   });
-  const affinityEntries = [
-    ...DEFAULT_AFFINITY_POLICY.capabilities.IMPLEMENTATION,
-    ...DEFAULT_AFFINITY_POLICY.capabilities.REASONING,
-    ...(DEFAULT_AFFINITY_POLICY.providerNativeProfiles ?? []),
-  ];
-  const resourceProjection = (resource: ExecutionResource) => {
-    const override = repositories.resourceStateOverrides.get(resource.resourceId);
-    return {
-      resourceId: resource.resourceId,
-      displayName: resource.displayName ?? resource.providerId ?? resource.resourceId,
-      providerKey: resource.providerId ?? null,
-      resourceTier: resource.resourceTier,
-      resourceSequence: resource.resourceSequence,
-      state: resource.state,
-      transport: resource.bindings[0]?.transport ?? 'LITELLM_MANAGED',
-      modelBindings: resource.bindings.map((binding) => {
-        const affinity = affinityEntries.find(
-          (item) =>
-            item.modelFamily === binding.modelFamily &&
-            (!binding.agentBackend || item.agentBackend === binding.agentBackend),
-        );
-        return {
-          modelFamily: binding.modelFamily,
-          capability: affinity?.capability ?? null,
-          agentBackend: binding.agentBackend ?? affinity?.agentBackend ?? null,
-          modelRank: affinity?.modelRank ?? null,
-          enabled: binding.enabled,
-          ready: binding.ready,
-          deploymentId: binding.deploymentId ?? null,
-          routeModel: binding.routeModel ?? null,
-          protocol: binding.protocol ?? null,
-        };
-      }),
-      lastNormalizedFailure: override?.reasonClass
-        ? {
-            reasonClass: override.reasonClass,
-            sanitizedReason: override.sanitizedReason ?? null,
-            changedAt: override.updatedAt,
-            source: override.source,
-          }
-        : null,
-      suspendedUntil: override?.suspendedUntil ?? null,
-      version: override?.version ?? 0,
-    };
-  };
   const executionProjection = (execution: ReturnType<ForgeFlowRepositories['executions']['get']>) => ({
     ...execution,
     resourceSelection: repositories.resourceSelections.get(execution.identity.executionId) ?? null,
@@ -2028,501 +1897,41 @@ export async function buildControlPlane(
     return result;
   };
 
-  app.get('/api/health', async () => ({
-    status: 'ok',
-    service: 'forgeflow-control-plane',
-    apiVersion: 1,
-    mode: 'autonomous-engineering',
-    database: boot.dbFile,
-    releaseProvenance: releaseProvenance(),
-    autonomousLifecycleAcceptance: autonomousLifecycleAcceptanceProjection(),
-    workspaceStorage: workspaceStorage(),
-    hostCacheMaintenance: hostCacheMaintenance(),
-    planScheduling: {
-      singleActivePlanEnabled,
-      literalWorktreesEnabled,
-      leases: projectPlanQueue
-        ? repositories.projectPlans.listLeases().map((lease) => ({
-            ...lease,
-            queuedPlans: repositories.projectPlans.listQueue(lease.projectKey).length,
-          }))
-        : [],
+  const systemApplication = new SystemApplication({
+    dbFile: boot.dbFile,
+    repositories,
+    releaseProvenance,
+    autonomousLifecycleAcceptanceProjection,
+    workspaceStorage,
+    hostCacheMaintenance,
+    reconcileWorkspaceStorage: runWorkspaceStorageMaintenance,
+    singleActivePlanEnabled,
+    literalWorktreesEnabled,
+    projectPlanQueueEnabled: Boolean(projectPlanQueue),
+    supervisorRuntimeEnabled,
+    supervisorResourceSelectorEnabled: Boolean(modelClient),
+    supervisorDirectAdmissionEnabled,
+    supervisorDirectAdmissionHasDemand: directReasoningAdmissionHasDemand,
+    supervisorDirectAdmission,
+    supervisorMaxResourceAttempts,
+    improvementStatus: () => improvements.status(),
+    ...(automation ? { executionRuntime: automation } : {}),
+    autonomousPollingEnabled: Boolean(
+      automation && env.FORGEFLOW_AUTOMATION_RUNTIME_ENABLED === 'true',
+    ),
+  });
+
+
+  const resourceApplication = new ResourceApplication({
+    repositories,
+    requireRuntime: requireAutomation,
+    invalidateSupervisorResource: (resourceId) => {
+      repositories.supervisorDirectAdmissions.invalidateResource(resourceId);
+      supervisorDirectAdmission.invalidateResource(resourceId);
     },
-    supervisorRuntime: {
-      enabled: supervisorRuntimeEnabled,
-      resourceSelectorEnabled: Boolean(modelClient),
-      readinessAuthority: supervisorRuntimeEnabled
-        ? 'DIRECT_PROTOCOL_ADMISSION_AND_FEEDBACK'
-        : 'DISABLED',
-      resourceWakeMode: 'EVENT_DRIVEN_WITH_15M_FALLBACK',
-      directAdmission: {
-        enabled: supervisorDirectAdmissionEnabled,
-        demandDriven: true,
-        hasDemand: directReasoningAdmissionHasDemand(),
-        ...supervisorDirectAdmission.summary(),
-        durableCache: durableSupervisorAdmissionSummary(),
-      },
-      maxResourceAttempts: supervisorMaxResourceAttempts,
-    },
-    improvementRuntime: improvements.status(),
-    executionRuntime: {
-      enabled: Boolean(automation),
-      autonomousPolling: Boolean(automation && env.FORGEFLOW_AUTOMATION_RUNTIME_ENABLED === 'true'),
-      resourceSelectorEnabled: automation?.resourceSelectorEnabled ?? false,
-      resourceCount: automation?.resources.listResources().length ?? 0,
-      runtimeAdmission: automation
-        ? {
-            enabled: automation.runtimeAdmissionEnabled,
-            demandDriven: true,
-            hasDemand: automation.runtimeAdmissionHasDemand(),
-            ...automation.runtimeAdmission.summary(),
-            durableCache: (() => {
-              const items = repositories.runtimeAdmissions.list();
-              return {
-                checked: items.length,
-                ready: items.filter((item) => item.ready).length,
-                unready: items.filter((item) => !item.ready).length,
-              };
-            })(),
-          }
-        : {
-            enabled: false,
-            demandDriven: true,
-            hasDemand: false,
-            checked: 0,
-            ready: 0,
-            unready: 0,
-            implementationReady: 0,
-            reviewReady: 0,
-            durableCache: { checked: 0, ready: 0, unready: 0 },
-          },
-      routingAuthority: automation?.resourceSelectorEnabled
-        ? 'RESOURCE_SELECTOR'
-        : 'LEGACY_ROUTE_LIST',
-      compatibilityImplementationRoutes: automation?.compatibilityImplementationRoutes ?? [],
-      compatibilityReviewRoutes: automation?.compatibilityReviewRoutes ?? [],
-      implementationRoutes: automation?.implementationRoutes ?? [],
-      reviewRoutes: automation?.reviewRoutes ?? [],
-      automationProjectKeys: automation?.automationProjectKeys ?? [],
-      literalWorktreeProjectKeys: automation?.literalWorktreeProjectKeys ?? [],
-      requireDelivery: automation?.requireDelivery ?? false,
-    },
-  }));
-
-  app.get('/api/v1/release-acceptance/autonomous-lifecycle', async () =>
-    autonomousLifecycleAcceptanceProjection(),
-  );
-
-  app.post('/api/v1/release-acceptance/autonomous-lifecycle', async (request, reply) => {
-    const body = bodyRecord(request.body);
-    const planId = requiredText(body.planId, 'RELEASE_ACCEPTANCE_PLAN_REQUIRED');
-    const sourceSha = requiredText(body.sourceSha, 'RELEASE_ACCEPTANCE_SOURCE_SHA_INVALID');
-    const artifactSha256 = requiredText(
-      body.artifactSha256,
-      'RELEASE_ACCEPTANCE_ARTIFACT_SHA_INVALID',
-    );
-    const canonicalHead = requiredText(
-      body.canonicalHead,
-      'RELEASE_ACCEPTANCE_CANONICAL_SHA_INVALID',
-    );
-    if (
-      !Array.isArray(body.externalChecks) ||
-      !body.externalChecks.every((value) => typeof value === 'string')
-    )
-      throw new ForgeFlowError('RELEASE_ACCEPTANCE_EXTERNAL_CHECKS_INCOMPLETE');
-
-    const plan = repositories.plans.getPlan(planId);
-    const workItems = repositories.plans.listWorkItems(planId);
-    const executions = repositories.executions.listByPlan(planId);
-    const reviews = repositories.reviews.listByPlan(planId);
-    const sessions = repositories.sessions.listByPlan(planId);
-    const worktrees = repositories.planWorktrees.listByPlan(planId);
-    const activationFailureCount = repositories.events
-      .listRecentByAggregate(planId, 5_000)
-      .filter((event) => event.type === 'PLAN_ACTIVATION_FAILED').length;
-    const release = releaseProvenance();
-    const attestation = validateAutonomousLifecycleAcceptance({
-      release:
-        release.status === 'HEALTHY'
-          ? {
-              status: 'HEALTHY',
-              sourceSha: release.sourceSha,
-              artifactSha256: release.artifactSha256,
-            }
-          : { status: release.status },
-      expectedRelease: { sourceSha, artifactSha256 },
-      canonicalHead,
-      externalChecks: body.externalChecks,
-      plan: {
-        planId: plan.planId,
-        projectKey: plan.projectKey,
-        baseRevision: plan.baseRevision,
-        currentRevision: plan.currentRevision,
-        status: plan.status,
-      },
-      workItems: workItems.map((item) => ({
-        workItemId: item.workItemId,
-        itemKey: item.itemKey,
-        status: item.status,
-        ...(item.wave ? { wave: item.wave } : {}),
-        ...(item.integrationBaseRevision
-          ? { integrationBaseRevision: item.integrationBaseRevision }
-          : {}),
-        ...(item.exactAcceptedRevision
-          ? { exactAcceptedRevision: item.exactAcceptedRevision }
-          : {}),
-      })),
-      executions: executions.map((execution) => ({
-        executionId: execution.identity.executionId,
-        ...(execution.identity.workItemId ? { workItemId: execution.identity.workItemId } : {}),
-        phase: execution.identity.phase,
-        status: execution.status,
-        ...(execution.identity.sourceRevision
-          ? { sourceRevision: execution.identity.sourceRevision }
-          : {}),
-        ...(execution.resultRevision ? { resultRevision: execution.resultRevision } : {}),
-        createdAt: execution.createdAt,
-      })),
-      reviews: reviews.map((review) => ({
-        reviewId: review.reviewId,
-        workItemId: review.workItemId,
-        implementationExecutionId: review.implementationExecutionId,
-        ...(review.reviewerExecutionId ? { reviewerExecutionId: review.reviewerExecutionId } : {}),
-        ...(review.reviewedSha ? { reviewedSha: review.reviewedSha } : {}),
-        status: review.status,
-        ...(review.verdict ? { verdict: review.verdict } : {}),
-      })),
-      providerSessions: sessions
-        .filter((session) => Boolean(session.providerSessionId))
-        .map((session) => ({
-          executionId: session.executionId,
-          providerSessionId: session.providerSessionId!,
-          cleanupProven: Boolean(
-            repositories.evidence.find(
-              session.executionId,
-              'RECOVERY',
-              'provider-session-cleanup',
-            ) ||
-              repositories.evidence.find(
-                session.executionId,
-                'RECOVERY',
-                'operator-provider-cancellation-cleanup',
-              ),
-          ),
-        })),
-      worktrees: worktrees.map((worktree) => ({ state: worktree.state })),
-      lease: repositories.projectPlans.getLease(plan.projectKey),
-      activationFailureCount,
-    });
-
-    const aggregateId = releaseAcceptanceAggregateId(attestation.sourceSha);
-    const prior = repositories.events
-      .listRecentByAggregate(aggregateId, 100)
-      .filter((event) => event.type === AUTONOMOUS_ACCEPTANCE_EVENT)
-      .find((event) => {
-        try {
-          const existing = decodeAutonomousLifecycleAttestation(event.payload);
-          return existing.planId === attestation.planId;
-        } catch {
-          return false;
-        }
-      });
-    if (prior) {
-      const existing = decodeAutonomousLifecycleAttestation(prior.payload);
-      if (JSON.stringify(existing) !== JSON.stringify(attestation))
-        throw new ForgeFlowError('RELEASE_ACCEPTANCE_ATTESTATION_CONFLICT');
-      return { status: 'ATTESTED', attestation: existing, attestedAt: prior.occurredAt };
-    }
-
-    const event = repositories.events.appendNew({
-      aggregateId,
-      aggregateType: 'MAINTENANCE',
-      type: AUTONOMOUS_ACCEPTANCE_EVENT,
-      payload: attestation,
-      occurredAt: new Date().toISOString(),
-      correlationId: plan.planId,
-    });
-    reply.code(201);
-    return { status: 'ATTESTED', attestation, attestedAt: event.occurredAt };
+    reconcileSupervisorReadiness,
   });
 
-  app.get('/api/v1/maintenance/programs', async () => ({
-    items: improvementRegistry.listPrograms(),
-  }));
-
-  app.post('/api/v1/maintenance/programs/:programId/state', async (request) => {
-    const programId = requiredText(
-      (request.params as { programId?: string }).programId,
-      'MAINTENANCE_PROGRAM_REQUIRED',
-    );
-    const body = bodyRecord(request.body);
-    if (typeof body.enabled !== 'boolean')
-      throw new ForgeFlowError('MAINTENANCE_PROGRAM_STATE_INVALID');
-    return { program: improvementRegistry.setProgramEnabled(programId, body.enabled) };
-  });
-
-  app.get('/api/v1/improvements', async (request) => {
-    const query = request.query as { programId?: string; status?: string; limit?: string };
-    const limit = integerValue(query.limit, 100, 1, 1_000, 'CANDIDATE_LIST_LIMIT_INVALID');
-    const status = query.status;
-    const allowed = ['DISCOVERED', 'QUEUED', 'ADOPTED', 'REJECTED', 'STALE', 'COMPLETED'];
-    if (status && !allowed.includes(status)) throw new ForgeFlowError('CANDIDATE_STATUS_INVALID');
-    const items = improvementRegistry.list({
-      limit,
-      ...(query.programId ? { programId: query.programId } : {}),
-      ...(status ? { status: status as import('./core/adapters/maintenance.js').ImprovementCandidate['status'] } : {}),
-    });
-    return { items, count: items.length, runtime: improvements.status() };
-  });
-
-  app.get('/api/v1/improvements/:candidateId', async (request) => {
-    const candidateId = requiredText(
-      (request.params as { candidateId?: string }).candidateId,
-      'CANDIDATE_ID_REQUIRED',
-    );
-    const candidate = improvementRegistry.get(candidateId);
-    return {
-      candidate,
-      program: improvementRegistry.getProgram(candidate.programId),
-      plan: candidate.planId ? planView(candidate.planId) : null,
-      diagnoses: improvementRegistry.listDiagnoses(candidateId),
-      selfChange: improvements.selfChangeProjection(candidateId),
-    };
-  });
-
-  app.post('/api/v1/improvements/discover', async (request) => {
-    const program = maintenanceProgramBody(request.body);
-    const items = improvements.discover(program);
-    return { program: improvementRegistry.getProgram(program.programId), items, count: items.length };
-  });
-
-  app.post('/api/v1/improvements/cycle', async () => await improvements.runAutonomousCycle());
-
-  app.post('/api/v1/improvements/:candidateId/diagnose', async (request) => {
-    const candidateId = requiredText(
-      (request.params as { candidateId?: string }).candidateId,
-      'CANDIDATE_ID_REQUIRED',
-    );
-    return { diagnosis: await improvements.diagnoseCandidate(candidateId) };
-  });
-
-  app.post('/api/v1/improvements/:candidateId/adopt', async (request) => {
-    const candidateId = requiredText(
-      (request.params as { candidateId?: string }).candidateId,
-      'CANDIDATE_ID_REQUIRED',
-    );
-    const body = request.body === undefined || request.body === null ? {} : bodyRecord(request.body);
-    const priority =
-      body.priority === undefined
-        ? undefined
-        : typeof body.priority === 'number' && Number.isInteger(body.priority)
-          ? body.priority
-          : (() => { throw new ForgeFlowError('PROJECT_PLAN_PRIORITY_INVALID'); })();
-    const result = improvements.adopt(candidateId, {
-      ...(typeof body.repositoryPath === 'string' && body.repositoryPath.trim()
-        ? { repositoryPath: body.repositoryPath.trim() }
-        : {}),
-      ...(typeof body.baseRevision === 'string' && body.baseRevision.trim()
-        ? { baseRevision: body.baseRevision.trim() }
-        : {}),
-      ...(priority === undefined ? {} : { priority }),
-      acknowledgeHighRisk: body.acknowledgeHighRisk === true,
-      ...(body.delivery === undefined ? {} : { delivery: planDeliveryConfig(body.delivery)! }),
-    });
-    return result;
-  });
-
-  app.post('/api/v1/improvements/:candidateId/reconcile', async (request) => {
-    const candidateId = requiredText(
-      (request.params as { candidateId?: string }).candidateId,
-      'CANDIDATE_ID_REQUIRED',
-    );
-    return { candidate: improvements.reconcile(candidateId) };
-  });
-
-  app.post('/api/v1/improvements/:candidateId/self-canary', async (request) => {
-    const candidateId = requiredText(
-      (request.params as { candidateId?: string }).candidateId,
-      'CANDIDATE_ID_REQUIRED',
-    );
-    const canary = await improvements.runSelfCanary(candidateId);
-    return { canary, selfChange: improvements.selfChangeProjection(candidateId) };
-  });
-
-  app.post('/api/v1/improvements/:candidateId/self-promote', async (request, reply) => {
-    const candidateId = requiredText(
-      (request.params as { candidateId?: string }).candidateId,
-      'CANDIDATE_ID_REQUIRED',
-    );
-    const promotionRequest = improvements.requestSelfPromotion(candidateId);
-    void reply.code(202);
-    return {
-      promotionRequest,
-      selfChange: improvements.selfChangeProjection(candidateId),
-    };
-  });
-
-  app.post('/api/v1/improvements/:candidateId/reject', async (request) => {
-    const candidateId = requiredText(
-      (request.params as { candidateId?: string }).candidateId,
-      'CANDIDATE_ID_REQUIRED',
-    );
-    return { candidate: improvementRegistry.transition(candidateId, 'REJECTED') };
-  });
-
-  app.get('/api/v1/storage', async () => ({
-    storage: workspaceStorage(),
-    hostCacheMaintenance: hostCacheMaintenance(),
-  }));
-
-  app.post('/api/v1/storage/reconcile', async () => ({
-    storage: workspaceStorage(),
-    hostCacheMaintenance: hostCacheMaintenance(),
-    cleanup: await runWorkspaceStorageMaintenance(),
-  }));
-
-  app.get('/api/v1/supervisor-admission', async () => {
-    const durableItems = repositories.supervisorDirectAdmissions.list();
-    return {
-      enabled: supervisorDirectAdmissionEnabled,
-      demandDriven: true,
-      hasDemand: repositories.supervisors.hasNonTerminal(),
-      summary: supervisorDirectAdmission.summary(),
-      items: supervisorDirectAdmission.list().map(projectSupervisorAdmission),
-      durableCache: {
-        summary: {
-          checked: durableItems.length,
-          ready: durableItems.filter((item) => item.ready).length,
-          unready: durableItems.filter((item) => !item.ready).length,
-        },
-        items: durableItems.map(projectSupervisorAdmission),
-      },
-    };
-  });
-
-  app.get('/api/v1/runtime-admission', async () => {
-    const runtime = requireAutomation();
-    const project = (item: import('./core/domain/resourceRouting.js').RuntimeAdmissionRecord) => ({
-      phase: runtimeAdmissionPhase(item) ?? null,
-      agentBackend: item.agentBackend,
-      transport: item.transport,
-      resourceId: item.resourceId,
-      bindingId: item.bindingId,
-      modelFamily: item.modelFamily,
-      routeModel: item.routeModel,
-      ready: item.ready,
-      checkedAt: item.checkedAt,
-      errorCode: item.errorCode ?? null,
-    });
-    const durableItems = repositories.runtimeAdmissions.list();
-    return {
-      enabled: runtime.runtimeAdmissionEnabled,
-      demandDriven: true,
-      hasDemand: runtime.runtimeAdmissionHasDemand(),
-      summary: runtime.runtimeAdmission.summary(),
-      items: runtime.runtimeAdmission.list().map(project),
-      durableCache: {
-        summary: {
-          checked: durableItems.length,
-          ready: durableItems.filter((item) => item.ready).length,
-          unready: durableItems.filter((item) => !item.ready).length,
-        },
-        items: durableItems.map(project),
-      },
-    };
-  });
-
-  app.get('/api/v1/resources', async () => {
-    const runtime = requireAutomation();
-    if (runtime.resourceSelectorEnabled) await runtime.liteLlmResources.refresh();
-    return {
-      items: runtime.resources.listResources().map(resourceProjection),
-      count: runtime.resources.listResources().length,
-    };
-  });
-
-  app.post('/api/v1/resources/:resourceId/state', async (request) => {
-    const runtime = requireAutomation();
-    const resourceId = requiredText(
-      (request.params as { resourceId?: string }).resourceId,
-      'RESOURCE_ID_REQUIRED',
-    );
-    const body = bodyRecord(request.body);
-    const state = requiredText(body.state, 'RESOURCE_STATE_REQUIRED').toUpperCase();
-    if (!['ACTIVE', 'SUSPENDED', 'DISABLED'].includes(state))
-      throw new ForgeFlowError('RESOURCE_STATE_INVALID');
-    const resource = runtime.resources
-      .listResources()
-      .find((item) => item.resourceId === resourceId);
-    if (!resource) throw new ForgeFlowError('RESOURCE_NOT_FOUND');
-    const expectedVersion =
-      body.expectedVersion === undefined || body.expectedVersion === null
-        ? undefined
-        : integerValue(
-            String(body.expectedVersion),
-            0,
-            0,
-            Number.MAX_SAFE_INTEGER,
-            'RESOURCE_OVERRIDE_VERSION_INVALID',
-          );
-    const result = runtime.resourceState.manual(resourceId, state as ResourceState, {
-      ...(typeof body.reason === 'string' && body.reason.trim()
-        ? { reason: body.reason.trim() }
-        : {}),
-      ...(typeof body.suspendedUntil === 'string' && body.suspendedUntil.trim()
-        ? { suspendedUntil: body.suspendedUntil.trim() }
-        : {}),
-      ...(expectedVersion === undefined ? {} : { expectedVersion }),
-    });
-    if (result.status === 'rejected') throw new ForgeFlowError(result.reason ?? 'STALE_RESOURCE_STATE');
-    repositories.supervisorDirectAdmissions.invalidateResource(resourceId);
-    supervisorDirectAdmission.invalidateResource(resourceId);
-    repositories.runtimeAdmissions.invalidateResource(resourceId);
-    runtime.runtimeAdmission.invalidateResource(resourceId);
-    await runtime.reconcileRuntimeAdmission();
-    const resourceWake = await reconcileSupervisorReadiness();
-    const projected = runtime.resources
-      .listResources()
-      .find((item) => item.resourceId === resourceId);
-    if (!projected) throw new ForgeFlowError('RESOURCE_NOT_FOUND');
-    return {
-      resource: resourceProjection(projected),
-      mutation: result.status,
-      resourceWake,
-    };
-  });
-
-  app.post('/api/v1/resources/:resourceId/bindings/:bindingId/state', async (request) => {
-    const runtime = requireAutomation();
-    const params = request.params as { resourceId?: string; bindingId?: string };
-    const resourceId = requiredText(params.resourceId, 'RESOURCE_ID_REQUIRED');
-    const bindingId = requiredText(params.bindingId, 'RESOURCE_BINDING_ID_REQUIRED');
-    const body = bodyRecord(request.body);
-    const state = requiredText(body.state, 'RESOURCE_BINDING_STATE_REQUIRED').toUpperCase();
-    if (state !== 'ACTIVE' && state !== 'DISABLED')
-      throw new ForgeFlowError('RESOURCE_BINDING_STATE_INVALID');
-    const resource = runtime.resources
-      .listResources()
-      .find((item) => item.resourceId === resourceId);
-    if (!resource) throw new ForgeFlowError('RESOURCE_NOT_FOUND');
-    const binding = resource.bindings.find((item) => item.bindingId === bindingId);
-    if (!binding) throw new ForgeFlowError('RESOURCE_BINDING_NOT_FOUND');
-    if (!runtime.resourceStateEffect.applyBinding || !binding.deploymentId)
-      throw new ForgeFlowError('RESOURCE_BINDING_STATE_UNSUPPORTED');
-    await runtime.resourceStateEffect.applyBinding(resource, binding, state);
-    await runtime.liteLlmResources.refresh();
-    repositories.supervisorDirectAdmissions.invalidateResource(resourceId);
-    supervisorDirectAdmission.invalidateResource(resourceId);
-    repositories.runtimeAdmissions.invalidateBinding(resourceId, bindingId);
-    runtime.runtimeAdmission.invalidateBinding(resourceId, bindingId);
-    await runtime.reconcileRuntimeAdmission();
-    const resourceWake = await reconcileSupervisorReadiness();
-    const projected = runtime.resources
-      .listResources()
-      .find((item) => item.resourceId === resourceId);
-    if (!projected) throw new ForgeFlowError('RESOURCE_NOT_FOUND');
-    return { resource: resourceProjection(projected), bindingId, state, resourceWake };
-  });
 
   const planView = (planId: string) => {
     const plan = repositories.plans.getPlan(planId);
@@ -2542,6 +1951,13 @@ export async function buildControlPlane(
       supervisor: repositories.supervisors.getByPlanId(planId),
     };
   };
+
+  const improvementApplication = new ImprovementApplication(
+    improvementRegistry,
+    improvements,
+    planView,
+  );
+
 
   app.get('/api/v1/plans', async (request) => {
     const query = request.query as { limit?: string; status?: string; view?: string };
@@ -3064,18 +2480,12 @@ export async function buildControlPlane(
     return await supervisorActions.execute(decision, projection);
   });
 
-  app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof ForgeFlowError) {
-      void reply.code(statusFor(error)).send({ error: error.code, message: error.message });
-      return;
-    }
-    void reply.code(500).send({
-      error: 'INTERNAL_ERROR',
-      message: error instanceof Error ? error.message : String(error),
-    });
-  });
-
-  await registerApiModules(app, [createProjectApiModule(projects)]);
+  await registerApiModules(app, [
+    createSystemApiModule(systemApplication),
+    createProjectApiModule(projects),
+    createResourceApiModule(resourceApplication),
+    createImprovementApiModule(improvementApplication),
+  ]);
 
   const supervisorInterval = supervisorRuntimeEnabled
     ? setInterval(

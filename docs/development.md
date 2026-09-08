@@ -31,6 +31,17 @@ Prefer small commits that preserve a green durable baseline. For behavior change
 
 Changes that affect execution isolation, review provenance, resource selection, recovery, cancellation, or delivery should include a failure-path test in addition to the success path. Active Plan cancellation tests must prove that provider/worktree cleanup failure preserves the current project lease and prevents the next queued Plan from activating.
 
+
+## Architecture authority
+
+Before structural changes, read:
+
+- [`platform-architecture-north-star.md`](./platform-architecture-north-star.md) for dependency direction, extension ownership, and the open-source patterns intentionally adopted into ForgeFlow;
+- [`platform-refactor-v2.md`](./platform-refactor-v2.md) for the active phased migration and ticket acceptance criteria;
+- [`architecture.md`](./architecture.md) for detailed runtime invariants that structural changes must preserve.
+
+The north-star document defines where new code belongs. The refactor plan defines migration order. The runtime architecture defines behavior that refactors must not weaken.
+
 ## Product boundary
 
 ForgeFlow is an autonomous software engineering system. UI decoration, game/character state, simulated organizations, and alternate routing authorities do not belong in the core repository. `npm run check:boundary` guards the repository against historical product/runtime namespaces and paths being reintroduced.
