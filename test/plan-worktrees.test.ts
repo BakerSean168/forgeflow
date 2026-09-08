@@ -289,6 +289,78 @@ test('writer retry repairs corrupted nested submodule Git metadata before handof
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+test('provider cleanup repairs corrupted nested submodule metadata without resetting a committed candidate', async () => {
+  const value = fixture({ withSubmodule: true });
+  assert.ok(value.submoduleRevision);
+  const item = await value.manager.ensureWorkItem({
+    projectKey: value.plan.projectKey,
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-submodule-cleanup',
+    value.revision,
+  );
+  const uid = process.getuid?.() ?? 1000;
+  const gid = process.getgid?.() ?? 1000;
+  const owned = await value.manager.prepareWriterForExecution(
+    item.worktreeId,
+    'exec-submodule-cleanup',
+    value.revision,
+    uid,
+    gid,
+  );
+  value.repositories.executions.updateStatus('exec-submodule-cleanup', 'RUNNING');
+  fs.writeFileSync(path.join(item.hostPath, 'README.md'), 'base\ncandidate\n');
+  git(item.hostPath, ['add', 'README.md']);
+  git(item.hostPath, ['commit', '-m', 'feat: preserve committed cleanup candidate']);
+  const candidate = git(item.hostPath, ['rev-parse', 'HEAD']);
+  assert.notEqual(candidate, value.revision);
+  value.repositories.executions.recordResult('exec-submodule-cleanup', {
+    status: 'FAILED',
+    errorCode: 'WORKSPACE_GIT_FAILED',
+    retryable: true,
+  });
+
+  const submoduleGitfile = path.join(item.hostPath, 'vendor', 'knowledge', '.git');
+  fs.chmodSync(submoduleGitfile, 0o644);
+  fs.writeFileSync(submoduleGitfile, 'gitdir: /tmp/forgeflow-broken-cleanup-submodule\n');
+  assert.throws(() => git(item.hostPath, ['status', '--porcelain=v1']));
+
+  const prepared = await value.manager.prepareCancellationAccess(
+    item.worktreeId,
+    'exec-submodule-cleanup',
+    uid,
+    gid,
+  );
+  assert.equal(prepared.ownerExecutionId, 'exec-submodule-cleanup');
+  assert.equal(git(item.hostPath, ['rev-parse', 'HEAD']), candidate);
+  assert.match(
+    git(item.hostPath, ['submodule', 'status', '--recursive']),
+    new RegExp('^' + value.submoduleRevision + ' vendor/knowledge'),
+  );
+  assert.equal(git(item.hostPath, ['status', '--porcelain=v1']), '');
+  assert.doesNotMatch(
+    fs.readFileSync(submoduleGitfile, 'utf8'),
+    /\/tmp\/forgeflow-broken-cleanup-submodule/,
+  );
+  assert.equal(fs.statSync(submoduleGitfile).mode & 0o777, 0o444);
+
+  await value.manager.abandonExecutionWorktree(
+    owned.worktreeId,
+    'exec-submodule-cleanup',
+    value.revision,
+  );
+  await value.manager.retirePlan(value.plan.planId, uid);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
 test('worker Git object directories are sticky before shared object creation access is granted', async () => {
   const value = fixture();
   const item = await value.manager.ensureWorkItem({

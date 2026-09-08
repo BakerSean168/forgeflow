@@ -401,6 +401,10 @@ export class PlanWorktreeManager {
     await this.restoreWorktreeAdminSourceAccess(current);
     await this.restoreWorktreeRefSourceAccess(current);
     await this.verifyRegistered(current, undefined, current.branchRef, current.role === 'REVIEW');
+    if (current.role === 'WORK_ITEM' || current.role === 'DELIVERY_REPAIR') {
+      await this.initializePinnedSubmodules(current, true);
+      await this.verifyRegistered(current, undefined, current.branchRef, false);
+    }
     return await this.grantAgentFilesystemAccess(current, uid, gid);
   }
 
