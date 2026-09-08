@@ -14,7 +14,7 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 }
 
-function fixture(options: { withSubmodule?: boolean } = {}) {
+function fixture(options: { withSubmodule?: boolean; privateSubmoduleUrl?: boolean } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-plan-worktrees-'));
   const repositoriesRoot = path.join(root, 'repositories');
   const repository = path.join(repositoriesRoot, 'project-gamma');
@@ -53,6 +53,22 @@ function fixture(options: { withSubmodule?: boolean } = {}) {
       ],
       { stdio: 'ignore' },
     );
+    if (options.privateSubmoduleUrl) {
+      git(repository, [
+        'config',
+        '-f',
+        '.gitmodules',
+        'submodule.vendor/knowledge.url',
+        'https://example.invalid/private-submodule.git',
+      ]);
+      git(path.join(repository, 'vendor', 'knowledge'), [
+        'remote',
+        'set-url',
+        'origin',
+        'https://example.invalid/private-submodule.git',
+      ]);
+      git(repository, ['add', '.gitmodules']);
+    }
     git(repository, ['commit', '-m', 'chore: pin submodule']);
   }
   const revision = git(repository, ['rev-parse', 'HEAD']);
@@ -174,7 +190,7 @@ test('PlanWorktreeManager creates one literal shared-common-dir worktree per rol
 
 
 test('literal worktrees initialize exact pinned submodules before writer access', async () => {
-  const value = fixture({ withSubmodule: true });
+  const value = fixture({ withSubmodule: true, privateSubmoduleUrl: true });
   assert.ok(value.submoduleRevision);
   const integration = await value.manager.ensureIntegration({
     projectKey: value.plan.projectKey,
@@ -290,7 +306,7 @@ test('writer retry repairs corrupted nested submodule Git metadata before handof
 });
 
 test('provider cleanup repairs corrupted nested submodule metadata without resetting a committed candidate', async () => {
-  const value = fixture({ withSubmodule: true });
+  const value = fixture({ withSubmodule: true, privateSubmoduleUrl: true });
   assert.ok(value.submoduleRevision);
   const item = await value.manager.ensureWorkItem({
     projectKey: value.plan.projectKey,
