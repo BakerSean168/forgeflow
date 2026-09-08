@@ -1698,12 +1698,30 @@ export class PlanWorktreeManager {
     return overrides;
   }
 
+  private prepareSubmoduleRepairSourceAccess(worktree: PlanWorktree): void {
+    const source = this.repositoryIdentity(worktree.repositoryPath);
+    const root = fs.lstatSync(worktree.hostPath);
+    failClosed(root.isDirectory() && !root.isSymbolicLink(), 'WORKTREE_SUBMODULE_REPAIR_PATH_UNSAFE');
+    fs.lchownSync(worktree.hostPath, source.uid, source.gid);
+    fs.chmodSync(worktree.hostPath, (root.mode & 0o7777) | 0o700);
+
+    const gitmodules = path.join(worktree.hostPath, '.gitmodules');
+    const metadata = fs.lstatSync(gitmodules, { throwIfNoEntry: false });
+    failClosed(
+      Boolean(metadata?.isFile()) && !metadata!.isSymbolicLink(),
+      'WORKTREE_SUBMODULE_METADATA_INVALID',
+    );
+    fs.lchownSync(gitmodules, source.uid, source.gid);
+    fs.chmodSync(gitmodules, (metadata!.mode & 0o777) | 0o400);
+  }
+
   private async initializePinnedSubmodules(
     worktree: PlanWorktree,
     repairExisting: boolean,
   ): Promise<string[]> {
     const configured = await this.configuredSubmodules(worktree);
     if (configured.length === 0) return [];
+    if (repairExisting) this.prepareSubmoduleRepairSourceAccess(worktree);
     const localOverrides = await this.localSubmoduleUrlOverrides(
       worktree,
       configured,
