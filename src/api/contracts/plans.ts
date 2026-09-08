@@ -254,7 +254,35 @@ export const PLAN_OPENAPI_SCHEMAS: SchemaMap = {
     body: {
       type: 'object',
       additionalProperties: true,
-      properties: { mode: { type: 'string' } },
+      properties: {
+        mode: { type: 'string' },
+        scopeAmendments: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['itemKey', 'expectedWriteScopes', 'writeScopes', 'reason'],
+            properties: {
+              itemKey: { type: 'string' },
+              expectedWriteScopes: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 64,
+                items: { type: 'string' },
+              },
+              writeScopes: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 64,
+                items: { type: 'string' },
+              },
+              reason: { type: 'string' },
+            },
+          },
+        },
+      },
     },
     response: {
       // Retain the legacy generated 200 contract while documenting the runtime's real 202.

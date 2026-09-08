@@ -1,5 +1,5 @@
 import { ForgeFlowError } from '../../../core/domain/errors.js';
-import type { PlanGraphItemInput } from '../../../application/plans/index.js';
+import type { PlanGraphItemInput, PlanWriteScopeAmendmentInput } from '../../../application/plans/index.js';
 import { bodyRecord, requiredText } from '../../shared/input.js';
 
 export function integerInput(
@@ -49,6 +49,28 @@ export function graphItems(
       conflictKeys: Array.isArray(entry.conflictKeys)
         ? entry.conflictKeys.map((key) => requiredText(key, 'WORK_ITEM_CONFLICT_KEYS_INVALID'))
         : [],
+    };
+  });
+}
+
+export function writeScopeAmendments(value: unknown): PlanWriteScopeAmendmentInput[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length === 0 || value.length > 20)
+    throw new ForgeFlowError('WORK_ITEM_SCOPE_AMENDMENTS_INVALID');
+  const scopes = (raw: unknown, code: string): string[] => {
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 64) throw new ForgeFlowError(code);
+    return raw.map((scope) => requiredText(scope, code));
+  };
+  return value.map((raw) => {
+    const entry = bodyRecord(raw);
+    return {
+      itemKey: requiredText(entry.itemKey, 'WORK_ITEM_SCOPE_AMENDMENT_ITEM_INVALID'),
+      expectedWriteScopes: scopes(
+        entry.expectedWriteScopes,
+        'WORK_ITEM_SCOPE_AMENDMENT_EXPECTED_SCOPES_INVALID',
+      ),
+      writeScopes: scopes(entry.writeScopes, 'WORK_ITEM_SCOPE_AMENDMENT_SCOPES_INVALID'),
+      reason: requiredText(entry.reason, 'WORK_ITEM_SCOPE_AMENDMENT_REASON_INVALID'),
     };
   });
 }

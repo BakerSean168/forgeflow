@@ -18,6 +18,13 @@ export interface PlanGraphItemInput {
   conflictKeys: string[];
 }
 
+export interface PlanWriteScopeAmendmentInput {
+  itemKey: string;
+  expectedWriteScopes: string[];
+  writeScopes: string[];
+  reason: string;
+}
+
 export interface PlanAutomationPort {
   workspace: WorkspaceProviderPort;
   literalWorktreeProjectKeys: string[];
@@ -306,11 +313,32 @@ export class PlanApplication {
     return await runtime.plans.runPlan(planId);
   }
 
-  async reconcile(planId: string, mode: string) {
+  async reconcile(
+    planId: string,
+    mode: string,
+    scopeAmendments: PlanWriteScopeAmendmentInput[] = [],
+  ) {
+    if (scopeAmendments.length > 0 && mode !== 'retry-finalization' && mode !== 'retry_finalization')
+      throw new ForgeFlowError('WORK_ITEM_SCOPE_AMENDMENT_MODE_INVALID');
+    const amended =
+      scopeAmendments.length > 0
+        ? this.dependencies.repositories.plans.amendFailedWorkItemWriteScopes(planId, scopeAmendments)
+        : undefined;
     const runtime = this.dependencies.requireAutomation();
     await this.dependencies.runtimeAdmission.request();
     const result = await runtime.plans.reconcilePlan(planId, mode);
-    return { ...(result as Record<string, unknown>), statusUrl: '/api/v1/plans/' + encodeURIComponent(planId) };
+    return {
+      ...(result as Record<string, unknown>),
+      ...(amended
+        ? {
+            scopeAmendments: amended.workItems.map((item) => ({
+              itemKey: item.itemKey,
+              writeScopes: item.writeScopes,
+            })),
+          }
+        : {}),
+      statusUrl: '/api/v1/plans/' + encodeURIComponent(planId),
+    };
   }
 
   private requireProjectPlanQueue(): ProjectPlanQueueRuntime {

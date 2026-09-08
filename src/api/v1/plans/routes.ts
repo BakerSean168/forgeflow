@@ -6,7 +6,7 @@ import { bodyRecord, requiredText } from '../../shared/input.js';
 import { ForgeFlowError } from '../../../core/domain/errors.js';
 import { PLAN_STATUSES, type PlanStatus } from '../../../core/domain/plan.js';
 import type { PlanApplication } from '../../../application/plans/index.js';
-import { graphItems, integerInput } from './input.js';
+import { graphItems, integerInput, writeScopeAmendments } from './input.js';
 
 export function createPlanApiModule(plans: PlanApplication): ForgeFlowApiModule {
   return {
@@ -133,7 +133,11 @@ export function createPlanApiModule(plans: PlanApplication): ForgeFlowApiModule 
         const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
         const body = request.body === undefined ? {} : bodyRecord(request.body);
         const mode = body.mode === undefined ? 'auto' : requiredText(body.mode, 'PLAN_RECONCILE_MODE_INVALID');
-        const result = await plans.reconcile(planId, mode);
+        const result = await plans.reconcile(
+          planId,
+          mode,
+          writeScopeAmendments(body.scopeAmendments),
+        );
         reply.code(202);
         return result;
       });

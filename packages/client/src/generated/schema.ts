@@ -2049,6 +2049,12 @@ export interface operations {
             readonly content: {
                 readonly "application/json": {
                     readonly mode?: string;
+                    readonly scopeAmendments?: readonly {
+                        readonly expectedWriteScopes: readonly string[];
+                        readonly itemKey: string;
+                        readonly reason: string;
+                        readonly writeScopes: readonly string[];
+                    }[];
                 } & {
                     readonly [key: string]: unknown;
                 };
