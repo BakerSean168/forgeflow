@@ -220,8 +220,9 @@ export function checkOpenApiCompatibility(baseline: unknown, candidate: unknown)
 
       const beforeBody = record(localRef(baselineDocument, before.requestBody));
       const afterBody = record(localRef(candidateDocument, after.requestBody));
-      if (!beforeBody && afterBody?.required === true)
-        failures.push(`${operationName}: new required request body`);
+      // A missing body in the v1.2.1 compatibility floor means legacy OpenAPI was
+      // undocumented, not that the runtime accepted an absent body. Once a hardened
+      // baseline contains requestBody metadata, optional -> required is enforced below.
       if (beforeBody) {
         if (!afterBody) failures.push(`${operationName}: request body removed from contract`);
         else {

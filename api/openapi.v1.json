@@ -14,6 +14,96 @@
         "operationId": "systemHealth",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "apiVersion": {
+                      "enum": [
+                        1
+                      ],
+                      "type": "integer"
+                    },
+                    "autonomousLifecycleAcceptance": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "database": {
+                      "type": "string"
+                    },
+                    "executionRuntime": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "hostCacheMaintenance": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "improvementRuntime": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "mode": {
+                      "enum": [
+                        "autonomous-engineering"
+                      ],
+                      "type": "string"
+                    },
+                    "planScheduling": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "releaseProvenance": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "service": {
+                      "enum": [
+                        "forgeflow-control-plane"
+                      ],
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "ok"
+                      ],
+                      "type": "string"
+                    },
+                    "supervisorRuntime": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "workspaceStorage": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "service",
+                    "apiVersion",
+                    "mode",
+                    "releaseProvenance",
+                    "autonomousLifecycleAcceptance",
+                    "workspaceStorage",
+                    "hostCacheMaintenance",
+                    "planScheduling",
+                    "supervisorRuntime",
+                    "improvementRuntime",
+                    "executionRuntime"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -831,14 +921,119 @@
         "operationId": "releaseAcceptanceGetAutonomousLifecycle",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
       },
       "post": {
         "operationId": "releaseAcceptanceRecordAutonomousLifecycle",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "artifactSha256": {
+                    "type": "string"
+                  },
+                  "canonicalHead": {
+                    "type": "string"
+                  },
+                  "externalChecks": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "planId": {
+                    "type": "string"
+                  },
+                  "sourceSha": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "planId",
+                  "sourceSha",
+                  "artifactSha256",
+                  "canonicalHead",
+                  "externalChecks"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "attestation": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "attestedAt": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "ATTESTED"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "attestation",
+                    "attestedAt"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "attestation": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "attestedAt": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "ATTESTED"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "attestation",
+                    "attestedAt"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -849,6 +1044,232 @@
         "operationId": "resourcesList",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "displayName": {
+                            "type": "string"
+                          },
+                          "lastNormalizedFailure": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "changedAt": {
+                                    "type": "string"
+                                  },
+                                  "reasonClass": {
+                                    "type": "string"
+                                  },
+                                  "sanitizedReason": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "source": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "reasonClass",
+                                  "sanitizedReason",
+                                  "changedAt",
+                                  "source"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "modelBindings": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "agentBackend": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "capability": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "deploymentId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "enabled": {
+                                  "type": "boolean"
+                                },
+                                "modelFamily": {
+                                  "type": "string"
+                                },
+                                "modelRank": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "protocol": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "ready": {
+                                  "type": "boolean"
+                                },
+                                "routeModel": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "modelFamily",
+                                "capability",
+                                "agentBackend",
+                                "modelRank",
+                                "enabled",
+                                "ready",
+                                "deploymentId",
+                                "routeModel",
+                                "protocol"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "providerKey": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "resourceId": {
+                            "type": "string"
+                          },
+                          "resourceSequence": {
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "resourceTier": {
+                            "enum": [
+                              "PROMOTIONAL",
+                              "FREE",
+                              "SUBSCRIPTION",
+                              "METERED",
+                              "OTHER"
+                            ],
+                            "type": "string"
+                          },
+                          "state": {
+                            "enum": [
+                              "ACTIVE",
+                              "SUSPENDED",
+                              "DISABLED"
+                            ],
+                            "type": "string"
+                          },
+                          "suspendedUntil": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "transport": {
+                            "enum": [
+                              "LITELLM_MANAGED",
+                              "PROVIDER_NATIVE"
+                            ],
+                            "type": "string"
+                          },
+                          "version": {
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "resourceId",
+                          "displayName",
+                          "providerKey",
+                          "resourceTier",
+                          "resourceSequence",
+                          "state",
+                          "transport",
+                          "modelBindings",
+                          "lastNormalizedFailure",
+                          "suspendedUntil",
+                          "version"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -875,8 +1296,278 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bindingId": {
+                      "type": "string"
+                    },
+                    "resource": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "displayName": {
+                          "type": "string"
+                        },
+                        "lastNormalizedFailure": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "changedAt": {
+                                  "type": "string"
+                                },
+                                "reasonClass": {
+                                  "type": "string"
+                                },
+                                "sanitizedReason": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "reasonClass",
+                                "sanitizedReason",
+                                "changedAt",
+                                "source"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "modelBindings": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "agentBackend": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "capability": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "deploymentId": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "modelFamily": {
+                                "type": "string"
+                              },
+                              "modelRank": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "protocol": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "ready": {
+                                "type": "boolean"
+                              },
+                              "routeModel": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "modelFamily",
+                              "capability",
+                              "agentBackend",
+                              "modelRank",
+                              "enabled",
+                              "ready",
+                              "deploymentId",
+                              "routeModel",
+                              "protocol"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "providerKey": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "resourceId": {
+                          "type": "string"
+                        },
+                        "resourceSequence": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "resourceTier": {
+                          "enum": [
+                            "PROMOTIONAL",
+                            "FREE",
+                            "SUBSCRIPTION",
+                            "METERED",
+                            "OTHER"
+                          ],
+                          "type": "string"
+                        },
+                        "state": {
+                          "enum": [
+                            "ACTIVE",
+                            "SUSPENDED",
+                            "DISABLED"
+                          ],
+                          "type": "string"
+                        },
+                        "suspendedUntil": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "transport": {
+                          "enum": [
+                            "LITELLM_MANAGED",
+                            "PROVIDER_NATIVE"
+                          ],
+                          "type": "string"
+                        },
+                        "version": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "resourceId",
+                        "displayName",
+                        "providerKey",
+                        "resourceTier",
+                        "resourceSequence",
+                        "state",
+                        "transport",
+                        "modelBindings",
+                        "lastNormalizedFailure",
+                        "suspendedUntil",
+                        "version"
+                      ],
+                      "type": "object"
+                    },
+                    "resourceWake": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "becameAvailable": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "scheduledWakes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "becameAvailable",
+                        "scheduledWakes"
+                      ],
+                      "type": "object"
+                    },
+                    "state": {
+                      "enum": [
+                        "ACTIVE",
+                        "DISABLED"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "resource",
+                    "bindingId",
+                    "state",
+                    "resourceWake"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -895,8 +1586,290 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "expectedVersion": {
+                    "anyOf": [
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "suspendedUntil": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "mutation": {
+                      "type": "string"
+                    },
+                    "resource": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "displayName": {
+                          "type": "string"
+                        },
+                        "lastNormalizedFailure": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "changedAt": {
+                                  "type": "string"
+                                },
+                                "reasonClass": {
+                                  "type": "string"
+                                },
+                                "sanitizedReason": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "reasonClass",
+                                "sanitizedReason",
+                                "changedAt",
+                                "source"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "modelBindings": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "agentBackend": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "capability": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "deploymentId": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "modelFamily": {
+                                "type": "string"
+                              },
+                              "modelRank": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "protocol": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "ready": {
+                                "type": "boolean"
+                              },
+                              "routeModel": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "modelFamily",
+                              "capability",
+                              "agentBackend",
+                              "modelRank",
+                              "enabled",
+                              "ready",
+                              "deploymentId",
+                              "routeModel",
+                              "protocol"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "providerKey": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "resourceId": {
+                          "type": "string"
+                        },
+                        "resourceSequence": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "resourceTier": {
+                          "enum": [
+                            "PROMOTIONAL",
+                            "FREE",
+                            "SUBSCRIPTION",
+                            "METERED",
+                            "OTHER"
+                          ],
+                          "type": "string"
+                        },
+                        "state": {
+                          "enum": [
+                            "ACTIVE",
+                            "SUSPENDED",
+                            "DISABLED"
+                          ],
+                          "type": "string"
+                        },
+                        "suspendedUntil": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "transport": {
+                          "enum": [
+                            "LITELLM_MANAGED",
+                            "PROVIDER_NATIVE"
+                          ],
+                          "type": "string"
+                        },
+                        "version": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "resourceId",
+                        "displayName",
+                        "providerKey",
+                        "resourceTier",
+                        "resourceSequence",
+                        "state",
+                        "transport",
+                        "modelBindings",
+                        "lastNormalizedFailure",
+                        "suspendedUntil",
+                        "version"
+                      ],
+                      "type": "object"
+                    },
+                    "resourceWake": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "becameAvailable": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "scheduledWakes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "becameAvailable",
+                        "scheduledWakes"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "resource",
+                    "mutation",
+                    "resourceWake"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -907,6 +1880,233 @@
         "operationId": "runtimeAdmissionGet",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "demandDriven": {
+                      "type": "boolean"
+                    },
+                    "durableCache": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "items": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "agentBackend": {
+                                "type": "string"
+                              },
+                              "bindingId": {
+                                "type": "string"
+                              },
+                              "checkedAt": {
+                                "type": "string"
+                              },
+                              "errorCode": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "modelFamily": {
+                                "type": "string"
+                              },
+                              "phase": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "ready": {
+                                "type": "boolean"
+                              },
+                              "resourceId": {
+                                "type": "string"
+                              },
+                              "routeModel": {
+                                "type": "string"
+                              },
+                              "transport": {
+                                "enum": [
+                                  "LITELLM_MANAGED",
+                                  "PROVIDER_NATIVE"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "phase",
+                              "agentBackend",
+                              "transport",
+                              "resourceId",
+                              "bindingId",
+                              "modelFamily",
+                              "routeModel",
+                              "ready",
+                              "checkedAt",
+                              "errorCode"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "checked": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "implementationReady": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "ready": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "reviewReady": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "unready": {
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "summary",
+                        "items"
+                      ],
+                      "type": "object"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "hasDemand": {
+                      "type": "boolean"
+                    },
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "agentBackend": {
+                            "type": "string"
+                          },
+                          "bindingId": {
+                            "type": "string"
+                          },
+                          "checkedAt": {
+                            "type": "string"
+                          },
+                          "errorCode": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "modelFamily": {
+                            "type": "string"
+                          },
+                          "phase": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "ready": {
+                            "type": "boolean"
+                          },
+                          "resourceId": {
+                            "type": "string"
+                          },
+                          "routeModel": {
+                            "type": "string"
+                          },
+                          "transport": {
+                            "enum": [
+                              "LITELLM_MANAGED",
+                              "PROVIDER_NATIVE"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "phase",
+                          "agentBackend",
+                          "transport",
+                          "resourceId",
+                          "bindingId",
+                          "modelFamily",
+                          "routeModel",
+                          "ready",
+                          "checkedAt",
+                          "errorCode"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "summary": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "checked": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "implementationReady": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "ready": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "reviewReady": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "unready": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "demandDriven",
+                    "hasDemand",
+                    "summary",
+                    "items",
+                    "durableCache"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -917,6 +2117,35 @@
         "operationId": "storageGet",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "hostCacheMaintenance": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "storage": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "storage",
+                    "hostCacheMaintenance"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -927,6 +2156,47 @@
         "operationId": "storageReconcile",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cleanup": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "hostCacheMaintenance": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "storage": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "storage",
+                    "hostCacheMaintenance",
+                    "cleanup"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }
@@ -937,6 +2207,195 @@
         "operationId": "supervisorAdmissionGet",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "demandDriven": {
+                      "type": "boolean"
+                    },
+                    "durableCache": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "items": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bindingId": {
+                                "type": "string"
+                              },
+                              "checkedAt": {
+                                "type": "string"
+                              },
+                              "errorCode": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "modelFamily": {
+                                "type": "string"
+                              },
+                              "protocol": {
+                                "type": "string"
+                              },
+                              "ready": {
+                                "type": "boolean"
+                              },
+                              "resourceId": {
+                                "type": "string"
+                              },
+                              "routeModel": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "resourceId",
+                              "bindingId",
+                              "modelFamily",
+                              "routeModel",
+                              "protocol",
+                              "ready",
+                              "checkedAt",
+                              "errorCode"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "checked": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "implementationReady": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "ready": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "reviewReady": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "unready": {
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "summary",
+                        "items"
+                      ],
+                      "type": "object"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "hasDemand": {
+                      "type": "boolean"
+                    },
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "bindingId": {
+                            "type": "string"
+                          },
+                          "checkedAt": {
+                            "type": "string"
+                          },
+                          "errorCode": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "modelFamily": {
+                            "type": "string"
+                          },
+                          "protocol": {
+                            "type": "string"
+                          },
+                          "ready": {
+                            "type": "boolean"
+                          },
+                          "resourceId": {
+                            "type": "string"
+                          },
+                          "routeModel": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "resourceId",
+                          "bindingId",
+                          "modelFamily",
+                          "routeModel",
+                          "protocol",
+                          "ready",
+                          "checkedAt",
+                          "errorCode"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "summary": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "checked": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "implementationReady": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "ready": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "reviewReady": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "unready": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "demandDriven",
+                    "hasDemand",
+                    "summary",
+                    "items",
+                    "durableCache"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
             "description": "Default Response"
           }
         }

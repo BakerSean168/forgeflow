@@ -721,7 +721,45 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        /** @enum {integer} */
+                        readonly apiVersion: 1;
+                        readonly autonomousLifecycleAcceptance: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly database?: string;
+                        readonly executionRuntime: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly hostCacheMaintenance: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly improvementRuntime: {
+                            readonly [key: string]: unknown;
+                        };
+                        /** @enum {string} */
+                        readonly mode: "autonomous-engineering";
+                        readonly planScheduling: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly releaseProvenance: {
+                            readonly [key: string]: unknown;
+                        };
+                        /** @enum {string} */
+                        readonly service: "forgeflow-control-plane";
+                        /** @enum {string} */
+                        readonly status: "ok";
+                        readonly supervisorRuntime: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly workspaceStorage: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                    } & {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -1428,7 +1466,11 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -1439,14 +1481,51 @@ export interface operations {
             readonly path?: never;
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly artifactSha256: string;
+                    readonly canonicalHead: string;
+                    readonly externalChecks: readonly string[];
+                    readonly planId: string;
+                    readonly sourceSha: string;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly attestation: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly attestedAt: string;
+                        /** @enum {string} */
+                        readonly status: "ATTESTED";
+                    };
+                };
+            };
+            /** @description Default Response */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly attestation: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly attestedAt: string;
+                        /** @enum {string} */
+                        readonly status: "ATTESTED";
+                    };
+                };
             };
         };
     };
@@ -1464,7 +1543,42 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly count: number;
+                        readonly items: readonly {
+                            readonly displayName: string;
+                            readonly lastNormalizedFailure: {
+                                readonly changedAt: string;
+                                readonly reasonClass: string;
+                                readonly sanitizedReason: string | null;
+                                readonly source: string;
+                            } | null;
+                            readonly modelBindings: readonly {
+                                readonly agentBackend: string | null;
+                                readonly capability: string | null;
+                                readonly deploymentId: string | null;
+                                readonly enabled: boolean;
+                                readonly modelFamily: string;
+                                readonly modelRank: number | null;
+                                readonly protocol: string | null;
+                                readonly ready: boolean;
+                                readonly routeModel: string | null;
+                            }[];
+                            readonly providerKey: string | null;
+                            readonly resourceId: string;
+                            readonly resourceSequence: number;
+                            /** @enum {string} */
+                            readonly resourceTier: "PROMOTIONAL" | "FREE" | "SUBSCRIPTION" | "METERED" | "OTHER";
+                            /** @enum {string} */
+                            readonly state: "ACTIVE" | "SUSPENDED" | "DISABLED";
+                            readonly suspendedUntil: string | null;
+                            /** @enum {string} */
+                            readonly transport: "LITELLM_MANAGED" | "PROVIDER_NATIVE";
+                            readonly version: number;
+                        }[];
+                    };
+                };
             };
         };
     };
@@ -1478,14 +1592,63 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly state: string;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly bindingId: string;
+                        readonly resource: {
+                            readonly displayName: string;
+                            readonly lastNormalizedFailure: {
+                                readonly changedAt: string;
+                                readonly reasonClass: string;
+                                readonly sanitizedReason: string | null;
+                                readonly source: string;
+                            } | null;
+                            readonly modelBindings: readonly {
+                                readonly agentBackend: string | null;
+                                readonly capability: string | null;
+                                readonly deploymentId: string | null;
+                                readonly enabled: boolean;
+                                readonly modelFamily: string;
+                                readonly modelRank: number | null;
+                                readonly protocol: string | null;
+                                readonly ready: boolean;
+                                readonly routeModel: string | null;
+                            }[];
+                            readonly providerKey: string | null;
+                            readonly resourceId: string;
+                            readonly resourceSequence: number;
+                            /** @enum {string} */
+                            readonly resourceTier: "PROMOTIONAL" | "FREE" | "SUBSCRIPTION" | "METERED" | "OTHER";
+                            /** @enum {string} */
+                            readonly state: "ACTIVE" | "SUSPENDED" | "DISABLED";
+                            readonly suspendedUntil: string | null;
+                            /** @enum {string} */
+                            readonly transport: "LITELLM_MANAGED" | "PROVIDER_NATIVE";
+                            readonly version: number;
+                        };
+                        readonly resourceWake: {
+                            readonly becameAvailable: readonly string[];
+                            readonly scheduledWakes: number;
+                        };
+                        /** @enum {string} */
+                        readonly state: "ACTIVE" | "DISABLED";
+                    };
+                };
             };
         };
     };
@@ -1498,14 +1661,64 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly expectedVersion?: number | string | null;
+                    readonly reason?: string;
+                    readonly state: string;
+                    readonly suspendedUntil?: string;
+                } & {
+                    readonly [key: string]: unknown;
+                };
+            };
+        };
         readonly responses: {
             /** @description Default Response */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly mutation: string;
+                        readonly resource: {
+                            readonly displayName: string;
+                            readonly lastNormalizedFailure: {
+                                readonly changedAt: string;
+                                readonly reasonClass: string;
+                                readonly sanitizedReason: string | null;
+                                readonly source: string;
+                            } | null;
+                            readonly modelBindings: readonly {
+                                readonly agentBackend: string | null;
+                                readonly capability: string | null;
+                                readonly deploymentId: string | null;
+                                readonly enabled: boolean;
+                                readonly modelFamily: string;
+                                readonly modelRank: number | null;
+                                readonly protocol: string | null;
+                                readonly ready: boolean;
+                                readonly routeModel: string | null;
+                            }[];
+                            readonly providerKey: string | null;
+                            readonly resourceId: string;
+                            readonly resourceSequence: number;
+                            /** @enum {string} */
+                            readonly resourceTier: "PROMOTIONAL" | "FREE" | "SUBSCRIPTION" | "METERED" | "OTHER";
+                            /** @enum {string} */
+                            readonly state: "ACTIVE" | "SUSPENDED" | "DISABLED";
+                            readonly suspendedUntil: string | null;
+                            /** @enum {string} */
+                            readonly transport: "LITELLM_MANAGED" | "PROVIDER_NATIVE";
+                            readonly version: number;
+                        };
+                        readonly resourceWake: {
+                            readonly becameAvailable: readonly string[];
+                            readonly scheduledWakes: number;
+                        };
+                    };
+                };
             };
         };
     };
@@ -1523,7 +1736,59 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly demandDriven: boolean;
+                        readonly durableCache: {
+                            readonly items: readonly {
+                                readonly agentBackend: string;
+                                readonly bindingId: string;
+                                readonly checkedAt: string;
+                                readonly errorCode: string | null;
+                                readonly modelFamily: string;
+                                readonly phase: string | null;
+                                readonly ready: boolean;
+                                readonly resourceId: string;
+                                readonly routeModel: string;
+                                /** @enum {string} */
+                                readonly transport: "LITELLM_MANAGED" | "PROVIDER_NATIVE";
+                            }[];
+                            readonly summary: {
+                                readonly checked?: number;
+                                readonly implementationReady?: number;
+                                readonly ready?: number;
+                                readonly reviewReady?: number;
+                                readonly unready?: number;
+                            } & {
+                                readonly [key: string]: unknown;
+                            };
+                        };
+                        readonly enabled: boolean;
+                        readonly hasDemand: boolean;
+                        readonly items: readonly {
+                            readonly agentBackend: string;
+                            readonly bindingId: string;
+                            readonly checkedAt: string;
+                            readonly errorCode: string | null;
+                            readonly modelFamily: string;
+                            readonly phase: string | null;
+                            readonly ready: boolean;
+                            readonly resourceId: string;
+                            readonly routeModel: string;
+                            /** @enum {string} */
+                            readonly transport: "LITELLM_MANAGED" | "PROVIDER_NATIVE";
+                        }[];
+                        readonly summary: {
+                            readonly checked?: number;
+                            readonly implementationReady?: number;
+                            readonly ready?: number;
+                            readonly reviewReady?: number;
+                            readonly unready?: number;
+                        } & {
+                            readonly [key: string]: unknown;
+                        };
+                    };
+                };
             };
         };
     };
@@ -1541,7 +1806,16 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly hostCacheMaintenance: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly storage: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                    };
+                };
             };
         };
     };
@@ -1559,7 +1833,19 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly cleanup: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                        readonly hostCacheMaintenance: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly storage: {
+                            readonly [key: string]: unknown;
+                        } | null;
+                    };
+                };
             };
         };
     };
@@ -1577,7 +1863,53 @@ export interface operations {
                 headers: {
                     readonly [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    readonly "application/json": {
+                        readonly demandDriven: boolean;
+                        readonly durableCache: {
+                            readonly items: readonly {
+                                readonly bindingId: string;
+                                readonly checkedAt: string;
+                                readonly errorCode: string | null;
+                                readonly modelFamily: string;
+                                readonly protocol: string;
+                                readonly ready: boolean;
+                                readonly resourceId: string;
+                                readonly routeModel: string;
+                            }[];
+                            readonly summary: {
+                                readonly checked?: number;
+                                readonly implementationReady?: number;
+                                readonly ready?: number;
+                                readonly reviewReady?: number;
+                                readonly unready?: number;
+                            } & {
+                                readonly [key: string]: unknown;
+                            };
+                        };
+                        readonly enabled: boolean;
+                        readonly hasDemand: boolean;
+                        readonly items: readonly {
+                            readonly bindingId: string;
+                            readonly checkedAt: string;
+                            readonly errorCode: string | null;
+                            readonly modelFamily: string;
+                            readonly protocol: string;
+                            readonly ready: boolean;
+                            readonly resourceId: string;
+                            readonly routeModel: string;
+                        }[];
+                        readonly summary: {
+                            readonly checked?: number;
+                            readonly implementationReady?: number;
+                            readonly ready?: number;
+                            readonly reviewReady?: number;
+                            readonly unready?: number;
+                        } & {
+                            readonly [key: string]: unknown;
+                        };
+                    };
+                };
             };
         };
     };
