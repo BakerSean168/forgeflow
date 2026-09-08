@@ -58,6 +58,22 @@ for (const file of visit(sourceRoot)) {
     relative === 'src/bootstrap/executionRuntime.ts' ||
     relative.startsWith('src/api/') ||
     relative.startsWith('src/application/');
+  const bootstrapFeatureTimerForbidden = relative.startsWith('src/bootstrap/');
+  if (bootstrapFeatureTimerForbidden && /\b(?:setInterval|setImmediate)\s*\(/.test(source))
+    failures.push(`${relative}: bootstrap must not own feature timers; use the reconciler lifecycle manager`);
+  if (
+    relative.startsWith('src/reconcilers/') &&
+    relative !== 'src/reconcilers/lifecycle.ts' &&
+    relative !== 'src/reconcilers/contracts.ts' &&
+    /\b(?:setInterval|setImmediate)\s*\(/.test(source)
+  )
+    failures.push(`${relative}: feature reconcilers must declare cadence, not create timers`);
+  if (
+    relative !== 'src/bootstrap/executionRuntime.ts' &&
+    relative !== 'src/reconcilers/runtimeAdmission.ts' &&
+    /\b(?:reconcileRuntimeAdmission|shutdownRuntimeAdmission)\s*\(/.test(source)
+  )
+    failures.push(`${relative}: runtime admission lifecycle must flow through RuntimeAdmissionReconciler`);
   if (
     rawRuntimeConfigForbidden &&
     (/\bprocess\.env\b/.test(source) || /\b[A-Za-z_][A-Za-z0-9_]*\.FORGEFLOW_[A-Z0-9_]+/.test(source))

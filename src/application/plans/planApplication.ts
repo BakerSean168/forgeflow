@@ -20,7 +20,6 @@ export interface PlanGraphItemInput {
 export interface PlanAutomationPort {
   literalWorktreeProjectKeys: string[];
   planWorktreeManager?: { ensurePlanActivated(planId: string): Promise<unknown> };
-  reconcileRuntimeAdmission(): Promise<void>;
   plans: {
     runPlan(planId: string): Promise<unknown>;
     reconcilePlan(planId: string, mode?: string): Promise<unknown>;
@@ -35,6 +34,7 @@ export interface PlanApplicationDependencies {
   singleActivePlanEnabled: boolean;
   requireAutomation(): PlanAutomationPort;
   automation?: PlanAutomationPort;
+  runtimeAdmission: { request(): Promise<void> };
 }
 
 export interface CreateRootPlanInput {
@@ -248,13 +248,13 @@ export class PlanApplication {
 
   async run(planId: string) {
     const runtime = this.dependencies.requireAutomation();
-    await runtime.reconcileRuntimeAdmission();
+    await this.dependencies.runtimeAdmission.request();
     return await runtime.plans.runPlan(planId);
   }
 
   async reconcile(planId: string, mode: string) {
     const runtime = this.dependencies.requireAutomation();
-    await runtime.reconcileRuntimeAdmission();
+    await this.dependencies.runtimeAdmission.request();
     const result = await runtime.plans.reconcilePlan(planId, mode);
     return { ...(result as Record<string, unknown>), statusUrl: '/api/v1/plans/' + encodeURIComponent(planId) };
   }

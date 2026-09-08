@@ -16,9 +16,10 @@ import type { BuildControlPlaneOptions, ControlPlaneRuntime } from './bootstrap/
 import { buildExecutionAutomation } from './bootstrap/executionRuntime.js';
 import { buildImprovementRuntime } from './bootstrap/improvementRuntime.js';
 import { initializeProjectScheduling } from './bootstrap/projectScheduling.js';
-import { startRuntimeLifecycle } from './bootstrap/runtimeLifecycle.js';
 import { buildSupervisorRuntime } from './bootstrap/supervisorRuntime.js';
-import { bindReleaseProvenance, createAutonomousLifecycleAcceptanceProjection } from './bootstrap/systemState.js';
+import { bindReleaseProvenance, createAutonomousLifecycleAcceptanceProjection, readHostCacheMaintenance } from './bootstrap/systemState.js';
+import { buildReconcilerAssembly } from './reconcilers/assembly.js';
+import { RuntimeAdmissionReconciler } from './reconcilers/runtimeAdmission.js';
 import { ForgeFlowError } from './core/domain/errors.js';
 import {
   DeliveryKernel,
@@ -53,6 +54,7 @@ export async function buildControlPlane(
   });
   const db = boot.db;
   const repositories = createRepositories(db);
+  const app = Fastify({ logger: options.logger ?? true });
   const singleActivePlanEnabled = config.scheduling.singleActivePlanEnabled;
   const literalWorktreesEnabled = config.scheduling.literalWorktreesEnabled;
   if (literalWorktreesEnabled && !singleActivePlanEnabled)
@@ -86,13 +88,14 @@ export async function buildControlPlane(
     options.fetchImpl ?? fetch,
     projects,
   );
+  const runtimeAdmission = new RuntimeAdmissionReconciler(automation, app.log);
   await initializeProjectScheduling({
     repositories,
     ...(projectPlanQueue ? { projectPlanQueue } : {}),
     ...(automation ? { automation } : {}),
   });
   const requireAutomation = requireExecutionRuntime(automation);
-  const supervisorActions = buildSupervisorActions({ repositories, kernels, requireAutomation });
+  const supervisorActions = buildSupervisorActions({ repositories, kernels, requireAutomation, runtimeAdmission });
   const supervisor = buildSupervisorRuntime({
     db,
     repositories,
@@ -103,15 +106,26 @@ export async function buildControlPlane(
     hasDiagnosisDemand: () => improvement.runtime.hasDiagnosisDemand(),
     fetchImpl: options.fetchImpl ?? fetch,
   });
+  registerApiErrorHandler(app);
+  await registerOpenApi(app);
+
+  const reconcilers = buildReconcilerAssembly({
+    config,
+    repositories,
+    ...(automation ? { automation } : {}),
+    runtimeAdmission,
+    ...(projectPlanQueue ? { projectPlanQueue } : {}),
+    supervisor,
+    improvement,
+    hostCacheStatus: () => readHostCacheMaintenance(config.release.hostCacheStateFile),
+    logger: app.log,
+  });
   improvement.configureDiagnosis({
     reasoningResourceSelector: supervisor.reasoningResourceSelector,
     resourceState: automation?.resourceState,
     fetchImpl: options.fetchImpl ?? fetch,
-    reconcileDirectAdmission: supervisor.reconcileDirectAdmission,
+    reconcileDirectAdmission: () => reconcilers.supervisor.reconcileDirectAdmission(),
   });
-  const app = Fastify({ logger: options.logger ?? true });
-  registerApiErrorHandler(app);
-  await registerOpenApi(app);
 
   const applications = buildApplicationAssembly({
     db,
@@ -122,13 +136,15 @@ export async function buildControlPlane(
     ...(projectPlanQueue ? { projectPlanQueue } : {}),
     ...(automation ? { automation } : {}),
     supervisor,
+    supervisorReconciler: reconcilers.supervisor,
     supervisorActions,
     improvement,
+    runtimeAdmission: reconcilers.runtimeAdmission,
+    storage: reconcilers.storage,
     config,
     releaseProvenance,
     autonomousLifecycleAcceptanceProjection,
     fetchImpl: options.fetchImpl ?? fetch,
-    logWarn: (data, message) => app.log.warn(data, message),
   });
   await registerApiModules(app, [
     createSystemApiModule(applications.system),
@@ -140,18 +156,10 @@ export async function buildControlPlane(
     createSupervisorApiModule(applications.supervisor),
   ]);
 
-  const lifecycle = startRuntimeLifecycle({
-    config,
-    ...(automation ? { automation } : {}),
-    ...(projectPlanQueue ? { projectPlanQueue } : {}),
-    supervisor,
-    improvement,
-    runWorkspaceStorageMaintenance: applications.runWorkspaceStorageMaintenance,
-    logger: app.log,
-  });
+  reconcilers.lifecycle.start();
 
   app.addHook('onClose', async () => {
-    await lifecycle.close();
+    await reconcilers.lifecycle.close();
     db.close();
   });
 
@@ -171,8 +179,8 @@ export async function buildControlPlane(
       scheduler: supervisor.scheduler,
       runtime: supervisor.runtime,
       directAdmission: supervisor.directAdmission,
-      reconcileDirectAdmission: supervisor.reconcileDirectAdmission,
-      reconcileReadiness: supervisor.reconcileReadiness,
+      reconcileDirectAdmission: () => reconcilers.supervisor.reconcileDirectAdmission(),
+      reconcileReadiness: () => reconcilers.supervisor.reconcileReadiness(),
     },
     improvements: improvement.runtime,
     ...(automation ? { automation } : {}),

@@ -25,7 +25,9 @@ import type { ExecutionAutomationRuntime } from './executionRuntime.js';
 import type { ImprovementRuntimeAssembly } from './improvementRuntime.js';
 import type { SupervisorRuntimeAssembly } from './supervisorRuntime.js';
 import type { ReleaseProvenanceProjection } from './systemState.js';
-import { readHostCacheMaintenance } from './systemState.js';
+import type { RuntimeAdmissionReconciler } from '../reconcilers/runtimeAdmission.js';
+import type { StorageMaintenanceReconciler } from '../reconcilers/storageMaintenance.js';
+import type { SupervisorReconciler } from '../reconcilers/supervisor.js';
 
 export interface KernelAssembly {
   plan: PlanKernel;
@@ -49,12 +51,13 @@ export function buildSupervisorActions(input: {
   repositories: ForgeFlowRepositories;
   kernels: KernelAssembly;
   requireAutomation(): ExecutionAutomationRuntime;
+  runtimeAdmission: { request(): Promise<void> };
 }): SupervisorActionExecutor {
   const { repositories, kernels, requireAutomation } = input;
   const supervisorKernel: SupervisorKernelPort = {
     createExecution: async (payload, planId) => {
       const runtime = requireAutomation();
-      await runtime.reconcileRuntimeAdmission();
+      await input.runtimeAdmission.request();
       const item = repositories.plans.getWorkItem(payload.workItemId);
       if (item.planId !== planId) throw new ForgeFlowError('EXECUTION_WORK_ITEM_MISMATCH');
       const result = await runtime.plans.runPlan(planId);
@@ -153,7 +156,6 @@ export interface ApplicationAssembly {
   execution: ExecutionApplication;
   supervisor: SupervisorApplication;
   improvement: ImprovementApplication;
-  runWorkspaceStorageMaintenance(): Promise<unknown>;
 }
 
 export function buildApplicationAssembly(input: {
@@ -165,13 +167,15 @@ export function buildApplicationAssembly(input: {
   projectPlanQueue?: ProjectPlanQueueRuntime;
   automation?: ExecutionAutomationRuntime;
   supervisor: SupervisorRuntimeAssembly;
+  supervisorReconciler: SupervisorReconciler;
   supervisorActions: SupervisorActionExecutor;
   improvement: ImprovementRuntimeAssembly;
+  runtimeAdmission: RuntimeAdmissionReconciler;
+  storage: StorageMaintenanceReconciler;
   config: ForgeFlowBootstrapConfig;
   releaseProvenance(): ReleaseProvenanceProjection;
   autonomousLifecycleAcceptanceProjection(): unknown;
   fetchImpl: typeof fetch;
-  logWarn(data: Record<string, unknown>, message: string): void;
 }): ApplicationAssembly {
   const { repositories, automation, supervisor, improvement, config } = input;
   const requireAutomation = requireExecutionRuntime(automation);
@@ -182,40 +186,14 @@ export function buildApplicationAssembly(input: {
     fetchImpl: input.fetchImpl,
     requestTimeoutMs: config.telemetry.requestTimeoutMs,
   });
-  const workspaceStorage = () => automation?.workspace.storageStatus?.() ?? null;
-  const hostCacheMaintenance = () => readHostCacheMaintenance(config.release.hostCacheStateFile);
-  const runWorkspaceStorageMaintenance = async () => {
-    if (!automation?.workspace.storageStatus || !automation.workspace.pruneTerminalCaches)
-      return null;
-    const before = automation.workspace.storageStatus();
-    if (!before.lowCapacity) return null;
-    const terminal = repositories.executions.listByStatuses(
-      ['SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED'],
-      1000,
-    );
-    const workspaces = terminal
-      .map((execution) => repositories.sessions.getOptional(execution.identity.executionId)?.workspace)
-      .filter((workspace): workspace is NonNullable<typeof workspace> => Boolean(workspace));
-    const result = await automation.workspace.pruneTerminalCaches(workspaces);
-    input.logWarn(
-      {
-        ...result,
-        minimumFreeBytes: before.minimumFreeBytes,
-        terminalExecutions: terminal.length,
-      },
-      'workspace storage high-watermark cleanup',
-    );
-    return result;
-  };
-
   const system = new SystemApplication({
     dbFile: input.dbFile,
     repositories,
     releaseProvenance: input.releaseProvenance,
     autonomousLifecycleAcceptanceProjection: input.autonomousLifecycleAcceptanceProjection,
-    workspaceStorage,
-    hostCacheMaintenance,
-    reconcileWorkspaceStorage: runWorkspaceStorageMaintenance,
+    workspaceStorage: () => input.storage.workspaceStatus(),
+    hostCacheMaintenance: () => input.storage.hostCacheMaintenanceStatus(),
+    reconcileWorkspaceStorage: () => input.storage.runMaintenance(),
     singleActivePlanEnabled: config.scheduling.singleActivePlanEnabled,
     literalWorktreesEnabled: config.scheduling.literalWorktreesEnabled,
     projectPlanQueueEnabled: Boolean(input.projectPlanQueue),
@@ -236,7 +214,8 @@ export function buildApplicationAssembly(input: {
       repositories.supervisorDirectAdmissions.invalidateResource(resourceId);
       supervisor.directAdmission.invalidateResource(resourceId);
     },
-    reconcileSupervisorReadiness: supervisor.reconcileReadiness,
+    runtimeAdmission: input.runtimeAdmission,
+    reconcileSupervisorReadiness: input.supervisorReconciler.reconcileReadiness.bind(input.supervisorReconciler),
   });
   const plan = new PlanApplication({
     repositories,
@@ -246,6 +225,7 @@ export function buildApplicationAssembly(input: {
     singleActivePlanEnabled: config.scheduling.singleActivePlanEnabled,
     requireAutomation,
     ...(automation ? { automation } : {}),
+    runtimeAdmission: input.runtimeAdmission,
   });
   const execution = new ExecutionApplication({
     repositories,
@@ -267,6 +247,5 @@ export function buildApplicationAssembly(input: {
     execution,
     supervisor: supervisorApplication,
     improvement: improvementApplication,
-    runWorkspaceStorageMaintenance,
   };
 }

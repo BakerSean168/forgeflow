@@ -26,7 +26,8 @@ const planWorktrees = read('src/core/adapters/planWorktrees.ts');
 const appSource = read('src/app.ts');
 const executionRuntimeSource = read('src/bootstrap/executionRuntime.ts');
 const projectSchedulingSource = read('src/bootstrap/projectScheduling.ts');
-const runtimeLifecycleSource = read('src/bootstrap/runtimeLifecycle.ts');
+const planLifecycleReconcilerSource = read('src/reconcilers/planLifecycle.ts');
+const reconcilerLifecycleSource = read('src/reconcilers/lifecycle.ts');
 const bootstrapConfigSource = read('src/bootstrap/config.ts');
 const systemApplicationSource = read('src/application/system/systemApplication.ts');
 const systemApiSource = read('src/api/v1/system/routes.ts');
@@ -229,12 +230,12 @@ test('literal worktree deployment is project-mounted, runtime-verified, and smok
 
 test('autonomous execution polling does not await slow runtime-admission probes', () => {
   assert.match(
-    runtimeLifecycleSource,
-    /const results = await automation\.plans\.runOnce\(\);[\s\S]*void automation[\s\S]*\.reconcileRuntimeAdmission\(\)[\s\S]*\.catch/,
+    planLifecycleReconcilerSource,
+    /const results = await this\.automation\.plans\.runOnce\(\);[\s\S]*this\.runtimeAdmission\.requestDetached\(\)/,
   );
   assert.doesNotMatch(
-    runtimeLifecycleSource,
-    /await automation\.reconcileRuntimeAdmission\(\);\s*return await automation\.plans\.runOnce\(\)/,
+    planLifecycleReconcilerSource,
+    /await this\.runtimeAdmission\.request\(\);\s*return await this\.automation\.plans\.runOnce\(\)/,
   );
   assert.match(forgeFlowEnv, /FORGEFLOW_OPPORTUNISTIC_MEANINGFUL_PROGRESS_TIMEOUT_MS=300000/);
   assert.match(forgeFlowEnv, /FORGEFLOW_OPPORTUNISTIC_MAX_STALL_RECOVERIES=0/);

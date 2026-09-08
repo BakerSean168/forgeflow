@@ -486,7 +486,7 @@ Verification and release closure:
 
 ### Batch 3 — Phase-2 bootstrap/composition split
 
-Status: **implemented on the Phase-2 refactor branch; pending normal PR/CI/exact-SHA release and real-provider acceptance closure**.
+Status: **completed and production-attested in v1.1.3**.
 
 Completed:
 
@@ -516,8 +516,8 @@ bootstrap/projectScheduling.ts
   -> durable project lease/worktree activation and recovery
 bootstrap/systemState.ts
   -> release/acceptance/host-maintenance projections
-bootstrap/runtimeLifecycle.ts
-  -> warmup, reconciler intervals and shutdown drain
+src/reconcilers/*
+  -> Phase-3 convergence ownership; the former bootstrap runtimeLifecycle timer bundle is retired
 bootstrap/controlPlaneTypes.ts
   -> stable public runtime/build contracts
 src/app.ts
@@ -543,8 +543,70 @@ Verification before PR:
 - `app.ts` composition line budget: 250, actual 183;
 - raw env access gate prevents configuration reads from leaking back into composition/API/application/execution assembly.
 
+Verification and release closure:
+
+- PR and main CI: passing;
+- v1.1.3 exact-SHA release: HEALTHY;
+- v1.1.3 real-provider lifecycle acceptance: ATTESTED;
+- two same-wave implementations, two independent exact-SHA PASS reviews, combined integration head, provider cleanup, five worktree retirements, lease release, and zero activation failures verified.
+
+### Batch 4 — Phase-3 focused reconcilers
+
+Status: **implemented; closure requires the normal PR/main-CI/exact-SHA v1.1.4 release and real-provider acceptance gates**.
+
+Completed:
+
+- P3-01 common Reconciler contract and single scheduling/shutdown lifecycle manager;
+- P3-02 Plan lifecycle controller owns storage preflight, project queue convergence, Plan automation progression, and detached admission refresh request;
+- P3-03 Runtime Admission controller is the sole refresh/shutdown authority above the low-level execution runtime, including explicit Plan/Resource/Supervisor action requests;
+- P3-04 Supervisor controller owns direct admission/readiness, resource-transition wakes, warmup and decision cycles;
+- P3-05 Improvement controller owns bounded autonomous discovery/diagnosis/adoption/promotion-request cycles;
+- P3-06 Storage controller owns workspace-local capacity projection and bounded terminal-cache cleanup; host-wide cache pruning deliberately remains external systemd maintenance and is exposed only through its validated projection;
+- the Phase-2 `bootstrap/runtimeLifecycle.ts` timer bundle is deleted;
+- Resource, Plan and ControlPlane explicit convergence paths now request the same focused controllers instead of calling underlying automation admission/readiness functions directly;
+- shutdown now stops new scheduling, closes capability-specific refreshers, and drains already-running lifecycle-managed reconciliations before the DB is closed.
+
+Phase-3 ownership map:
+
+```text
+ReconcilerLifecycleManager
+  -> scheduling + single-flight boundary + shutdown drain
+
+RuntimeAdmissionReconciler
+  -> ACP runtime admission refresh/shutdown
+SupervisorReconciler
+  -> reasoning admission/readiness + wakes + decisions
+ResourceLifecycleReconciler
+  -> directory/resource recovery -> Supervisor readiness -> admission
+PlanLifecycleReconciler
+  -> storage -> queue -> Plan automation -> detached admission refresh
+ImprovementReconciler
+  -> discovery/diagnosis/adoption/promotion-request cycle
+StorageMaintenanceReconciler
+  -> workspace storage projection + terminal cache cleanup
+```
+
+Coordination policy:
+
+- durable events/wakes are primary where available;
+- Supervisor resource recovery is event-driven with watchdog polling as fallback;
+- runtime admission is demand-driven and cached durably;
+- Plan/resource periodic polling remains bounded heartbeat/recovery convergence, never durable truth;
+- feature reconcilers declare cadence but only the generic lifecycle manager owns timers.
+
+Verification before PR:
+
+- reconciler lifecycle/controller focused tests: 10/10 passing;
+- broader Phase-3 focused suite: 86/86 passing before the shutdown-drain hardening pass;
+- final full deterministic suite: 392/392 passing;
+- TypeScript, OpenAPI drift, architecture boundary and production build: passing;
+- bootstrap feature timer files: 0;
+- feature reconciler timer files outside the generic lifecycle manager: 0;
+- direct Runtime Admission reconcile/shutdown callers above the implementation: only `RuntimeAdmissionReconciler`;
+- old `bootstrap/runtimeLifecycle.ts` references in runtime/tests: 0.
+
 Next:
 
-1. merge/release Phase 2 as v1.1.3 if PR/main CI remain green;
-2. run exact-SHA real-provider lifecycle acceptance on v1.1.3;
-3. enter Phase 3 focused reconciler extraction only after the release is ATTESTED.
+1. merge/release Phase 3 as v1.1.4 if PR/main CI remain green;
+2. run exact-SHA real-provider lifecycle acceptance on v1.1.4;
+3. enter Phase 4 integration architecture only after the release is ATTESTED.
