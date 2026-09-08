@@ -12,6 +12,7 @@ import {
 import type { ExecutionWorkerResult } from '../src/core/orchestration/executionWorker.js';
 import type {
   DeliveryAutomationPort,
+  WorkspaceCommittedCandidateSnapshot,
   WorkspaceDescriptor,
   WorkspaceProviderPort,
   WorkspaceProvisionInput,
@@ -70,6 +71,7 @@ class AutomationWorkspace implements WorkspaceProviderPort {
   integrateCalls = 0;
   readonly workspaces = new Map<string, WorkspaceDescriptor>();
   readonly ancestorPairs = new Set<string>();
+  readonly committedCandidates = new Map<string, string>();
 
   async observeRepository(repositoryPath: string, revision: string) {
     return {
@@ -105,6 +107,22 @@ class AutomationWorkspace implements WorkspaceProviderPort {
     };
     this.workspaces.set(input.executionId, workspace);
     return workspace;
+  }
+
+  async inspectCommittedImplementation(
+    workspace: WorkspaceDescriptor,
+  ): Promise<WorkspaceCommittedCandidateSnapshot> {
+    const headRevision = this.committedCandidates.get(workspace.executionId) ?? workspace.sourceRevision;
+    return {
+      workspace,
+      headRevision,
+      sourceRevision: workspace.sourceRevision,
+      clean: true,
+      descendantOfSource: true,
+      changedFiles: headRevision === workspace.sourceRevision ? [] : ['src/recovered.ts'],
+      diffStat: headRevision === workspace.sourceRevision ? '' : ' src/recovered.ts | 1 +',
+      observedAt: now(),
+    };
   }
 
   async verifyImplementation(): Promise<never> {
@@ -847,6 +865,250 @@ test('infrastructure reconcile refuses to substitute a different route for the f
   assert.equal(recovered.status, 'WAITING');
   assert.equal(seeded.repositories.executions.listByPlan(seeded.plan.planId).length, 1);
   assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'WAITING_FOR_RESOURCE');
+  seeded.db.close();
+});
+
+test('explicit finalization recovery preserves a committed sibling candidate and retries the empty sibling from base', async () => {
+  const seeded = seed([
+    { itemKey: 'left', parallelSafe: true, writeScopes: ['src/left/**'] },
+    { itemKey: 'right', parallelSafe: true, writeScopes: ['src/right/**'] },
+  ]);
+  const workspace = new AutomationWorkspace();
+  const runner = new ScriptedRunner(seeded.repositories, workspace);
+  const selector = retrySelector();
+  const automation = new PlanAutomationRuntime(
+    seeded.repositories,
+    runner,
+    workspace,
+    new StaticPlanAutomationPolicyResolver({
+      resourceSelection: { includeProviderNativeProfiles: true },
+      maxImplementationAttempts: 3,
+      maxReviewAttempts: 2,
+      maxInfrastructureAttempts: 2,
+      maxRepairCycles: 3,
+      maxParallelWorkItems: 2,
+    }),
+    undefined,
+    selector,
+  );
+
+  const queued = await automation.runPlan(seeded.plan.planId);
+  assert.equal(queued.code, 'IMPLEMENTATION_WAVE_QUEUED');
+  const originals = seeded.repositories.executions
+    .listByPlan(seeded.plan.planId)
+    .filter((execution) => execution.identity.phase === 'IMPLEMENT');
+  assert.equal(originals.length, 2);
+  const items = seeded.repositories.plans.listWorkItems(seeded.plan.planId);
+  const byItem = new Map(items.map((item) => [item.workItemId, item]));
+
+  for (const execution of originals) {
+    const descriptor = await workspace.provision({
+      executionId: execution.identity.executionId,
+      planId: seeded.plan.planId,
+      projectKey: seeded.plan.projectKey,
+      workItemId: execution.identity.workItemId,
+      repositoryPath: seeded.plan.repositoryPath,
+      sourceRevision: execution.identity.sourceRevision!,
+      phase: 'IMPLEMENT',
+    });
+    seeded.repositories.sessions.create({
+      executionId: execution.identity.executionId,
+      phase: 'IMPLEMENT',
+      provider: 'failed-finalization-provider',
+      workspace: descriptor,
+      sourceRevision: execution.identity.sourceRevision!,
+    });
+    seeded.repositories.executions.updateStatus(execution.identity.executionId, 'RUNNING');
+    seeded.repositories.executions.recordResult(execution.identity.executionId, {
+      status: 'FAILED',
+      errorCode: 'WORKSPACE_GIT_FAILED',
+      retryable: true,
+    });
+    seeded.repositories.plans.updateWorkItemStatus(execution.identity.workItemId!, 'FAILED');
+  }
+  const left = items.find((item) => item.itemKey === 'left')!;
+  const right = items.find((item) => item.itemKey === 'right')!;
+  const leftExecution = originals.find(
+    (execution) => execution.identity.workItemId === left.workItemId,
+  )!;
+  const rightExecution = originals.find(
+    (execution) => execution.identity.workItemId === right.workItemId,
+  )!;
+  workspace.committedCandidates.set(leftExecution.identity.executionId, 'left-candidate-sha');
+  workspace.committedCandidates.set(rightExecution.identity.executionId, 'base-sha');
+  seeded.repositories.executions.updateStatus(rightExecution.identity.executionId, 'CANCELLED');
+  seeded.repositories.plans.updateStatus(seeded.plan.planId, 'FAILED');
+
+  const recovered = await automation.reconcilePlan(seeded.plan.planId, 'retry-finalization');
+  assert.equal(recovered.code, 'FINALIZATION_RECOVERY_WAVE_QUEUED');
+  assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'RUNNING');
+  assert.deepEqual(
+    seeded.repositories.plans
+      .listWorkItems(seeded.plan.planId)
+      .filter((item) => item.wave === 1)
+      .map((item) => item.status),
+    ['RUNNING', 'RUNNING'],
+  );
+
+  const all = seeded.repositories.executions
+    .listByPlan(seeded.plan.planId)
+    .filter((execution) => execution.identity.phase === 'IMPLEMENT');
+  assert.equal(all.length, 4);
+  const recoveries = all.filter((execution) => execution.identity.attempt === 2);
+  assert.equal(recoveries.length, 2);
+  const recoveredLeft = recoveries.find(
+    (execution) => execution.identity.workItemId === left.workItemId,
+  )!;
+  const recoveredRight = recoveries.find(
+    (execution) => execution.identity.workItemId === right.workItemId,
+  )!;
+  assert.equal(recoveredLeft.identity.sourceRevision, 'left-candidate-sha');
+  assert.match(recoveredLeft.objective, /previous writer already committed candidate revision left-candidate-sha/);
+  assert.equal(recoveredRight.identity.sourceRevision, 'base-sha');
+  assert.equal(recoveredRight.objective, byItem.get(right.workItemId)!.objective);
+  assert.equal(recoveredLeft.identity.parentExecutionId, undefined);
+  assert.equal(recoveredRight.identity.parentExecutionId, rightExecution.identity.executionId);
+  assert.equal(leftExecution.status, 'QUEUED');
+  assert.equal(
+    seeded.repositories.executions.get(leftExecution.identity.executionId).status,
+    'FAILED',
+  );
+  assert.equal(
+    seeded.repositories.executions.get(rightExecution.identity.executionId).status,
+    'CANCELLED',
+  );
+  assert.equal(
+    seeded.repositories.executions.get(leftExecution.identity.executionId).errorCode,
+    'WORKSPACE_GIT_FAILED',
+  );
+  assert.equal(
+    seeded.repositories.executions.get(rightExecution.identity.executionId).errorCode,
+    'WORKSPACE_GIT_FAILED',
+  );
+
+  for (const [original, recovery] of [
+    [leftExecution, recoveredLeft],
+    [rightExecution, recoveredRight],
+  ] as const) {
+    const before = seeded.repositories.resourceSelections.get(original.identity.executionId)!;
+    const after = seeded.repositories.resourceSelections.get(recovery.identity.executionId)!;
+    assert.equal(after.resourceId, before.resourceId);
+    assert.equal(after.bindingId, before.bindingId);
+    assert.equal(after.modelFamily, before.modelFamily);
+  }
+
+  const recoveryEvents = seeded.repositories.events
+    .listByAggregate(seeded.plan.planId)
+    .filter((event) => event.type === 'PLAN_FINALIZATION_RECOVERY_QUEUED');
+  assert.equal(recoveryEvents.length, 1);
+  const repeated = await automation.reconcilePlan(seeded.plan.planId, 'retry-finalization');
+  assert.equal(repeated.code, 'PLAN_FINALIZATION_RECOVERY_NOT_FAILED');
+  assert.equal(
+    seeded.repositories.executions
+      .listByPlan(seeded.plan.planId)
+      .filter((execution) => execution.identity.phase === 'IMPLEMENT').length,
+    4,
+  );
+  seeded.db.close();
+});
+
+test('finalization recovery preflight failure leaves the failed sibling wave untouched', async () => {
+  const seeded = seed([
+    { itemKey: 'left', parallelSafe: true, writeScopes: ['src/left/**'] },
+    { itemKey: 'right', parallelSafe: true, writeScopes: ['src/right/**'] },
+  ]);
+  const workspace = new AutomationWorkspace();
+  const runner = new ScriptedRunner(seeded.repositories, workspace);
+  const selector = retrySelector();
+  const automation = new PlanAutomationRuntime(
+    seeded.repositories,
+    runner,
+    workspace,
+    new StaticPlanAutomationPolicyResolver({
+      resourceSelection: { includeProviderNativeProfiles: true },
+      maxImplementationAttempts: 3,
+      maxReviewAttempts: 2,
+      maxInfrastructureAttempts: 2,
+      maxRepairCycles: 3,
+      maxParallelWorkItems: 2,
+    }),
+    undefined,
+    selector,
+  );
+  await automation.runPlan(seeded.plan.planId);
+  const executions = seeded.repositories.executions.listByPlan(seeded.plan.planId);
+  const items = seeded.repositories.plans.listWorkItems(seeded.plan.planId);
+  for (const execution of executions) {
+    const descriptor = await workspace.provision({
+      executionId: execution.identity.executionId,
+      planId: seeded.plan.planId,
+      projectKey: seeded.plan.projectKey,
+      workItemId: execution.identity.workItemId,
+      repositoryPath: seeded.plan.repositoryPath,
+      sourceRevision: execution.identity.sourceRevision!,
+      phase: 'IMPLEMENT',
+    });
+    seeded.repositories.sessions.create({
+      executionId: execution.identity.executionId,
+      phase: 'IMPLEMENT',
+      provider: 'failed-finalization-provider',
+      workspace: descriptor,
+      sourceRevision: execution.identity.sourceRevision!,
+    });
+    seeded.repositories.executions.updateStatus(execution.identity.executionId, 'RUNNING');
+    seeded.repositories.executions.recordResult(execution.identity.executionId, {
+      status: 'FAILED',
+      errorCode: 'WORKSPACE_GIT_FAILED',
+      retryable: true,
+    });
+    seeded.repositories.plans.updateWorkItemStatus(execution.identity.workItemId!, 'FAILED');
+  }
+  seeded.repositories.plans.updateStatus(seeded.plan.planId, 'FAILED');
+  const originalInspector = workspace.inspectCommittedImplementation.bind(workspace);
+  let calls = 0;
+  workspace.inspectCommittedImplementation = async (descriptor) => {
+    calls += 1;
+    if (calls === 2) throw new ForgeFlowError('WORKSPACE_FINALIZATION_RECOVERY_DIRTY');
+    return await originalInspector(descriptor);
+  };
+
+  await assert.rejects(
+    () => automation.reconcilePlan(seeded.plan.planId, 'retry-finalization'),
+    (error: unknown) => error instanceof ForgeFlowError && error.code === 'WORKSPACE_FINALIZATION_RECOVERY_DIRTY',
+  );
+  assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'FAILED');
+  assert.deepEqual(
+    items.map((item) => seeded.repositories.plans.getWorkItem(item.workItemId).status),
+    ['FAILED', 'FAILED'],
+  );
+  assert.equal(seeded.repositories.executions.listByPlan(seeded.plan.planId).length, 2);
+  seeded.db.close();
+});
+
+test('failed sibling recovery is atomic when one target is no longer recoverable', () => {
+  const seeded = seed([
+    { itemKey: 'left', parallelSafe: true, writeScopes: ['src/left/**'] },
+    { itemKey: 'right', parallelSafe: true, writeScopes: ['src/right/**'] },
+  ]);
+  const items = seeded.repositories.plans.listWorkItems(seeded.plan.planId);
+  for (const item of items) {
+    seeded.repositories.plans.updateWorkItemStatus(item.workItemId, 'RUNNING');
+    seeded.repositories.plans.updateWorkItemStatus(item.workItemId, 'FAILED');
+  }
+  seeded.repositories.plans.updateStatus(seeded.plan.planId, 'RUNNING');
+  seeded.repositories.plans.updateStatus(seeded.plan.planId, 'FAILED');
+  seeded.repositories.plans.updateWorkItemStatus(items[1]!.workItemId, 'READY');
+
+  assert.throws(
+    () => seeded.repositories.plans.recoverFailedPlanWorkItems(
+      seeded.plan.planId,
+      items.map((item) => item.workItemId),
+    ),
+    (error: unknown) => error instanceof ForgeFlowError && error.code === 'PLAN_RECOVERY_WORK_ITEM_INVALID',
+  );
+  assert.equal(seeded.repositories.plans.getPlan(seeded.plan.planId).status, 'FAILED');
+  assert.equal(seeded.repositories.plans.getWorkItem(items[0]!.workItemId).status, 'FAILED');
+  assert.equal(seeded.repositories.plans.getWorkItem(items[1]!.workItemId).status, 'READY');
   seeded.db.close();
 });
 

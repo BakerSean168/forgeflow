@@ -30,11 +30,13 @@ Project registration itself is operator-controlled and intentionally not writabl
 
 ## Plan recovery modes
 
-`POST /api/v1/plans/:planId/reconcile` keeps its existing optional string `mode` contract. Supported V1 recovery modes include normal `auto`, review/delivery recovery, and the explicit `retry-infrastructure` operator mode.
+`POST /api/v1/plans/:planId/reconcile` keeps its existing optional string `mode` contract. Supported V1 recovery modes include normal `auto`, review/delivery recovery, and the explicit `retry-infrastructure` / `retry-finalization` operator modes.
 
 `retry-infrastructure` is intentionally narrow: it applies only to a `WAITING_FOR_RESOURCE` Plan whose RUNNING work item has no active Execution and whose latest implementation/repair failure is classified as provider/resource/workspace-capacity infrastructure. ForgeFlow preserves every historical failed Execution and all prior route exclusions, verifies the durable literal-worktree/source revision when Plan worktrees are in use, preserves the product-attempt budget, and reopens only the latest failed route after it becomes healthy again. If the selector would choose a different route, the recovery remains waiting instead of silently substituting another provider. Multiple RUNNING siblings are preflighted before the recovery wave is committed so an operator action cannot create a half-wave.
 
-This mode is for an infrastructure fault that was fixed outside the Plan, such as repairing a provider runner or mount/provenance boundary. It is not a general retry override and does not make product/test/review failures retryable.
+`retry-finalization` is for a FAILED same-wave implementation whose provider finished after producing repository state but controller-side Git/evidence finalization failed. Every failed sibling is preflighted before durable recovery. Literal-worktree recovery repairs controller-owned Git/submodule metadata without resetting the superproject HEAD, requires a clean source descendant and declared write-scope compliance, and preserves only committed repository facts. A sibling with a preserved candidate starts a new real provider execution from that exact candidate and must rerun checks before it can emit normal completion evidence; a sibling with no committed candidate starts from its original source revision. Historical failed/cancelled Executions remain immutable, product attempt budget is not reset, and independent exact-SHA Review is still mandatory.
+
+These modes are for infrastructure/finalization faults that were fixed outside the product implementation. They are not general retry overrides and do not make product/test/review failures retryable or permit synthetic success evidence.
 
 ## Trust boundary
 

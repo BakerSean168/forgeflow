@@ -16,7 +16,7 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 }
 
-function fixture() {
+function fixture(options: { withSubmodule?: boolean } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-literal-workspace-'));
   const repositoriesRoot = path.join(root, 'repositories');
   const repository = path.join(repositoriesRoot, 'project');
@@ -29,6 +29,34 @@ function fixture() {
   fs.writeFileSync(path.join(repository, 'README.md'), 'base\n');
   git(repository, ['add', 'README.md']);
   git(repository, ['commit', '-m', 'chore: base']);
+  let submoduleRevision: string | undefined;
+  if (options.withSubmodule) {
+    const submoduleSource = path.join(repositoriesRoot, 'knowledge-source');
+    fs.mkdirSync(submoduleSource, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main', submoduleSource]);
+    git(submoduleSource, ['config', 'user.name', 'Literal Submodule Test']);
+    git(submoduleSource, ['config', 'user.email', 'literal-submodule@test.local']);
+    fs.writeFileSync(path.join(submoduleSource, 'INDEX.md'), 'pinned\n');
+    git(submoduleSource, ['add', 'INDEX.md']);
+    git(submoduleSource, ['commit', '-m', 'chore: pin knowledge']);
+    submoduleRevision = git(submoduleSource, ['rev-parse', 'HEAD']);
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'protocol.file.allow=always',
+        '-C',
+        repository,
+        'submodule',
+        'add',
+        '--',
+        submoduleSource,
+        'vendor/knowledge',
+      ],
+      { stdio: 'ignore' },
+    );
+    git(repository, ['commit', '-m', 'chore: add knowledge submodule']);
+  }
   const revision = git(repository, ['rev-parse', 'HEAD']);
   const db = openDatabase(path.join(root, 'forgeflow.sqlite'), { environment: 'test' });
   const repositories = createRepositories(db);
@@ -78,6 +106,7 @@ function fixture() {
     repository,
     managed,
     revision,
+    submoduleRevision,
     db,
     repositories,
     plan,
@@ -144,6 +173,93 @@ function implementationEvidence(
     tests: [{ command: 'test', status: 'PASS', exitCode: 0 }],
   } as const;
 }
+
+test('committed finalization inspection repairs nested submodule metadata without resetting the candidate', async () => {
+  const value = fixture({ withSubmodule: true });
+  assert.ok(value.submoduleRevision);
+  const implementation = createExecution(value, 'exec-finalization-candidate', 'IMPLEMENT', value.revision);
+  const workspace = await value.adapter.provision({
+    executionId: implementation.identity.executionId,
+    planId: value.plan.planId,
+    projectKey: value.plan.projectKey,
+    workItemId: value.item.workItemId,
+    repositoryPath: value.repository,
+    sourceRevision: value.revision,
+    phase: 'IMPLEMENT',
+  });
+  attachSession(value, implementation.identity.executionId, workspace);
+  fs.mkdirSync(path.join(workspace.hostPath, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspace.hostPath, 'src/item.txt'), 'candidate\n');
+  git(workspace.hostPath, ['add', 'src/item.txt']);
+  git(workspace.hostPath, ['commit', '-m', 'feat: preserve committed candidate']);
+  const candidate = git(workspace.hostPath, ['rev-parse', 'HEAD']);
+  assert.notEqual(candidate, value.revision);
+
+  const nestedGitfile = path.join(workspace.hostPath, 'vendor', 'knowledge', '.git');
+  fs.chmodSync(nestedGitfile, 0o644);
+  fs.writeFileSync(nestedGitfile, 'gitdir: /tmp/forgeflow-corrupted-nested-gitdir\n');
+  assert.throws(() => git(workspace.hostPath, ['status', '--porcelain=v1']));
+  value.repositories.plans.updateWorkItemStatus(value.item.workItemId, 'RUNNING');
+  value.repositories.executions.updateStatus(implementation.identity.executionId, 'RUNNING');
+  value.repositories.executions.recordResult(implementation.identity.executionId, {
+    status: 'FAILED',
+    errorCode: 'WORKSPACE_GIT_FAILED',
+    retryable: true,
+  });
+  value.repositories.plans.updateWorkItemStatus(value.item.workItemId, 'FAILED');
+  value.repositories.plans.updateStatus(value.plan.planId, 'FAILED');
+
+  const inspected = await value.adapter.inspectCommittedImplementation(workspace);
+  assert.equal(inspected.headRevision, candidate);
+  assert.equal(inspected.sourceRevision, value.revision);
+  assert.equal(inspected.clean, true);
+  assert.equal(inspected.descendantOfSource, true);
+  assert.deepEqual(inspected.changedFiles, ['src/item.txt']);
+  assert.equal(git(workspace.hostPath, ['rev-parse', 'HEAD']), candidate);
+  assert.equal(git(workspace.hostPath, ['status', '--porcelain=v1']), '');
+  assert.match(
+    git(workspace.hostPath, ['submodule', 'status', '--recursive']),
+    new RegExp('^' + value.submoduleRevision + ' vendor/knowledge'),
+  );
+  assert.doesNotMatch(fs.readFileSync(nestedGitfile, 'utf8'), /forgeflow-corrupted-nested/);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('committed finalization inspection rejects a clean candidate outside the declared write scope', async () => {
+  const value = fixture();
+  const implementation = createExecution(value, 'exec-finalization-out-of-scope', 'IMPLEMENT', value.revision);
+  const workspace = await value.adapter.provision({
+    executionId: implementation.identity.executionId,
+    planId: value.plan.planId,
+    projectKey: value.plan.projectKey,
+    workItemId: value.item.workItemId,
+    repositoryPath: value.repository,
+    sourceRevision: value.revision,
+    phase: 'IMPLEMENT',
+  });
+  attachSession(value, implementation.identity.executionId, workspace);
+  fs.writeFileSync(path.join(workspace.hostPath, 'README.md'), 'out of scope\n');
+  git(workspace.hostPath, ['add', 'README.md']);
+  git(workspace.hostPath, ['commit', '-m', 'chore: escape declared scope']);
+  value.repositories.plans.updateWorkItemStatus(value.item.workItemId, 'RUNNING');
+  value.repositories.executions.updateStatus(implementation.identity.executionId, 'RUNNING');
+  value.repositories.executions.recordResult(implementation.identity.executionId, {
+    status: 'FAILED',
+    errorCode: 'WORKSPACE_GIT_FAILED',
+    retryable: true,
+  });
+  value.repositories.plans.updateWorkItemStatus(value.item.workItemId, 'FAILED');
+  value.repositories.plans.updateStatus(value.plan.planId, 'FAILED');
+
+  await assert.rejects(
+    () => value.adapter.inspectCommittedImplementation(workspace),
+    (error: unknown) => error instanceof ForgeFlowError && error.code === 'WORKSPACE_WRITE_SCOPE_VIOLATED',
+  );
+  assert.notEqual(git(workspace.hostPath, ['rev-parse', 'HEAD']), value.revision);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
 
 test('literal workspace completes implementation, exact-SHA review and Plan integration without touching canonical checkout', async () => {
   const value = fixture();

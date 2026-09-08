@@ -14,7 +14,7 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 }
 
-function fixture() {
+function fixture(options: { withSubmodule?: boolean } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forgeflow-plan-worktrees-'));
   const repositoriesRoot = path.join(root, 'repositories');
   const repository = path.join(repositoriesRoot, 'project-gamma');
@@ -27,6 +27,34 @@ function fixture() {
   fs.writeFileSync(path.join(repository, 'README.md'), 'base\n');
   git(repository, ['add', 'README.md']);
   git(repository, ['commit', '-m', 'chore: base']);
+  let submoduleRevision: string | undefined;
+  if (options.withSubmodule) {
+    const submoduleSource = path.join(root, 'submodule-source');
+    fs.mkdirSync(submoduleSource, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main', submoduleSource]);
+    git(submoduleSource, ['config', 'user.name', 'ForgeFlow Submodule Test']);
+    git(submoduleSource, ['config', 'user.email', 'forgeflow-submodule@test.local']);
+    fs.writeFileSync(path.join(submoduleSource, 'INDEX.md'), 'pinned submodule\n');
+    git(submoduleSource, ['add', 'INDEX.md']);
+    git(submoduleSource, ['commit', '-m', 'chore: submodule base']);
+    submoduleRevision = git(submoduleSource, ['rev-parse', 'HEAD']);
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'protocol.file.allow=always',
+        '-C',
+        repository,
+        'submodule',
+        'add',
+        '--',
+        submoduleSource,
+        'vendor/knowledge',
+      ],
+      { stdio: 'ignore' },
+    );
+    git(repository, ['commit', '-m', 'chore: pin submodule']);
+  }
   const revision = git(repository, ['rev-parse', 'HEAD']);
   const db = openDatabase(path.join(root, 'forgeflow.sqlite'), { environment: 'test' });
   const repositories = createRepositories(db);
@@ -71,6 +99,7 @@ function fixture() {
     repository,
     managed,
     revision,
+    submoduleRevision,
     db,
     repositories,
     plan,
@@ -143,6 +172,122 @@ test('PlanWorktreeManager creates one literal shared-common-dir worktree per rol
   fs.rmSync(value.root, { recursive: true, force: true });
 });
 
+
+test('literal worktrees initialize exact pinned submodules before writer access', async () => {
+  const value = fixture({ withSubmodule: true });
+  assert.ok(value.submoduleRevision);
+  const integration = await value.manager.ensureIntegration({
+    projectKey: value.plan.projectKey,
+    rootPlanId: value.plan.planId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  const item = await value.manager.ensureWorkItem({
+    projectKey: value.plan.projectKey,
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+
+  for (const worktree of [integration, item]) {
+    assert.match(
+      git(worktree.hostPath, ['submodule', 'status', '--recursive']),
+      new RegExp('^' + value.submoduleRevision + ' vendor/knowledge'),
+    );
+    assert.equal(git(worktree.hostPath, ['status', '--porcelain=v1']), '');
+    const gitfile = path.join(worktree.hostPath, 'vendor', 'knowledge', '.git');
+    assert.equal(fs.lstatSync(gitfile).isFile(), true);
+  }
+
+  await value.manager.prepareAgentAccess(
+    item.worktreeId,
+    process.getuid?.() ?? 1000,
+    process.getgid?.() ?? 1000,
+  );
+  const submoduleRoot = path.join(item.hostPath, 'vendor', 'knowledge');
+  const submoduleGitfile = path.join(submoduleRoot, '.git');
+  assert.notEqual(fs.statSync(submoduleRoot).mode & 0o1000, 0);
+  assert.equal(fs.statSync(submoduleGitfile).mode & 0o777, 0o444);
+  assert.equal(git(item.hostPath, ['status', '--porcelain=v1']), '');
+
+  await value.manager.retirePlan(value.plan.planId, process.getuid?.() ?? 1000);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test('writer retry repairs corrupted nested submodule Git metadata before handoff', async () => {
+  const value = fixture({ withSubmodule: true });
+  assert.ok(value.submoduleRevision);
+  const item = await value.manager.ensureWorkItem({
+    projectKey: value.plan.projectKey,
+    rootPlanId: value.plan.planId,
+    workItemId: value.itemA.workItemId,
+    repositoryPath: value.repository,
+    baseRevision: value.revision,
+  });
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-submodule-1',
+    value.revision,
+  );
+  createExecution(
+    value.repositories,
+    value.plan.planId,
+    value.itemA.workItemId,
+    'exec-submodule-2',
+    value.revision,
+  );
+  const uid = process.getuid?.() ?? 1000;
+  const gid = process.getgid?.() ?? 1000;
+  let owned = await value.manager.prepareWriterForExecution(
+    item.worktreeId,
+    'exec-submodule-1',
+    value.revision,
+    uid,
+    gid,
+  );
+  assert.equal(owned.ownerExecutionId, 'exec-submodule-1');
+  value.repositories.executions.updateStatus('exec-submodule-1', 'RUNNING');
+  value.repositories.executions.recordResult('exec-submodule-1', {
+    status: 'FAILED',
+    errorCode: 'PROVIDER_FAILED',
+    retryable: true,
+  });
+
+  const submoduleGitfile = path.join(item.hostPath, 'vendor', 'knowledge', '.git');
+  fs.chmodSync(submoduleGitfile, 0o644);
+  fs.writeFileSync(submoduleGitfile, 'gitdir: /tmp/forgeflow-broken-submodule-gitdir\n');
+  assert.throws(() => git(item.hostPath, ['status', '--porcelain=v1']));
+
+  owned = await value.manager.prepareWriterForExecution(
+    item.worktreeId,
+    'exec-submodule-2',
+    value.revision,
+    uid,
+    gid,
+  );
+  assert.equal(owned.ownerExecutionId, 'exec-submodule-2');
+  assert.match(
+    git(item.hostPath, ['submodule', 'status', '--recursive']),
+    new RegExp('^' + value.submoduleRevision + ' vendor/knowledge'),
+  );
+  assert.equal(git(item.hostPath, ['status', '--porcelain=v1']), '');
+  assert.doesNotMatch(fs.readFileSync(submoduleGitfile, 'utf8'), /\/tmp\/forgeflow-broken/);
+  assert.equal(fs.statSync(submoduleGitfile).mode & 0o777, 0o444);
+
+  value.repositories.executions.updateStatus('exec-submodule-2', 'CANCELLED');
+  await value.manager.abandonExecutionWorktree(
+    owned.worktreeId,
+    'exec-submodule-2',
+    value.revision,
+  );
+  await value.manager.retirePlan(value.plan.planId, uid);
+  value.db.close();
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
 
 test('worker Git object directories are sticky before shared object creation access is granted', async () => {
   const value = fixture();

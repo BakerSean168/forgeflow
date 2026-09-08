@@ -2,6 +2,7 @@ import type { ForgeFlowRepositories } from '../../core/persistence/repositories.
 import type {
   RepositoryObservation,
   WorkspaceCachePruneResult,
+  WorkspaceCommittedCandidateSnapshot,
   WorkspaceCompletionSnapshot,
   WorkspaceDescriptor,
   WorkspaceProviderPort,
@@ -86,6 +87,14 @@ export class ProjectScopedWorkspaceAdapter implements WorkspaceProviderPort {
     if (!provider.progressFingerprint)
       throw new ForgeFlowError('WORKSPACE_PROGRESS_FINGERPRINT_UNAVAILABLE');
     return await provider.progressFingerprint(workspace);
+  }
+
+  async inspectCommittedImplementation(
+    workspace: WorkspaceDescriptor,
+  ): Promise<WorkspaceCommittedCandidateSnapshot> {
+    if (!this.isLiteral(workspace) || !this.literal.inspectCommittedImplementation)
+      throw new ForgeFlowError('WORKSPACE_FINALIZATION_RECOVERY_UNAVAILABLE');
+    return await this.literal.inspectCommittedImplementation(workspace);
   }
 
   async prepareCancellationAccess(workspace: WorkspaceDescriptor): Promise<void> {

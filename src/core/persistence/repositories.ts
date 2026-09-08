@@ -1310,6 +1310,71 @@ export class PlanRepository {
     });
   }
 
+  recoverFailedPlanWorkItems(
+    planId: string,
+    workItemIds: readonly string[],
+  ): { plan: Plan; workItems: WorkItem[] } {
+    const ids = [...new Set(workItemIds.map((value) => value.trim()).filter(Boolean))].sort();
+    failClosed(ids.length > 0 && ids.length <= 64, 'PLAN_RECOVERY_WORK_ITEMS_INVALID');
+    failClosed(ids.length === workItemIds.length, 'PLAN_RECOVERY_WORK_ITEMS_INVALID');
+    return withTransaction(this.db, () => {
+      const plan = this.getPlan(planId);
+      const items = ids.map((workItemId) => this.getWorkItem(workItemId));
+      for (const item of items)
+        failClosed(item.planId === planId, 'PLAN_RECOVERY_WORK_ITEM_MISMATCH');
+      if (plan.status === 'RUNNING' && items.every((item) => item.status === 'RUNNING'))
+        return { plan, workItems: items };
+      if (plan.status !== 'FAILED') throw new ForgeFlowError('PLAN_NOT_RECOVERABLE');
+      for (const item of items)
+        if (item.status !== 'FAILED' && item.status !== 'BLOCKED')
+          throw new ForgeFlowError('PLAN_RECOVERY_WORK_ITEM_INVALID');
+
+      const updatedAt = iso();
+      for (const item of items) {
+        const readyItem = transitionWorkItem(item, 'READY', updatedAt);
+        const runningItem = transitionWorkItem(readyItem, 'RUNNING', updatedAt);
+        const itemResult = this.db
+          .prepare('UPDATE work_items SET status=?,updated_at=? WHERE work_item_id=? AND status=?')
+          .run('RUNNING', runningItem.updatedAt, item.workItemId, item.status);
+        if (Number(itemResult.changes) !== 1)
+          throw new StaleStateError('WORK_ITEM_RECOVERY_STALE');
+        this.events.appendInTransaction(
+          makeEvent(item.workItemId, 'WORK_ITEM', 'WORK_ITEM_STATUS_CHANGED', {
+            planId,
+            from: item.status,
+            to: 'READY',
+            recovery: true,
+          }),
+        );
+        this.events.appendInTransaction(
+          makeEvent(item.workItemId, 'WORK_ITEM', 'WORK_ITEM_STATUS_CHANGED', {
+            planId,
+            from: 'READY',
+            to: 'RUNNING',
+            recovery: true,
+          }),
+        );
+      }
+      transitionPlan(plan, 'RUNNING', updatedAt);
+      const planResult = this.db
+        .prepare('UPDATE plans SET status=?,updated_at=? WHERE plan_id=? AND status=?')
+        .run('RUNNING', updatedAt, planId, 'FAILED');
+      if (Number(planResult.changes) !== 1) throw new StaleStateError('PLAN_RECOVERY_STALE');
+      this.events.appendInTransaction(
+        makeEvent(planId, 'PLAN', 'PLAN_STATUS_CHANGED', {
+          from: 'FAILED',
+          to: 'RUNNING',
+          recovery: true,
+          workItemIds: ids,
+        }),
+      );
+      return {
+        plan: this.getPlan(planId),
+        workItems: ids.map((workItemId) => this.getWorkItem(workItemId)),
+      };
+    });
+  }
+
   acceptWorkItemRevision(
     workItemId: string,
     revision: string,
