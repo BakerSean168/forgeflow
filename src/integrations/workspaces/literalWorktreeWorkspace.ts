@@ -15,6 +15,7 @@ import {
   type ReviewCompletionEvidence,
   type TestCommandEvidence,
   type WorkspaceCachePruneResult,
+  type WorkspaceCommittedCandidateSnapshot,
   type WorkspaceCompletionSnapshot,
   type WorkspaceDescriptor,
   type WorkspaceProviderPort,
@@ -323,6 +324,73 @@ export class LiteralWorktreeWorkspaceAdapter implements WorkspaceProviderPort {
       fs.existsSync(descriptor.evidenceHostPath) ||
       fs.existsSync(path.join(descriptor.hostPath, REPOSITORY_COMPLETION_EVIDENCE_FILE))
     );
+  }
+
+  async inspectCommittedImplementation(
+    workspace: WorkspaceDescriptor,
+  ): Promise<WorkspaceCommittedCandidateSnapshot> {
+    const descriptor = this.validateWorkspace(workspace);
+    const record = this.repositories.planWorktrees.findByPath(descriptor.hostPath);
+    if (!record) throw new ForgeFlowError('WORKTREE_NOT_FOUND');
+    await this.manager.prepareFinalizationInspection(
+      record.worktreeId,
+      descriptor.executionId,
+      descriptor.sourceRevision,
+    );
+    await this.assertLiteralLinkage(descriptor);
+    const headRevision = await this.git(descriptor.hostPath, [
+      'rev-parse',
+      '--verify',
+      'HEAD^{commit}',
+    ]);
+    const clean = (await this.git(descriptor.hostPath, ['status', '--porcelain=v1', '-z'])).length === 0;
+    if (!clean) throw new ForgeFlowError('WORKSPACE_FINALIZATION_RECOVERY_DIRTY');
+    const descendantOfSource =
+      headRevision === descriptor.sourceRevision ||
+      (await this.gitSucceeds(descriptor.hostPath, [
+        'merge-base',
+        '--is-ancestor',
+        descriptor.sourceRevision,
+        headRevision,
+      ]));
+    if (!descendantOfSource) throw new ForgeFlowError('WORKSPACE_RESULT_NOT_DESCENDANT');
+    const changedFiles =
+      headRevision === descriptor.sourceRevision
+        ? []
+        : (
+            await this.git(descriptor.hostPath, [
+              'diff',
+              '--name-only',
+              '-z',
+              descriptor.sourceRevision + '..' + headRevision,
+            ])
+          )
+            .split('\0')
+            .filter(Boolean);
+    if (changedFiles.length > MAX_CHANGED_FILES)
+      throw new ForgeFlowError('WORKSPACE_CHANGED_FILES_INVALID');
+    this.assertDeclaredWriteScope(descriptor, changedFiles);
+    const diffStat =
+      headRevision === descriptor.sourceRevision
+        ? ''
+        : await this.git(descriptor.hostPath, [
+            'diff',
+            '--stat',
+            '--summary',
+            descriptor.sourceRevision + '..' + headRevision,
+          ]);
+    if (Buffer.byteLength(diffStat, 'utf8') > MAX_DIFF_STAT_BYTES)
+      throw new ForgeFlowError('WORKSPACE_DIFF_STAT_TOO_LARGE');
+    return {
+      workspace: descriptor,
+      headRevision,
+      sourceRevision: descriptor.sourceRevision,
+      clean: true,
+      descendantOfSource: true,
+      changedFiles,
+      diffStat,
+      observedAt: new Date().toISOString(),
+    };
   }
 
   async prepareCancellationAccess(workspace: WorkspaceDescriptor): Promise<void> {

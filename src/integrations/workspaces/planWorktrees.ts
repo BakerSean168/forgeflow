@@ -323,6 +323,43 @@ export class PlanWorktreeManager {
     return await this.grantAgentFilesystemAccess(current, uid, gid);
   }
 
+  async prepareFinalizationInspection(
+    worktreeIdValue: string,
+    executionId: string,
+    expectedSourceRevision: string,
+  ): Promise<PlanWorktree> {
+    failClosed(executionId.trim().length > 0, 'EXECUTION_ID_REQUIRED');
+    failClosed(expectedSourceRevision.trim().length > 0, 'WORKTREE_CURRENT_REVISION_REQUIRED');
+    const current = this.repositories.planWorktrees.get(worktreeIdValue);
+    const rootPlan = this.repositories.plans.getPlan(current.rootPlanId);
+    const execution = this.repositories.executions.get(executionId);
+    failClosed(rootPlan.status === 'FAILED', 'WORKTREE_FINALIZATION_RECOVERY_PLAN_NOT_FAILED');
+    failClosed(
+      current.role === 'WORK_ITEM' || current.role === 'DELIVERY_REPAIR',
+      'WORKTREE_FINALIZATION_RECOVERY_ROLE_INVALID',
+    );
+    failClosed(current.ownerExecutionId === executionId, 'WORKTREE_FINALIZATION_RECOVERY_OWNER_MISMATCH');
+    failClosed(
+      execution.status === 'FAILED' || execution.status === 'BLOCKED' || execution.status === 'CANCELLED',
+      'WORKTREE_FINALIZATION_RECOVERY_EXECUTION_NOT_TERMINAL',
+    );
+    failClosed(
+      execution.identity.sourceRevision === expectedSourceRevision,
+      'WORKTREE_FINALIZATION_RECOVERY_SOURCE_MISMATCH',
+    );
+    failClosed(
+      this.rootPlanIdFor(execution.identity.planId) === current.rootPlanId,
+      'WORKTREE_FINALIZATION_RECOVERY_PLAN_MISMATCH',
+    );
+    await this.assertProtectedRefsStable(current.rootPlanId);
+    await this.restoreWorktreeAdminSourceAccess(current);
+    await this.restoreWorktreeRefSourceAccess(current);
+    await this.verifyRegistered(current, undefined, current.branchRef, false);
+    await this.initializePinnedSubmodules(current, true);
+    await this.verifyRegistered(current, undefined, current.branchRef, false);
+    return this.repositories.planWorktrees.get(current.worktreeId);
+  }
+
   async prepareCancellationAccess(
     worktreeIdValue: string,
     executionId: string,

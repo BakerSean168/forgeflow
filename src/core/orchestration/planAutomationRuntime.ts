@@ -146,6 +146,10 @@ const FINALIZATION_RECOVERY_CODES = new Set([
   'WORKSPACE_EVIDENCE_INVALID',
   'WORKSPACE_IMPLEMENTATION_EVIDENCE_MISMATCH',
 ]);
+const EXPLICIT_FINALIZATION_RECOVERY_CODES = new Set([
+  ...FINALIZATION_RECOVERY_CODES,
+  'WORKSPACE_GIT_FAILED',
+]);
 const REVIEW_RECOVERY_EVIDENCE_NAME = 'operator-review-recovery';
 const PROVIDER_CLEANUP_EVIDENCE_NAMES = [
   'provider-session-cleanup',
@@ -289,7 +293,7 @@ export class PlanAutomationRuntime {
     const code = execution.errorCode ?? '';
     if (
       /^(?:OPENHANDS|PROVIDER|LLM|ANTIGRAVITY|CODEX|CLAUDE|DSH|ZCODE|RESOURCE_)/.test(code) ||
-      /^(?:WORKSPACE_STORAGE_|WORKSPACE_CAPACITY_|WORKSPACE_EVIDENCE_|WORKSPACE_REVIEW_|WORKSPACE_IMPLEMENTATION_NOOP)/.test(
+      /^(?:WORKSPACE_STORAGE_|WORKSPACE_CAPACITY_|WORKSPACE_EVIDENCE_|WORKSPACE_REVIEW_|WORKSPACE_GIT_FAILED$|WORKSPACE_IMPLEMENTATION_NOOP)/.test(
         code,
       )
     )
@@ -614,6 +618,8 @@ export class PlanAutomationRuntime {
     if (mode === 'retry-delivery' || mode === 'retry_delivery') return await this.runPlan(planId);
     if (mode === 'retry-infrastructure' || mode === 'retry_infrastructure')
       return await this.reconcileWaitingInfrastructure(planId);
+    if (mode === 'retry-finalization' || mode === 'retry_finalization')
+      return await this.reconcileFailedFinalizationWave(planId);
     if (mode !== 'auto') throw new ForgeFlowError('PLAN_RECONCILE_MODE_INVALID');
     let plan = this.repositories.plans.getPlan(planId);
     if (
@@ -1012,6 +1018,190 @@ export class PlanAutomationRuntime {
         created.length > 1
           ? 'INFRASTRUCTURE_RECOVERY_WAVE_QUEUED'
           : 'INFRASTRUCTURE_RECOVERY_QUEUED',
+      revision: plan.currentRevision,
+    };
+  }
+
+  private async reconcileFailedFinalizationWave(planId: string): Promise<PlanAutomationResult> {
+    const plan = this.repositories.plans.getPlan(planId);
+    if (plan.status !== 'FAILED')
+      return { planId, status: 'SKIPPED', code: 'PLAN_FINALIZATION_RECOVERY_NOT_FAILED' };
+    const rawPolicy = this.policies.resolve(plan.projectKey);
+    if (!rawPolicy) return { planId, status: 'WAITING', code: 'PLAN_POLICY_UNAVAILABLE' };
+    const policy = normalizePolicy(rawPolicy, Boolean(this.resourceSelector));
+    if (!this.workspace.inspectCommittedImplementation)
+      throw new ForgeFlowError('WORKSPACE_FINALIZATION_RECOVERY_UNAVAILABLE');
+    const active = this.repositories.executions
+      .listByPlan(planId)
+      .filter((execution) => execution.status === 'QUEUED' || execution.status === 'RUNNING');
+    if (active.length > 0)
+      throw new ForgeFlowError('PLAN_FINALIZATION_RECOVERY_ACTIVE_EXECUTION_CONFLICT');
+    const graph = this.repositories.plans.getActiveGraphVersion(planId);
+    if (!graph) throw new ForgeFlowError('PLAN_GRAPH_MISSING');
+    const failedItems = this.repositories.plans
+      .listWorkItems(planId, graph.graphVersionId)
+      .filter((item) => item.status === 'FAILED' || item.status === 'BLOCKED');
+    if (failedItems.length === 0)
+      return { planId, status: 'SKIPPED', code: 'PLAN_FINALIZATION_RECOVERY_WORK_ITEMS_MISSING' };
+    const waves = new Set(failedItems.map((item) => item.wave));
+    if (waves.size !== 1 || !Number.isInteger([...waves][0]) || Number([...waves][0]) <= 0)
+      throw new ForgeFlowError('PLAN_FINALIZATION_RECOVERY_WAVE_INVALID');
+
+    const targets: Array<{
+      item: WorkItem;
+      candidate: Execution;
+      candidates: Execution[];
+      sourceRevision: string;
+      objective: string;
+      reuseSelection?: ExecutionResourceSelection;
+    }> = [];
+
+    for (const item of failedItems) {
+      const candidates = this.repositories.executions
+        .listByWorkItem(item.workItemId)
+        .filter(
+          (execution) =>
+            execution.identity.phase === 'IMPLEMENT' || execution.identity.phase === 'IMPLEMENT_FIX',
+        );
+      const candidate = latest(candidates);
+      if (!candidate) throw new ForgeFlowError('PLAN_FINALIZATION_RECOVERY_EXECUTION_MISSING');
+      if (
+        (candidate.status !== 'FAILED' &&
+          candidate.status !== 'BLOCKED' &&
+          candidate.status !== 'CANCELLED') ||
+        !candidate.identity.sourceRevision ||
+        !candidate.errorCode ||
+        !EXPLICIT_FINALIZATION_RECOVERY_CODES.has(candidate.errorCode)
+      )
+        throw new ForgeFlowError('PLAN_FINALIZATION_RECOVERY_EXECUTION_INVALID');
+      const cleanupBarrier = await this.ensureProviderCleanupBeforeRetry(candidate);
+      if (cleanupBarrier) return cleanupBarrier;
+      const session = this.repositories.sessions.getOptional(candidate.identity.executionId);
+      if (!session) throw new ForgeFlowError('PLAN_FINALIZATION_RECOVERY_SESSION_MISSING');
+      const inspected = await this.workspace.inspectCommittedImplementation(session.workspace);
+      if (
+        inspected.sourceRevision !== candidate.identity.sourceRevision ||
+        inspected.workspace.executionId !== candidate.identity.executionId ||
+        !inspected.clean ||
+        !inspected.descendantOfSource
+      )
+        throw new ForgeFlowError('PLAN_FINALIZATION_RECOVERY_WORKSPACE_INVALID');
+
+      const phaseCandidates = candidates.filter(
+        (execution) => execution.identity.phase === candidate.identity.phase,
+      );
+      const usage = this.implementationAttemptUsage(phaseCandidates);
+      if (usage.product >= policy.maxImplementationAttempts)
+        return {
+          planId,
+          workItemId: item.workItemId,
+          executionId: candidate.identity.executionId,
+          status: 'FAILED',
+          code:
+            candidate.identity.phase === 'IMPLEMENT'
+              ? 'IMPLEMENTATION_ATTEMPTS_EXHAUSTED'
+              : 'REPAIR_ATTEMPTS_EXHAUSTED',
+        };
+
+      const candidatePreserved = inspected.headRevision !== candidate.identity.sourceRevision;
+      const objective = candidatePreserved
+        ? [
+            'Finalization recovery for work item ' + item.itemKey + '.',
+            'The previous writer already committed candidate revision ' + inspected.headRevision + '.',
+            'Treat that exact revision as the starting point. Re-run the required focused and wider checks.',
+            'If the existing candidate satisfies the objective, leave tracked files unchanged and complete with outcome SATISFIED.',
+            'Only modify tracked files when a real verification failure requires a bounded fix, then commit that fix cleanly.',
+            '',
+            'Original objective:',
+            item.objective,
+          ].join('\n')
+        : item.objective;
+      let reuseSelection: ExecutionResourceSelection | undefined;
+      if (this.resourceSelector) {
+        reuseSelection = this.repositories.resourceSelections.get(candidate.identity.executionId);
+        if (!reuseSelection)
+          throw new ForgeFlowError('PLAN_FINALIZATION_RECOVERY_SELECTION_MISSING');
+      }
+      targets.push({
+        item,
+        candidate,
+        candidates,
+        sourceRevision: inspected.headRevision,
+        objective,
+        ...(reuseSelection ? { reuseSelection } : {}),
+      });
+    }
+
+    const created = this.repositories.transaction(() => {
+      const recovered = this.repositories.plans.recoverFailedPlanWorkItems(
+        planId,
+        targets.map((target) => target.item.workItemId),
+      );
+      const recoveredById = new Map(recovered.workItems.map((item) => [item.workItemId, item]));
+      const executions = targets.map((target) => {
+        const item = recoveredById.get(target.item.workItemId);
+        if (!item) throw new ForgeFlowError('PLAN_FINALIZATION_RECOVERY_WORK_ITEM_MISSING');
+        const legacyRoute = this.resourceSelector ? undefined : target.candidate.identity.route;
+        const preservedCandidate =
+          target.sourceRevision !== target.candidate.identity.sourceRevision;
+        let parentExecutionId: string | undefined;
+        if (target.candidate.identity.phase === 'IMPLEMENT_FIX') {
+          if (preservedCandidate)
+            throw new ForgeFlowError('PLAN_FINALIZATION_RECOVERY_REPAIR_CANDIDATE_UNSUPPORTED');
+          parentExecutionId = target.candidate.identity.parentExecutionId;
+          if (!parentExecutionId)
+            throw new ForgeFlowError('PLAN_FINALIZATION_RECOVERY_REPAIR_PARENT_INVALID');
+        } else if (!preservedCandidate) {
+          parentExecutionId = target.candidate.identity.executionId;
+        }
+        return this.createSelectedExecution(
+          {
+            plan: recovered.plan,
+            item,
+            phase: target.candidate.identity.phase,
+            ...(parentExecutionId ? { parentExecutionId } : {}),
+            attempt: target.candidate.identity.attempt + 1,
+            sourceRevision: target.sourceRevision,
+            objective: target.objective,
+          },
+          policy,
+          legacyRoute,
+          target.candidates,
+          target.reuseSelection,
+        );
+      });
+      this.repositories.events.appendNew({
+        aggregateId: planId,
+        aggregateType: 'PLAN',
+        type: 'PLAN_FINALIZATION_RECOVERY_QUEUED',
+        payload: {
+          wave: [...waves][0],
+          workItems: executions.map((execution, index) => ({
+            workItemId: targets[index]!.item.workItemId,
+            previousExecutionId: targets[index]!.candidate.identity.executionId,
+            recoveryExecutionId: execution.identity.executionId,
+            originalSourceRevision: targets[index]!.candidate.identity.sourceRevision,
+            recoverySourceRevision: execution.identity.sourceRevision,
+            preservedCandidate:
+              execution.identity.sourceRevision !==
+              targets[index]!.candidate.identity.sourceRevision,
+          })),
+        },
+        occurredAt: new Date().toISOString(),
+        correlationId: planId,
+      });
+      return executions;
+    });
+    const first = created[0]!;
+    return {
+      planId,
+      workItemId: first.identity.workItemId,
+      executionId: first.identity.executionId,
+      status: 'RUNNING',
+      code:
+        created.length > 1
+          ? 'FINALIZATION_RECOVERY_WAVE_QUEUED'
+          : 'FINALIZATION_RECOVERY_QUEUED',
       revision: plan.currentRevision,
     };
   }

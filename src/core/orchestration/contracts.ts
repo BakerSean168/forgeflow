@@ -204,6 +204,18 @@ export interface WorkspaceCompletionSnapshot {
   observedAt: string;
 }
 
+
+export interface WorkspaceCommittedCandidateSnapshot {
+  workspace: WorkspaceDescriptor;
+  headRevision: string;
+  sourceRevision: string;
+  clean: true;
+  descendantOfSource: true;
+  changedFiles: string[];
+  diffStat: string;
+  observedAt: string;
+}
+
 export interface WorkspaceProvisionInput {
   executionId: string;
   planId?: string;
@@ -234,6 +246,10 @@ export interface WorkspaceProviderPort {
   hasCompletionEvidence?(workspace: WorkspaceDescriptor): boolean;
   /** Opaque repository-state hash; raw paths/content are never persisted by the worker. */
   progressFingerprint?(workspace: WorkspaceDescriptor): Promise<string>;
+  /** Inspect a terminal failed writer's committed HEAD after controller-owned metadata repair. */
+  inspectCommittedImplementation?(
+    workspace: WorkspaceDescriptor,
+  ): Promise<WorkspaceCommittedCandidateSnapshot>;
   /** Restore bounded workspace access needed to tear down a recovered remote provider session. */
   prepareCancellationAccess?(workspace: WorkspaceDescriptor): Promise<void>;
   /** Discard unaccepted execution-local work and release any shared worktree writer ownership. */
