@@ -867,7 +867,8 @@ Real-project trigger:
 - the first post-v1.4.0 Digital Biome optimization Plan requested exact base `d5a7e3a...`, after a documentation/CI PR had advanced `main` outside ForgeFlow;
 - the controlled Digital Biome checkout was already clean at that exact new `main` SHA, while the durable project lease still recorded the prior ForgeFlow logical head `7a49535...`;
 - the scheduler correctly preserved its durable lease authority, but therefore activated the Plan and literal worktrees from the stale logical head and could not see the newly merged optimization specification;
-- the incorrect-base Plan was cancelled through the public API before any implementation was accepted; provider/worktree cleanup and lease release completed without rewriting product truth.
+- the incorrect-base Plan was cancelled through the public API before any implementation was accepted; provider/worktree cleanup and lease release completed without rewriting product truth;
+- after external-head adoption was fixed and production-reproduced, the same Digital Biome Plan exposed a second integration boundary: the configured control checkout is itself a legitimate linked Git worktree, while the Antigravity systemd runner still required `sourceRepository/.git` to be a directory; two free implementation bindings stalled without workspace progress, then Antigravity correctly failed closed with `ANTIGRAVITY_UNIT_SOURCE_GIT_INVALID` before model execution.
 
 Hardening:
 
@@ -877,7 +878,9 @@ Hardening:
 - Git observation and ancestry proof stay in the Application/Workspace boundary, while Persistence owns only the version-fenced durable lease CAS;
 - adoption occurs before Plan creation, so rejected dirty/stale requests leave no DRAFT Plan residue;
 - the accepted transition emits a sanitized `PROJECT_PLAN_EXTERNAL_HEAD_ADOPTED` maintenance event with old/new revision and lease version;
-- queued Plans under an active root keep the existing semantics of inheriting the ForgeFlow-managed project head; this change only reconciles an idle project's legitimate external fast-forward.
+- queued Plans under an active root keep the existing semantics of inheriting the ForgeFlow-managed project head; this change only reconciles an idle project's legitimate external fast-forward;
+- Antigravity source provenance now accepts either a normal `.git/` directory or a linked-worktree gitfile only after proving the complete source-gitfile -> worktree-admin -> admin-`gitdir` backlink -> `commondir` chain; the Plan worktree must still resolve to that same Git common dir;
+- the Git provenance resolver is a separately testable exact-SHA helper installed beside the systemd runner, and release promotion byte-compares both files before marking provenance healthy.
 
 Verification before PR:
 
@@ -885,7 +888,9 @@ Verification before PR:
 - a real Git fixture proves clean external fast-forward adoption, exact base/current revision alignment, durable event evidence, and stale-base rejection;
 - persistence regression proves version fencing and active-lease exclusion;
 - dirty canonical and stale-base requests are rejected before Plan creation with zero durable Plan residue;
-- full repository tests: 412/412 passing;
+- linked-source Git provenance fixtures accept normal and legitimate linked control worktrees while rejecting forged admin backlinks and symlinked Git metadata;
+- deployment regression proves the exact provenance helper is syntax-checked, installed, and byte-compared with the Antigravity runner;
+- full repository tests: 415/415 passing;
 - client tests: 7/7 passing;
 - OpenAPI/API compatibility remains unchanged at 45 operations and both committed V1 floors pass;
 - architecture, generated client drift, TypeScript, server/client builds, and npm-pack gates pass.

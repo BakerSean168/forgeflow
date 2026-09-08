@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { AntigravityGitProvenanceError, resolveSourceCommonGitDir } from './forgeflow-antigravity-git-provenance.mjs';
+
 const executionId = process.argv[2] ?? '';
 const stateRoot = path.resolve(
   process.env.FORGEFLOW_ANTIGRAVITY_STATE_ROOT ??
@@ -81,16 +83,13 @@ const args = Array.isArray(request.args) ? request.args : [];
 
 
 function executionSourceGitDir() {
-  const sourceStat = fs.lstatSync(sourceRepository, { throwIfNoEntry: false });
-  if (
-    !sourceStat?.isDirectory() ||
-    sourceStat.isSymbolicLink() ||
-    fs.realpathSync(sourceRepository) !== sourceRepository
-  ) fail('ANTIGRAVITY_UNIT_SOURCE_REPOSITORY_INVALID');
-  const sourceGitDir = path.join(sourceRepository, '.git');
-  const gitDirStat = fs.lstatSync(sourceGitDir, { throwIfNoEntry: false });
-  if (!gitDirStat?.isDirectory() || gitDirStat.isSymbolicLink())
+  let sourceGitDir;
+  try {
+    sourceGitDir = resolveSourceCommonGitDir(sourceRepository);
+  } catch (error) {
+    if (error instanceof AntigravityGitProvenanceError) fail(error.code);
     fail('ANTIGRAVITY_UNIT_SOURCE_GIT_INVALID');
+  }
 
   const gitfile = path.join(workspace, '.git');
   const gitfileStat = fs.lstatSync(gitfile, { throwIfNoEntry: false });
