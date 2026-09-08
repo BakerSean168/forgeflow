@@ -5,7 +5,7 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const sourceRoot = path.join(root, 'src');
 const failures = [];
-const legacyCompositionRouteBudget = 43;
+const legacyCompositionRouteBudget = 21;
 const compositionSource = fs.readFileSync(path.join(sourceRoot, 'app.ts'), 'utf8');
 const inlineRoutes = compositionSource.match(/\bapp\.(?:get|post|put|patch|delete)\(/g)?.length ?? 0;
 if (inlineRoutes > legacyCompositionRouteBudget)

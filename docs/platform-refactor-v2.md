@@ -420,3 +420,40 @@ P1-01 shared HTTP boundary
 ```
 
 The first batch should materially reduce `app.ts` while keeping product behavior unchanged. The target is not a cosmetic file split; the target is a dependency inversion in which HTTP no longer owns runtime internals.
+
+## 16. Implementation progress ledger
+
+### Batch 1 — HTTP/application foundation
+
+Status: **implemented on `refactor/north-star-platform-v2`, pending PR/release review**.
+
+Completed:
+
+- P1-01 shared HTTP error/input/delivery boundary;
+- P1-02 System/Readiness API module and System application service;
+- P1-03 Resource API module and Resource application service;
+- P1-04 Maintenance/Improvement API module and Improvement application service.
+
+Measured structural change after Batch 1:
+
+| Metric | Before | After Batch 1 |
+| --- | ---: | ---: |
+| `src/app.ts` lines | 3345 | 2757 |
+| inline public routes in `app.ts` | 43 | 21 |
+| modular API route declarations | 3 | 25 |
+
+Verification completed during implementation:
+
+- focused `app-runtime` tests: 22/22 passing;
+- deployment contract tests: 15/15 passing after ownership assertions were migrated to the new modules;
+- full deterministic suite: 378/378 passing;
+- architecture dependency gate: passing;
+- OpenAPI drift gate: passing and now included in the default `npm run check` CI path.
+
+Next batch:
+
+1. P1-05 Plans API/application extraction;
+2. P1-06 Executions API/application extraction;
+3. P1-07 Supervisor API/application extraction;
+4. reduce inline route budget from 21 to 0;
+5. then enter Phase 2 bootstrap/composition split.
