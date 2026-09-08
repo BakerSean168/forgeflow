@@ -118,7 +118,7 @@ The `src/app.ts` composition root contains no public route declarations and is p
 2. **HTTP modularization — completed** — Plans, Executions, Resources, Supervisor, Improvement, Projects, and system routes are feature modules; the `app.ts` inline-route budget is zero.
 3. **Composition split — completed** — typed config, execution/Supervisor/Improvement builders, application assembly, project scheduling, system projections, and public runtime contracts live under `src/bootstrap/`; `app.ts` is a thin composition root.
 4. **Focused reconcilers — implemented** — a single lifecycle manager schedules independently testable Plan, Resource, Runtime Admission, Supervisor, Improvement, and Storage controllers; bootstrap owns no feature timers.
-5. **Integration packages — next** — move Git/OpenHands/LiteLLM/Antigravity/GitHub implementations behind explicit integration registries.
-6. **Typed client** — generate a standalone client/SDK from the committed OpenAPI contract for external orchestrators and future consumers.
+5. **Integration packages — implemented** — Provider, Workspace, Resource, Delivery, Release, and Intake concrete I/O live under `src/integrations/`; Provider uses exact-one registry selection, while other capabilities use narrow package assemblies/ports. Deprecated `core/adapters/*` re-exports remain only for compatibility until Phase 6.
+6. **Typed client — next** — generate a standalone client/SDK from the committed OpenAPI contract for external orchestrators and future consumers.
 
 Each stage must preserve durable database/event compatibility, exact-SHA review, resource selection provenance, worktree/lease safety, and release acceptance.

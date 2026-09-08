@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-import { HttpOpenHandsSupervisorClient, OpenHandsSupervisorAdapter } from '../core/adapters/openhands.js';
-import { SupervisorDirectAdmissionProbe } from '../core/adapters/supervisorDirectAdmission.js';
+import { HttpOpenHandsSupervisorClient, OpenHandsSupervisorAdapter } from '../integrations/providers/index.js';
+import { SupervisorDirectAdmissionProbe } from '../integrations/providers/index.js';
 import { ForgeFlowError } from '../core/domain/errors.js';
 import { DEFAULT_AFFINITY_POLICY } from '../core/domain/resourceRouting.js';
 import { ResourceSelector, selectExecutableProfile, type ResourceSelectionCandidate } from '../core/orchestration/resourceSelector.js';

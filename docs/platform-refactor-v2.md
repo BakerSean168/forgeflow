@@ -552,7 +552,7 @@ Verification and release closure:
 
 ### Batch 4 — Phase-3 focused reconcilers
 
-Status: **implemented; closure requires the normal PR/main-CI/exact-SHA v1.1.4 release and real-provider acceptance gates**.
+Status: **completed and production-attested in v1.1.4**.
 
 Completed:
 
@@ -605,8 +605,70 @@ Verification before PR:
 - direct Runtime Admission reconcile/shutdown callers above the implementation: only `RuntimeAdmissionReconciler`;
 - old `bootstrap/runtimeLifecycle.ts` references in runtime/tests: 0.
 
+Verification and release closure:
+
+- PR and main CI: passing;
+- v1.1.4 exact-SHA release: HEALTHY;
+- v1.1.4 real-provider lifecycle acceptance: ATTESTED;
+- same-wave implementations, two independent exact-SHA PASS reviews, combined integration, provider cleanup, five worktree retirements, lease release, and zero activation failures verified.
+
+### Batch 5 — Phase-4 integration architecture
+
+Status: **implemented; closure requires the normal PR/main-CI/exact-SHA v1.1.5 release and real-provider acceptance gates**.
+
+Completed:
+
+- P4-01 Provider integrations moved under `src/integrations/providers/`; governed execution-provider selection now resolves through a narrow fail-closed `CapabilityRegistry`; selector-off compatibility construction also remains integration-owned;
+- P4-02 Workspace integrations moved under `src/integrations/workspaces/`; local clone, literal worktree, Plan worktree management, Agent Harness admission, and OpenHands common-dir mount proof are built by one workspace assembly;
+- P4-03 Resource integrations moved under `src/integrations/resources/`; LiteLLM directory/probe/state-effect/resource lifecycle plus provider-native readiness are built by one resource assembly while preserving separate source-vs-overridden directory authority;
+- P4-04 Delivery integration moved under `src/integrations/delivery/`; GitHub delivery construction is hidden behind the `DeliveryAutomationPort`;
+- P4-05 narrow integration surfaces are enforced: Provider uses a registry because multiple concrete implementations are selected dynamically, while Workspace/Resource/Delivery use capability-specific assemblies/ports rather than an artificial universal plugin context;
+- Supervisor core no longer depends on concrete OpenHands; it consumes the new `SupervisorConversationHost` core port;
+- release/intake integrations are physically separated under `src/integrations/release/` and `src/integrations/intake/`;
+- old `src/core/adapters/*` public paths remain only as explicit deprecated compatibility re-exports where required, scheduled for Phase 6 retirement.
+
+Realized integration package map:
+
+```text
+src/integrations/
+  registry.ts                  generic exact-one capability registry
+  providers/                   OpenHands, Antigravity, Supervisor admission/host, diagnosis
+  workspaces/                  local/literal worktrees + assembly
+  resources/                   LiteLLM/native resources + assembly + telemetry
+  delivery/                    GitHub delivery + assembly
+  release/                     self-change canary/promotion external effects
+  intake/                      GitHub intake
+```
+
+Dependency rules now enforced by CI:
+
+- core feature code cannot import concrete integrations;
+- `core/adapters/*` is the only temporary compatibility-shim exception;
+- API/Application cannot import integrations;
+- bootstrap can consume integration capability package `index.ts` surfaces, not concrete files;
+- integrations cannot depend back on API/Application/Bootstrap;
+- bootstrap contains no direct construction of migrated Provider/Workspace/Resource/Delivery concrete classes.
+
+Why there is no universal registry for everything:
+
+- Provider genuinely has multiple runtime-selected implementations, so exact-one capability resolution is useful and fail-closed;
+- Workspace selection is a project-policy composition concern and is isolated inside its own assembly;
+- Resource discovery already comes from governed directories/bindings; another registry would duplicate that authority;
+- Delivery currently has one stable port/implementation contract, so a registry would add abstraction without a second selection dimension.
+
+Verification before PR:
+
+- generic integration registry duplicate/unsupported/ambiguous behavior is independently tested;
+- Provider/Execution focused regression passes after real registry wiring;
+- architecture/deployment/integration-registry focused tests pass;
+- full deterministic suite, OpenAPI drift, architecture boundary and production build pass;
+- non-shim core integration references: 0;
+- API/Application integration references: 0;
+- bootstrap direct construction of migrated concrete integrations: 0;
+- bootstrap non-package integration imports: 0.
+
 Next:
 
-1. merge/release Phase 3 as v1.1.4 if PR/main CI remain green;
-2. run exact-SHA real-provider lifecycle acceptance on v1.1.4;
-3. enter Phase 4 integration architecture only after the release is ATTESTED.
+1. merge/release Phase 4 as v1.1.5 if PR/main CI remain green;
+2. run exact-SHA real-provider lifecycle acceptance on v1.1.5;
+3. enter Phase 5 typed-client/SDK generation only after the release is ATTESTED.
