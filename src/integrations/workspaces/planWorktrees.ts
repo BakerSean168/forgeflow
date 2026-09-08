@@ -33,6 +33,12 @@ interface RepositoryIdentity {
   gid: number;
 }
 
+interface ConfiguredSubmodule {
+  name: string;
+  path: string;
+  revision: string;
+}
+
 export interface PlanWorktreeManagerOptions {
   repositories: ForgeFlowRepositories;
   allowedRepositoryRoots: string[];
@@ -1538,7 +1544,7 @@ export class PlanWorktreeManager {
     return normalized;
   }
 
-  private async configuredSubmodulePaths(worktree: PlanWorktree): Promise<string[]> {
+  private async configuredSubmodules(worktree: PlanWorktree): Promise<ConfiguredSubmodule[]> {
     const raw = await this.gitAsSourceInWorktree(worktree.repositoryPath, worktree.hostPath, [
       'ls-tree',
       '-r',
@@ -1546,21 +1552,22 @@ export class PlanWorktreeManager {
       '--full-tree',
       'HEAD',
     ]);
-    const result: string[] = [];
-    const seen = new Set<string>();
+    const byPath = new Map<string, string>();
     for (const record of raw.split('\0')) {
       if (!record) continue;
       const separator = record.indexOf('\t');
       failClosed(separator > 0, 'WORKTREE_SUBMODULE_METADATA_INVALID');
       const metadata = record.slice(0, separator).split(/\s+/);
       if (metadata[0] !== '160000') continue;
-      failClosed(metadata[1] === 'commit' && Boolean(metadata[2]), 'WORKTREE_SUBMODULE_METADATA_INVALID');
+      failClosed(
+        metadata[1] === 'commit' && Boolean(metadata[2]) && /^[0-9a-f]{40,64}$/.test(metadata[2]!),
+        'WORKTREE_SUBMODULE_METADATA_INVALID',
+      );
       const submodulePath = this.validateSubmodulePath(worktree, record.slice(separator + 1));
-      failClosed(!seen.has(submodulePath), 'WORKTREE_SUBMODULE_METADATA_INVALID');
-      seen.add(submodulePath);
-      result.push(submodulePath);
+      failClosed(!byPath.has(submodulePath), 'WORKTREE_SUBMODULE_METADATA_INVALID');
+      byPath.set(submodulePath, metadata[2]!);
     }
-    if (result.length === 0) return [];
+    if (byPath.size === 0) return [];
     const gitmodules = path.join(worktree.hostPath, '.gitmodules');
     const stat = fs.lstatSync(gitmodules, { throwIfNoEntry: false });
     failClosed(Boolean(stat?.isFile()) && !stat!.isSymbolicLink(), 'WORKTREE_SUBMODULE_METADATA_INVALID');
@@ -1570,7 +1577,44 @@ export class PlanWorktreeManager {
       'HEAD:.gitmodules',
     ]);
     failClosed(tracked, 'WORKTREE_SUBMODULE_METADATA_INVALID');
-    return result.sort();
+    const config = await this.gitAsSourceInWorktree(
+      worktree.repositoryPath,
+      worktree.hostPath,
+      [
+        'config',
+        '--blob',
+        'HEAD:.gitmodules',
+        '--get-regexp',
+        '^submodule\\..*\\.path$',
+      ],
+      true,
+    );
+    const namesByPath = new Map<string, string>();
+    for (const line of config.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const match = /^submodule\.(.+)\.path\s+(.+)$/.exec(line);
+      failClosed(Boolean(match?.[1] && match?.[2]), 'WORKTREE_SUBMODULE_METADATA_INVALID');
+      const name = match![1]!.trim();
+      const submodulePath = this.validateSubmodulePath(worktree, match![2]!);
+      failClosed(
+        name.length > 0 && name.length <= 1_000 && !/[\u0000-\u001f\u007f]/.test(name),
+        'WORKTREE_SUBMODULE_METADATA_INVALID',
+      );
+      failClosed(!namesByPath.has(submodulePath), 'WORKTREE_SUBMODULE_METADATA_INVALID');
+      namesByPath.set(submodulePath, name);
+    }
+    const result: ConfiguredSubmodule[] = [];
+    for (const [submodulePath, revision] of byPath) {
+      const name = namesByPath.get(submodulePath);
+      failClosed(Boolean(name), 'WORKTREE_SUBMODULE_METADATA_INVALID');
+      result.push({ name: name!, path: submodulePath, revision });
+    }
+    failClosed(result.length === namesByPath.size, 'WORKTREE_SUBMODULE_METADATA_INVALID');
+    return result.sort((left, right) => left.path.localeCompare(right.path));
+  }
+
+  private async configuredSubmodulePaths(worktree: PlanWorktree): Promise<string[]> {
+    return (await this.configuredSubmodules(worktree)).map((item) => item.path);
   }
 
   private async verifyPinnedSubmodules(worktree: PlanWorktree): Promise<string[]> {
@@ -1611,24 +1655,72 @@ export class PlanWorktreeManager {
     return [...new Set(paths)].sort();
   }
 
+  private async localSubmoduleUrlOverrides(
+    worktree: PlanWorktree,
+    configured: readonly ConfiguredSubmodule[],
+    required: boolean,
+  ): Promise<string[]> {
+    const common = await this.canonicalCommonDir(worktree.repositoryPath);
+    const modulesRoot = path.join(common, 'modules');
+    const modulesRootStat = fs.lstatSync(modulesRoot, { throwIfNoEntry: false });
+    if (!modulesRootStat) {
+      failClosed(!required, 'WORKTREE_SUBMODULE_LOCAL_SOURCE_MISSING');
+      return [];
+    }
+    failClosed(
+      modulesRootStat.isDirectory() && !modulesRootStat.isSymbolicLink(),
+      'WORKTREE_SUBMODULE_LOCAL_SOURCE_UNSAFE',
+    );
+    const realModulesRoot = fs.realpathSync(modulesRoot);
+    const overrides: string[] = [];
+    for (const submodule of configured) {
+      const candidate = path.resolve(modulesRoot, ...submodule.path.split('/'));
+      failClosed(inside(candidate, modulesRoot), 'WORKTREE_SUBMODULE_LOCAL_SOURCE_UNSAFE');
+      const stat = fs.lstatSync(candidate, { throwIfNoEntry: false });
+      if (!stat) {
+        failClosed(!required, 'WORKTREE_SUBMODULE_LOCAL_SOURCE_MISSING');
+        continue;
+      }
+      failClosed(stat.isDirectory() && !stat.isSymbolicLink(), 'WORKTREE_SUBMODULE_LOCAL_SOURCE_UNSAFE');
+      const realCandidate = fs.realpathSync(candidate);
+      failClosed(inside(realCandidate, realModulesRoot), 'WORKTREE_SUBMODULE_LOCAL_SOURCE_UNSAFE');
+      const hasRevision = await this.gitSucceeds(realCandidate, [
+        'cat-file',
+        '-e',
+        submodule.revision + '^{commit}',
+      ]);
+      if (!hasRevision) {
+        failClosed(!required, 'WORKTREE_SUBMODULE_LOCAL_SOURCE_MISSING');
+        continue;
+      }
+      overrides.push('-c', `submodule.${submodule.name}.url=${realCandidate}`);
+    }
+    return overrides;
+  }
+
   private async initializePinnedSubmodules(
     worktree: PlanWorktree,
     repairExisting: boolean,
   ): Promise<string[]> {
-    const configured = await this.configuredSubmodulePaths(worktree);
+    const configured = await this.configuredSubmodules(worktree);
     if (configured.length === 0) return [];
+    const localOverrides = await this.localSubmoduleUrlOverrides(
+      worktree,
+      configured,
+      repairExisting,
+    );
     if (repairExisting) {
       const common = await this.canonicalCommonDir(worktree.repositoryPath);
       const { admin } = this.worktreeGitfileIdentity(worktree, common);
       const modulesRoot = path.join(admin, 'modules');
-      for (const submodulePath of configured) {
-        const root = path.resolve(worktree.hostPath, ...submodulePath.split('/'));
+      for (const submodule of configured) {
+        const root = path.resolve(worktree.hostPath, ...submodule.path.split('/'));
         if (fs.existsSync(root)) {
           const stat = fs.lstatSync(root);
           failClosed(stat.isDirectory() && !stat.isSymbolicLink(), 'WORKTREE_SUBMODULE_REPAIR_PATH_UNSAFE');
           fs.rmSync(root, { recursive: true, force: true });
         }
-        const adminPath = path.resolve(modulesRoot, ...submodulePath.split('/'));
+        const adminPath = path.resolve(modulesRoot, ...submodule.path.split('/'));
         failClosed(inside(adminPath, modulesRoot), 'WORKTREE_SUBMODULE_REPAIR_PATH_UNSAFE');
         if (fs.existsSync(adminPath)) {
           const stat = fs.lstatSync(adminPath);
@@ -1641,6 +1733,7 @@ export class PlanWorktreeManager {
       await this.gitAsSourceInWorktree(worktree.repositoryPath, worktree.hostPath, [
         '-c',
         'protocol.file.allow=always',
+        ...localOverrides,
         'submodule',
         'update',
         '--init',
