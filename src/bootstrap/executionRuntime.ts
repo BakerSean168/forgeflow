@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { GitHubCliDeliveryAdapter } from '../integrations/delivery/githubDelivery.js';
+import { buildDeliveryIntegration } from '../integrations/delivery/index.js';
 import { createExecutionProviderIntegrationRegistry, createLegacyOpenHandsRouteProvider } from '../integrations/providers/index.js';
 import { buildWorkspaceIntegrationAssembly } from '../integrations/workspaces/index.js';
 import type { PlanWorktreeManager } from '../integrations/workspaces/index.js';
@@ -483,7 +483,7 @@ export async function buildExecutionAutomation(
       .filter(
         (projectKey) =>
           literalProjectSet.has(projectKey) ||
-          (antigravityEnabled && antigravityProjectKeys.has(projectKey)),
+          (config.resources.antigravityEnabled && antigravityProjectKeys.has(projectKey)),
       )
       .map((projectKey) => [
         projectKey,
@@ -495,7 +495,7 @@ export async function buildExecutionAutomation(
                 projects.get(projectKey)?.execution.maxParallelWorkItems ?? maxParallelWorkItems,
               )
             : 1,
-          ...(antigravityEnabled && antigravityProjectKeys.has(projectKey)
+          ...(config.resources.antigravityEnabled && antigravityProjectKeys.has(projectKey)
             ? {
                 resourceSelection: {
                   includeProviderNativeProfiles: true,
@@ -511,7 +511,7 @@ export async function buildExecutionAutomation(
     policyOverrides,
     automationProjectKeys.length > 0 ? automationProjectKeys : undefined,
   );
-  const delivery = new GitHubCliDeliveryAdapter({
+  const delivery = buildDeliveryIntegration({
     allowedRepositoryRoots,
     allowedWorkspaceRoots: [managedHostRoot],
     commandTimeoutMs: config.delivery.commandTimeoutMs,

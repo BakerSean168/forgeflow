@@ -614,7 +614,7 @@ Verification and release closure:
 
 ### Batch 5 — Phase-4 integration architecture
 
-Status: **implemented; closure requires the normal PR/main-CI/exact-SHA v1.1.5 release and real-provider acceptance gates**.
+Status: **completed and production-attested in v1.1.5**.
 
 Completed:
 
@@ -672,3 +672,41 @@ Next:
 1. merge/release Phase 4 as v1.1.5 if PR/main CI remain green;
 2. run exact-SHA real-provider lifecycle acceptance on v1.1.5;
 3. enter Phase 5 typed-client/SDK generation only after the release is ATTESTED.
+
+### Batch 6 — Phase-5 typed client / SDK
+
+Status: **implemented; closure requires the normal PR/main-CI/exact-SHA v1.2.0 release and real-provider acceptance gates**.
+
+Completed:
+
+- standalone npm workspace package `@forgeflow/client` under `packages/client`;
+- deterministic `openapi-typescript` generation from the committed `api/openapi.v1.json` authority;
+- generated `paths/components/operations` TypeScript contract plus exact OpenAPI spec/API contract/SHA-256 provenance constants;
+- runtime `createForgeFlowClient()` built on `openapi-fetch`, with no ForgeFlow server-internal dependency;
+- client TypeScript tests prove unknown routes and missing required path parameters fail at compile time;
+- runtime tests prove base-URL normalization, path-parameter encoding, default headers, package self-reference exports, and contract provenance;
+- generation drift, package build, client test/typecheck, and `npm pack --dry-run` are part of the root `npm run check` gate;
+- architecture CI rejects client imports of server internals and requires generated contract files to name the committed OpenAPI authority;
+- package is publish-ready (`MIT`, public npm access metadata, repository metadata) but publication remains an explicit release action rather than an implicit server deploy side effect.
+
+Design decision:
+
+- V1.2 does **not** create a hand-written mirror of Plan/Execution DTOs;
+- the generated path/method client is the public typed authority;
+- stable semantic convenience methods should be generated/delegated only after public operations receive stable `operationId` values and stronger schemas;
+- npm package version and API contract `info.version` are independent compatibility signals, with the exact contract SHA exported for provenance.
+
+Verification before PR:
+
+- root deterministic/API/architecture/build checks pass;
+- client generation drift check passes;
+- client TypeScript + runtime tests pass;
+- client build resolves package self-reference through declared exports;
+- npm pack dry-run succeeds with the intended dist/README/package metadata surface;
+- `packages/client/src` server-internal imports: 0.
+
+Next:
+
+1. release Phase 5 as v1.2.0 if PR/main CI remain green;
+2. run a fresh exact-SHA real-provider lifecycle acceptance on v1.2.0 even though runtime API semantics are unchanged;
+3. only after ATTESTED, enter Phase 6 compatibility-shim retirement and optional API-schema/`operationId` hardening.

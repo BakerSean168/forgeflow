@@ -497,3 +497,30 @@ ForgeFlow should resemble mature infrastructure platforms in **discipline**, not
 - Kubernetes-style focused reconciliation loops.
 
 The result should stay a **small, strongly governed modular monolith** until empirical scale or fault-isolation requirements justify further distribution.
+
+## 9.1 Realized typed-client boundary
+
+Phase 5 makes the external API boundary executable, not merely documented:
+
+```text
+api/openapi.v1.json (committed authority)
+        |
+        +-- server runtime registration / drift check
+        |
+        +-- openapi-typescript
+                |
+                v
+        packages/client/generated paths
+                |
+                v
+        @forgeflow/client (openapi-fetch)
+                |
+        +-------+--------+----------+
+        |                |          |
+      future CLI       future UI   TS integrations
+```
+
+The generated client never imports ForgeFlow server internals. It exports the exact contract SHA-256 and contract version used at generation time. CI checks generated drift, TypeScript rejection of unknown paths, runtime URL/path serialization, package exports/build, and npm pack contents.
+
+The first client intentionally exposes typed HTTP method/path operations. Semantic convenience methods are deferred until operations have stable `operationId` identities and stronger request/response schemas. This prevents a manually maintained SDK facade from becoming a competing public contract.
+
