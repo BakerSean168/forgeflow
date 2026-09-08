@@ -78,3 +78,23 @@ openapi-fetch runtime
 ```
 
 The public OpenAPI operations are now explicitly named and schema-covered. If semantic convenience methods are added later, they must be generated from those `operationId` declarations and delegate to the generated path client rather than create duplicate request/response models.
+
+## Stable operationId methods
+
+The same client also exposes generated semantic methods keyed by the hardened OpenAPI `operationId` values. These are additive ergonomics over the raw path/method API; request and response types still come directly from the generated OpenAPI contract.
+
+```ts
+const plan = await client.operations.plansGet({
+  params: { path: { planId: 'plan_123' } },
+});
+
+const created = await client.operations.plansCreate({
+  body: {
+    projectKey: 'memoflow',
+    objective: 'Implement the requested feature',
+    baseRevision: '0123456789abcdef',
+  },
+});
+```
+
+Operations with no required parameters can be called without an options object, while required path parameters and request bodies remain compile-time enforced. `FORGEFLOW_OPERATION_ROUTES` is generated alongside the types for tooling that needs the stable operationId-to-method/path mapping.

@@ -192,3 +192,33 @@ const allowedSupervisorAction:
   | 'PARK_EXTERNAL_GATE'
   | 'ESCALATE' = supervisorProjectionResponse.supervisor.allowedActions[0]!;
 void allowedSupervisorAction;
+
+
+// Stable operationId ergonomics are generated from the same OpenAPI authority.
+void client.operations.projectsList();
+void client.operations.projectsGet({
+  params: { path: { projectKey: 'memoflow' } },
+});
+void client.operations.plansReconcile({
+  params: { path: { planId: 'plan-example' } },
+});
+void client.operations.plansCreate({
+  body: minimalPlanCreateBody,
+});
+
+// @ts-expect-error Semantic project lookup preserves the required generated path parameter.
+void client.operations.projectsGet();
+
+// @ts-expect-error Semantic Plan creation preserves the required generated request body.
+void client.operations.plansCreate();
+
+async function verifySemanticResponseTyping() {
+  const result = await client.operations.resourcesList();
+  if (result.data) {
+    const count: number = result.data.count;
+    const state: 'ACTIVE' | 'SUSPENDED' | 'DISABLED' = result.data.items[0]!.state;
+    void count;
+    void state;
+  }
+}
+void verifySemanticResponseTyping;
