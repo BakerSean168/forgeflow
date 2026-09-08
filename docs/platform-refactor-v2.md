@@ -782,7 +782,7 @@ Release-gate result:
 
 ### Batch 9 — v1.3.1 terminal retirement hotfix
 
-Status: **implemented; release closure targets v1.3.1**.
+Status: **completed and production-attested in v1.3.1**.
 
 Production root cause:
 
@@ -812,10 +812,17 @@ Verification before PR:
 - client tests: 5/5 passing;
 - OpenAPI drift, both compatibility floors, 45/45 operation/coverage gates, TypeScript, server/client builds and npm-pack checks: passing.
 
-Next:
+Release closure:
 
-1. merge v1.3.1 only after PR/main CI pass;
-2. deploy exact merge SHA and allow it to automatically finish the already-stuck v1.3.0 candidate Plan cleanup; that recovery proves the hotfix but does **not** count as v1.3.1 release acceptance;
-3. after the old lease/worktrees are fully retired, run exactly one fresh v1.3.1 autonomous lifecycle smoke;
-4. require automatic provider cleanup, five worktree retirements, lease release and `ATTESTED` on the v1.3.1 artifact before creating the tag/Latest Release;
-5. once attested, close Phase 6 and move future ergonomics into bounded V1.x follow-ups.
+- PR #14 and main CI passed from clean GitHub runners;
+- exact SHA `3e2268f92f0c601f53cf3c47058b2e62981b8d66` deployed with HEALTHY provenance;
+- the already-stuck v1.3.0 candidate Plan automatically retired all five worktrees and released its lease after the hotfix booted; this recovery was retained only as hotfix evidence and was not reused for release acceptance;
+- one fresh v1.3.1 autonomous lifecycle smoke then completed two same-wave implementations, two independent exact-SHA PASS reviews, provider cleanup for every execution, five worktree retirements, project lease release, and zero activation failures;
+- release acceptance is ATTESTED for the exact v1.3.1 source/artifact identity;
+- Git tag and Latest GitHub Release `v1.3.1` point to the attested SHA.
+
+### Phase-6 exit
+
+Status: **completed**.
+
+Legacy adapter retirement, V1 contract hardening, compatibility floors, generated semantic operation types, terminal cleanup hardening, dependency-direction enforcement, and release-gated real-provider verification are all in place. Future SDK ergonomics and other additive developer-experience work continue as bounded V1.x follow-ups rather than extending the refactor phase.
