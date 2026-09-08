@@ -161,8 +161,10 @@ test('exact-SHA release is rooted in refs/forgeflow and validates v1 health', ()
   assert.match(release, /release artifact digest does not match the approved canary/);
   assert.match(release, /sync_antigravity_runtime/);
   assert.match(release, /worktree\/scripts\/run-antigravity-unit\.mjs/);
+  assert.match(release, /worktree\/scripts\/forgeflow-antigravity-git-provenance\.mjs/);
   assert.match(release, /worktree\/scripts\/run-antigravity-sandbox\.sh/);
   assert.match(release, /cmp -s .*forgeflow-antigravity-unit\.mjs/);
+  assert.match(release, /cmp -s .*forgeflow-antigravity-git-provenance\.mjs/);
   assert.match(release, /systemctl daemon-reload/);
   assert.ok(release.indexOf('sync_antigravity_runtime') < release.indexOf('write_provenance PENDING'));
   assert.match(release, /ForgeFlow verified release promotion/);
@@ -314,6 +316,7 @@ test('checked-in deployment scripts are syntactically valid', () => {
   ]) execFileSync('bash', ['-n', path.join(root, file)]);
   for (const file of [
     'scripts/run-antigravity-unit.mjs',
+    'scripts/forgeflow-antigravity-git-provenance.mjs',
     'scripts/smoke-autonomous-lifecycle.mjs',
     'openhands_tools/headless_review_acp.mjs',
   ]) execFileSync('node', ['--check', path.join(root, file)]);

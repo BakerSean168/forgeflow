@@ -87,6 +87,9 @@ sync_antigravity_runtime() {
   sudo install -o root -g root -m 0755 \
     "$worktree/scripts/run-antigravity-unit.mjs" \
     /usr/local/libexec/forgeflow-antigravity-unit.mjs
+  sudo install -o root -g root -m 0644 \
+    "$worktree/scripts/forgeflow-antigravity-git-provenance.mjs" \
+    /usr/local/libexec/forgeflow-antigravity-git-provenance.mjs
   sudo install -o root -g root -m 0755 \
     "$worktree/scripts/run-antigravity-sandbox.sh" \
     /usr/local/libexec/forgeflow-antigravity-sandbox.sh
@@ -95,6 +98,10 @@ sync_antigravity_runtime() {
     /etc/systemd/system/forgeflow-antigravity@.service
   cmp -s "$worktree/scripts/run-antigravity-unit.mjs" /usr/local/libexec/forgeflow-antigravity-unit.mjs || {
     echo "Antigravity unit helper drifted during release" >&2
+    exit 1
+  }
+  cmp -s "$worktree/scripts/forgeflow-antigravity-git-provenance.mjs" /usr/local/libexec/forgeflow-antigravity-git-provenance.mjs || {
+    echo "Antigravity Git provenance helper drifted during release" >&2
     exit 1
   }
   cmp -s "$worktree/scripts/run-antigravity-sandbox.sh" /usr/local/libexec/forgeflow-antigravity-sandbox.sh || {
