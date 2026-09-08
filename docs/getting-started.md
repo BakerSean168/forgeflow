@@ -44,7 +44,7 @@ Read [`configuration.md`](./configuration.md) before enabling providers or repos
 - optional provider-native Antigravity systemd workers;
 - LiteLLM and/or provider-native resources selected through the ForgeFlow resource directory.
 
-The installer intentionally refuses to start autonomous execution when required project allowlists, credentials, or execution-plane prerequisites are missing.
+The installer intentionally refuses to start autonomous execution when the Project Registry/legacy authorization, credentials, or execution-plane prerequisites are missing. Prefer a host-managed `FORGEFLOW_PROJECTS_FILE`; see `deploy/projects.example.yaml`.
 
 ## Real-provider acceptance
 

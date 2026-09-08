@@ -4,6 +4,10 @@
 
 ForgeFlow owns an engineering objective from durable planning to verified delivery. It separates deterministic control from model-driven reasoning so that intelligence can change *what should happen next* without gaining authority to violate repository, provenance, review, or deployment rules.
 
+## Platform boundary
+
+ForgeFlow is designed as a modular monolith: external systems integrate through the versioned HTTP/OpenAPI boundary, projects enter through a declarative Project Registry, and privileged capabilities enter through narrow typed ports. The controller does not load arbitrary runtime JavaScript plugins because repository/release/provider authority makes plugin code part of the trusted computing base. See [`api.md`](./api.md) and [`extensibility.md`](./extensibility.md).
+
 ## Control layers
 
 ### Domain and persistence

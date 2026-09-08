@@ -2646,3 +2646,106 @@ test('public Plan cancel supports child-first cancellation without releasing the
     fs.rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+test('project manifest drives the public project API and generated OpenAPI contract', async () => {
+  const value = fixture();
+  const manifest = path.join(value.root, 'projects.yaml');
+  fs.writeFileSync(
+    manifest,
+    `version: 1
+projects:
+  - projectKey: app-runtime-project
+    displayName: App Runtime Project
+    repositoryPath: ${value.repository}
+    tags: [smoke]
+    execution:
+      enabled: true
+      workspace: canonical-fast-forward
+      allowProviderNative: false
+    improvement:
+      enabled: false
+`,
+    { mode: 0o600 },
+  );
+  const runtime = await buildControlPlane({
+    dbFile: ':memory:',
+    environment: 'test',
+    logger: false,
+    env: {
+      NODE_ENV: 'test',
+      FORGEFLOW_EXECUTION_RUNTIME_ENABLED: 'true',
+      FORGEFLOW_AUTOMATION_RUNTIME_ENABLED: 'false',
+      FORGEFLOW_OPENHANDS_URL: 'http://openhands.test',
+      FORGEFLOW_OPENHANDS_TOKEN: 'test-session-key',
+      FORGEFLOW_LITELLM_API_KEY: 'test-litellm-key',
+      FORGEFLOW_LITELLM_BASE_URL: 'http://litellm.test/v1',
+      FORGEFLOW_ALLOWED_REPOSITORY_ROOTS: value.allowed,
+      FORGEFLOW_WORKSPACE_HOST_ROOT: value.managed,
+      FORGEFLOW_WORKSPACE_EXECUTION_ROOT: '/workspace',
+      FORGEFLOW_PROJECTS_FILE: manifest,
+      FORGEFLOW_WORKSPACE_UID: String(process.getuid?.() ?? 0),
+      FORGEFLOW_WORKSPACE_GID: String(process.getgid?.() ?? 0),
+    },
+  });
+  try {
+    const projects = await runtime.app.inject({ method: 'GET', url: '/api/v1/projects' });
+    assert.equal(projects.statusCode, 200);
+    assert.equal(projects.json().source, 'manifest');
+    assert.equal(projects.json().count, 1);
+    assert.equal(projects.json().items[0].projectKey, 'app-runtime-project');
+    assert.equal(projects.json().items[0].repositoryPath, value.repository);
+    assert.equal(projects.json().items[0].execution.enabled, true);
+
+    const project = await runtime.app.inject({
+      method: 'GET',
+      url: '/api/v1/projects/app-runtime-project',
+    });
+    assert.equal(project.statusCode, 200);
+    assert.equal(project.json().displayName, 'App Runtime Project');
+
+    const missing = await runtime.app.inject({ method: 'GET', url: '/api/v1/projects/missing' });
+    assert.equal(missing.statusCode, 404);
+    assert.equal(missing.json().error, 'PROJECT_NOT_FOUND');
+
+    const health = await runtime.app.inject({ method: 'GET', url: '/api/health' });
+    assert.deepEqual(health.json().executionRuntime.automationProjectKeys, ['app-runtime-project']);
+
+    const created = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans',
+      headers: { 'idempotency-key': 'manifest-resolved-repository' },
+      payload: {
+        projectKey: 'app-runtime-project',
+        objective: 'resolve repository from project registry',
+        baseRevision: value.revision,
+      },
+    });
+    assert.equal(created.statusCode, 201);
+    assert.equal(created.json().plan.repositoryPath, value.repository);
+
+    const otherRepository = path.join(value.allowed, 'other-project');
+    fs.mkdirSync(otherRepository, { recursive: true });
+    const mismatch = await runtime.app.inject({
+      method: 'POST',
+      url: '/api/v1/plans',
+      headers: { 'idempotency-key': 'manifest-repository-mismatch' },
+      payload: {
+        projectKey: 'app-runtime-project',
+        objective: 'must not escape project identity',
+        repositoryPath: otherRepository,
+        baseRevision: value.revision,
+      },
+    });
+    assert.equal(mismatch.statusCode, 400);
+    assert.equal(mismatch.json().error, 'PROJECT_REPOSITORY_MISMATCH');
+
+    const openapi = await runtime.app.inject({ method: 'GET', url: '/api/openapi.json' });
+    assert.equal(openapi.statusCode, 200);
+    assert.equal(openapi.json().openapi, '3.1.0');
+    assert.ok(openapi.json().paths['/api/v1/projects']);
+    assert.ok(openapi.json().paths['/api/v1/projects/{projectKey}']);
+  } finally {
+    await runtime.app.close();
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
+});

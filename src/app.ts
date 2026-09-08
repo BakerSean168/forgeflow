@@ -5,6 +5,10 @@ import path from 'node:path';
 
 import Fastify, { type FastifyInstance } from 'fastify';
 
+import { registerOpenApi } from './api/openapi.js';
+import { registerApiModules } from './api/module.js';
+import { createProjectApiModule } from './api/v1/projects.js';
+
 import {
   AntigravityExecutionProvider,
   AntigravityReviewProvider,
@@ -101,6 +105,10 @@ import {
 } from './core/supervisor/admission.js';
 import { SupervisorRuntime } from './core/supervisor/runtime.js';
 import { SupervisorWakeScheduler } from './core/supervisor/scheduler.js';
+import {
+  loadProjectRegistry,
+  type ProjectRegistry,
+} from './platform/projects/index.js';
 
 export interface BuildControlPlaneOptions {
   env?: NodeJS.ProcessEnv;
@@ -147,6 +155,7 @@ export interface ControlPlaneRuntime {
   host: string;
   port: number;
   repositories: ForgeFlowRepositories;
+  projects: ProjectRegistry;
   kernels: {
     plan: PlanKernel;
     graph: WorkGraphKernel;
@@ -529,6 +538,7 @@ async function buildExecutionAutomation(
   env: NodeJS.ProcessEnv,
   repositories: ForgeFlowRepositories,
   fetchImpl: typeof fetch,
+  projects: ProjectRegistry,
 ): Promise<ExecutionAutomationRuntime | undefined> {
   if (env.FORGEFLOW_EXECUTION_RUNTIME_ENABLED !== 'true') return undefined;
   const openHandsUrl = requiredText(env.FORGEFLOW_OPENHANDS_URL, 'OPENHANDS_BASE_URL_REQUIRED');
@@ -548,11 +558,12 @@ async function buildExecutionAutomation(
     env.FORGEFLOW_WORKSPACE_EXECUTION_ROOT ?? '/workspace',
     'WORKSPACE_EXECUTION_ROOT_REQUIRED',
   );
-  const automationProjectKeys = commaList(env.FORGEFLOW_AUTOMATION_PROJECTS);
+  const automationProjectKeys = projects.automationProjectKeys();
   const literalWorktreesEnabled = env.FORGEFLOW_LITERAL_WORKTREES_ENABLED === 'true';
-  const literalWorktreeProjectKeys = literalWorktreesEnabled
-    ? commaList(env.FORGEFLOW_LITERAL_WORKTREE_PROJECTS)
-    : [];
+  const configuredLiteralProjects = projects.literalWorktreeProjectKeys();
+  if (projects.source() === 'manifest' && configuredLiteralProjects.length > 0 && !literalWorktreesEnabled)
+    throw new ForgeFlowError('PROJECT_MANIFEST_LITERAL_WORKTREES_DISABLED');
+  const literalWorktreeProjectKeys = literalWorktreesEnabled ? configuredLiteralProjects : [];
   if (literalWorktreesEnabled && literalWorktreeProjectKeys.length === 0)
     throw new ForgeFlowError('LITERAL_WORKTREE_PROJECTS_REQUIRED');
   if (
@@ -1261,9 +1272,7 @@ async function buildExecutionAutomation(
     ),
     maxParallelWorkItems: 1,
   };
-  const antigravityProjectKeys = new Set(
-    commaList(env.FORGEFLOW_ANTIGRAVITY_PROJECTS),
-  );
+  const antigravityProjectKeys = new Set(projects.providerNativeProjectKeys());
   const literalProjectSet = new Set(literalWorktreeProjectKeys);
   const policyOverrides = Object.fromEntries(
     automationProjectKeys
@@ -1276,7 +1285,12 @@ async function buildExecutionAutomation(
         projectKey,
         {
           ...defaultPolicy,
-          maxParallelWorkItems: literalProjectSet.has(projectKey) ? maxParallelWorkItems : 1,
+          maxParallelWorkItems: literalProjectSet.has(projectKey)
+            ? Math.min(
+                maxParallelWorkItems,
+                projects.get(projectKey)?.execution.maxParallelWorkItems ?? maxParallelWorkItems,
+              )
+            : 1,
           ...(antigravityEnabled && antigravityProjectKeys.has(projectKey)
             ? {
                 resourceSelection: {
@@ -1355,13 +1369,15 @@ export async function buildControlPlane(
   options: BuildControlPlaneOptions = {},
 ): Promise<ControlPlaneRuntime> {
   const env = options.env ?? process.env;
+  const allowedRepositoryRoots = rootList(env.FORGEFLOW_ALLOWED_REPOSITORY_ROOTS);
+  const projects = loadProjectRegistry(env, allowedRepositoryRoots);
   const selfChangeEnabled = env.FORGEFLOW_IMPROVEMENT_SELF_CHANGE_ENABLED === 'true';
   const selfPromotionEnabled = env.FORGEFLOW_IMPROVEMENT_SELF_PROMOTION_ENABLED === 'true';
   const selfAutoPromotionEnabled =
     env.FORGEFLOW_IMPROVEMENT_SELF_AUTO_PROMOTION_ENABLED === 'true';
   const improvementAiDiagnosisEnabled =
     env.FORGEFLOW_IMPROVEMENT_AI_DIAGNOSIS_ENABLED === 'true';
-  const improvementProjectKeys = commaList(env.FORGEFLOW_IMPROVEMENT_PROJECTS);
+  const improvementProjectKeys = projects.improvementProjectKeys();
   if (improvementAiDiagnosisEnabled && improvementProjectKeys.length === 0)
     throw new ForgeFlowError('IMPROVEMENT_AI_DIAGNOSIS_PROJECTS_REQUIRED');
   if (
@@ -1516,7 +1532,12 @@ export async function buildControlPlane(
     selfPromotionQueue,
     releaseProvenance,
   );
-  const automation = await buildExecutionAutomation(env, repositories, options.fetchImpl ?? fetch);
+  const automation = await buildExecutionAutomation(
+    env,
+    repositories,
+    options.fetchImpl ?? fetch,
+    projects,
+  );
   if (projectPlanQueue && automation) {
     projectPlanQueue.setExecutionCancellation({
       cancelExecution: async (executionId, idempotencyKey, reason) =>
@@ -1852,6 +1873,7 @@ export async function buildControlPlane(
     modelClient,
   );
   const app = Fastify({ logger: options.logger ?? true });
+  await registerOpenApi(app);
   const availableSupervisorResourceIds = (): string[] =>
     automation
       ? automation.resources
@@ -2614,11 +2636,20 @@ export async function buildControlPlane(
       'PLAN_IDEMPOTENCY_REQUIRED',
     );
     const delivery = planDeliveryConfig(body.delivery);
+    const projectKey = requiredText(body.projectKey, 'PLAN_PROJECT_REQUIRED');
+    const requestedRepositoryPath =
+      typeof body.repositoryPath === 'string' && body.repositoryPath.trim()
+        ? body.repositoryPath.trim()
+        : undefined;
+    const repositoryPath = requiredText(
+      projects.resolveRepository(projectKey, requestedRepositoryPath),
+      'PLAN_REPOSITORY_REQUIRED',
+    );
     const planResult = kernels.plan.createPlan({
       idempotencyKey,
-      projectKey: requiredText(body.projectKey, 'PLAN_PROJECT_REQUIRED'),
+      projectKey,
       objective: requiredText(body.objective, 'PLAN_OBJECTIVE_REQUIRED'),
-      repositoryPath: requiredText(body.repositoryPath, 'PLAN_REPOSITORY_REQUIRED'),
+      repositoryPath,
       baseRevision: requiredText(body.baseRevision, 'PLAN_BASE_REVISION_REQUIRED'),
       ...(delivery ? { delivery } : {}),
     });
@@ -3044,6 +3075,8 @@ export async function buildControlPlane(
     });
   });
 
+  await registerApiModules(app, [createProjectApiModule(projects)]);
+
   const supervisorInterval = supervisorRuntimeEnabled
     ? setInterval(
           () => {
@@ -3292,6 +3325,7 @@ export async function buildControlPlane(
     host,
     port,
     repositories,
+    projects,
     kernels,
     supervisor: {
       actions: supervisorActions,
