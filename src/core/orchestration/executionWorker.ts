@@ -1291,7 +1291,10 @@ export class ExecutionWorker {
       .listByExecution(executionId)
       .filter(
         (item) => item.kind === 'RECOVERY' && item.name.startsWith(MEANINGFUL_PROGRESS_PREFIX),
-      );
+      )
+      // Progress evidence has a controller-owned monotonic sequence in its name.
+      // Do not let same-millisecond SQLite timestamps fall back to random evidence UUID ordering.
+      .sort((left, right) => left.name.localeCompare(right.name));
   }
 
   private stallRecoveryEvidence(executionId: string) {

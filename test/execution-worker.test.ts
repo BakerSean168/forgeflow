@@ -1852,6 +1852,25 @@ test('real workspace progress resets the provider-only progress window durably',
   clock += 20_000;
   provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-4' };
   assert.equal((await worker.runExecution(execution.identity.executionId)).status, 'RUNNING');
+
+  // Simulate a fast durable replay where multiple evidence rows share one SQLite timestamp
+  // and UUID lexical order disagrees with the controller-owned progress sequence.
+  const progressRows = seeded.db
+    .prepare(
+      "SELECT evidence_id,name FROM execution_evidence WHERE execution_id=? AND kind='RECOVERY' AND name LIKE 'meaningful-progress-%'",
+    )
+    .all(execution.identity.executionId) as Array<{ evidence_id: string; name: string }>;
+  const forcedIds = new Map([
+    ['meaningful-progress-000001', 'evidence_z_progress_1'],
+    ['meaningful-progress-000002', 'evidence_y_progress_2'],
+    ['meaningful-progress-000003', 'evidence_a_progress_3'],
+    ['meaningful-progress-000004', 'evidence_b_progress_4'],
+  ]);
+  for (const row of progressRows)
+    seeded.db
+      .prepare('UPDATE execution_evidence SET evidence_id=?,created_at=? WHERE evidence_id=?')
+      .run(forcedIds.get(row.name)!, '2026-01-01T00:00:00.000Z', row.evidence_id);
+
   clock += 11_000;
   provider.inspectSnapshot = { ...provider.inspectSnapshot, progressFingerprint: 'tool-5' };
   const stalled = await worker.runExecution(execution.identity.executionId);
