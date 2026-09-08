@@ -12,7 +12,7 @@ export async function registerOpenApi(app: FastifyInstance): Promise<void> {
       info: {
         title: 'ForgeFlow Control Plane API',
         description: 'Versioned HTTP contract for ForgeFlow integrations. Internal runtime state remains controller-owned.',
-        version: '1.1.0',
+        version: '1.2.0',
       },
       tags: [
         { name: 'Projects', description: 'Declarative project registration and policy projection.' },

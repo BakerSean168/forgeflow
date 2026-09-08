@@ -5,5 +5,5 @@
  * Regenerate with: npm run client:generate
  */
 export const FORGEFLOW_OPENAPI_SPEC_VERSION = "3.1.0" as const;
-export const FORGEFLOW_API_CONTRACT_VERSION = "1.1.0" as const;
-export const FORGEFLOW_API_CONTRACT_SHA256 = "b2a1fc87d25f3ebe617cb01e748d656104e69039a2f058dfed62ce0207eaa8b4" as const;
+export const FORGEFLOW_API_CONTRACT_VERSION = "1.2.0" as const;
+export const FORGEFLOW_API_CONTRACT_SHA256 = "37dff009cc98b456ead3be512474fdeff95d67e23316ad583bf7f889024be399" as const;

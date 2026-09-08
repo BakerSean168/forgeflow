@@ -714,7 +714,7 @@ Verification and release closure:
 
 ### Batch 7 — Phase-6 legacy adapter retirement
 
-Status: **implemented; release closure targets v1.2.1**.
+Status: **completed and production-attested in v1.2.1**.
 
 Completed:
 
@@ -734,8 +734,47 @@ Verification before PR:
 - core -> integrations imports: 0;
 - TypeScript/OpenAPI/client drift/build/pack gates: passing.
 
+Verification and release closure:
+
+- PR #12 and main CI passed from a clean GitHub checkout;
+- v1.2.1 exact-SHA release `602ef2394c593900bfdc074be30edd3cefa95382` is HEALTHY and ATTESTED;
+- real-provider acceptance verified same-wave execution, one meaningful-progress stall with deterministic Antigravity retry, two independent exact-SHA PASS reviews, five provider cleanup proofs, five worktree retirements, lease release, and zero activation failures.
+
+### Batch 8 — Phase-6 V1 API contract hardening
+
+Status: **implemented; release closure targets v1.3.0**.
+
+Completed:
+
+- added the immutable v1.2.1 OpenAPI compatibility floor and a semantic checker that rejects route/method removal, parameter strengthening/removal, response-status/media-type loss, enum narrowing, schema-type drift, and response guarantee weakening;
+- established one explicit 45-operation registry with stable unique `operationId` values and exact generated-spec bidirectional validation;
+- hardened every retained legacy V1 operation through documentation-only Swagger overlays so OpenAPI/client types improve without changing Fastify validation or serialization behavior;
+- preserved four genuinely optional legacy request bodies and historical generated response statuses while also documenting the runtime's accurate 201/202 statuses;
+- established 45/45 contract coverage: every public operation has a 2xx JSON response schema; exactly 18 audited operations carry request bodies and exactly four are optional;
+- generated the stronger `ForgeFlowOperations` semantic type surface in `@forgeflow/client` and compile-time tests for Plan, Execution, Resource, Improvement, and Supervisor contracts;
+- exported Supervisor action and Improvement candidate vocabularies from their core authorities so protocol validation and OpenAPI generation do not maintain competing enum lists;
+- added a v1.3.0 hardened compatibility floor and changed CI to validate every candidate against all committed floors;
+- advanced API contract `info.version` from 1.1.0 to 1.2.0 while keeping `/api/v1` path compatibility; server/client package SemVer advances independently to v1.3.0.
+
+Contract-hardening policy:
+
+- existing legacy handlers keep their original runtime validation/error semantics;
+- OpenAPI hardening is documentation-only for those handlers;
+- new routes are schema-first and cannot use the legacy overlay as an escape hatch;
+- `api/openapi.v1.json` remains the only DTO authority;
+- semantic client ergonomics may be generated from `operationId`, but a hand-written DTO/facade authority is forbidden.
+
+Verification before PR:
+
+- operation registry: 45/45 operations, 45 unique IDs;
+- contract coverage: 45/45 operations, 18 request bodies, 4 optional bodies;
+- compatibility: candidate passes both v1.2.1 legacy and v1.3.0 hardened baselines;
+- focused final Improvement/Supervisor/API runtime regression: 407/407 passing;
+- full repository + client deterministic gate: passing after each bounded schema group;
+- client codegen/type/runtime/build/pack checks: passing.
+
 Next:
 
-1. release Batch 7 as v1.2.1 after PR/main CI and exact-SHA lifecycle acceptance;
-2. continue Phase 6 with API compatibility automation and schema/`operationId` hardening in bounded contract-preserving groups;
-3. only generate semantic client convenience methods from the hardened OpenAPI operation identities, never from a second DTO authority.
+1. merge/release v1.3.0 only after PR and main CI pass;
+2. deploy the exact merge SHA and require a fresh real-provider autonomous lifecycle ATTESTED proof;
+3. after v1.3.0 is attested, treat Phase 6 as closed and move future ergonomic/client work into bounded V1.x follow-ups instead of reopening the platform refactor.

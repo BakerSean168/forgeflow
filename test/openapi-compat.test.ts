@@ -5,6 +5,9 @@ import test from 'node:test';
 import { checkOpenApiCompatibility } from '../scripts/check-openapi-compat.mts';
 
 const baseline = JSON.parse(fs.readFileSync('api/compat/openapi.v1.2.1.json', 'utf8')) as Record<string, any>;
+const hardenedBaseline = JSON.parse(
+  fs.readFileSync('api/compat/openapi.v1.3.0.json', 'utf8'),
+) as Record<string, any>;
 const clone = () => structuredClone(baseline) as Record<string, any>;
 
 function failures(mutator: (candidate: Record<string, any>) => void): string[] {
@@ -72,4 +75,15 @@ test('OpenAPI compatibility rejects enum narrowing and response guarantee weaken
     schema.required = schema.required.filter((value: string) => value !== 'projectKey');
   });
   assert.ok(weakened.some((item) => item.includes('required response property no longer guaranteed: projectKey')));
+});
+
+
+test('hardened v1.3.0 floor protects optional bodies and action enums', () => {
+  const candidate = structuredClone(hardenedBaseline) as Record<string, any>;
+  candidate.paths['/api/v1/improvements/{candidateId}/adopt'].post.requestBody.required = true;
+  candidate.paths['/api/v1/supervisors/{supervisorId}/decisions'].post.requestBody.content['application/json']
+    .schema.properties.action.properties.type.enum = ['NO_ACTION'];
+  const result = checkOpenApiCompatibility(hardenedBaseline, candidate);
+  assert.ok(result.some((item) => item.includes('request body became required')));
+  assert.ok(result.some((item) => item.includes('enum narrowed')));
 });

@@ -286,15 +286,33 @@ function readJson(file: string): unknown {
 
 async function main(): Promise<void> {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const baselineFile = path.resolve(root, process.argv[2] ?? 'api/compat/openapi.v1.2.1.json');
   const candidateFile = path.resolve(root, process.argv[3] ?? 'api/openapi.v1.json');
-  const failures = checkOpenApiCompatibility(readJson(baselineFile), readJson(candidateFile));
+  const explicitBaseline = process.argv[2];
+  const baselineFiles = explicitBaseline
+    ? [path.resolve(root, explicitBaseline)]
+    : fs
+        .readdirSync(path.join(root, 'api', 'compat'))
+        .filter((name) => /^openapi\.v[0-9]+\.[0-9]+\.[0-9]+\.json$/.test(name))
+        .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }))
+        .map((name) => path.join(root, 'api', 'compat', name));
+  if (baselineFiles.length === 0) throw new Error('ForgeFlow compatibility baseline set is empty');
+
+  const candidate = readJson(candidateFile);
+  const failures: string[] = [];
+  for (const baselineFile of baselineFiles) {
+    const baselineFailures = checkOpenApiCompatibility(readJson(baselineFile), candidate);
+    failures.push(
+      ...baselineFailures.map((failure) => `${path.relative(root, baselineFile)}: ${failure}`),
+    );
+  }
   if (failures.length) {
     console.error('ForgeFlow V1 OpenAPI compatibility check failed:\n' + failures.map((item) => `- ${item}`).join('\n'));
     process.exitCode = 1;
     return;
   }
-  console.log(`ForgeFlow V1 OpenAPI compatibility OK (${path.relative(root, baselineFile)} -> ${path.relative(root, candidateFile)})`);
+  console.log(
+    `ForgeFlow V1 OpenAPI compatibility OK (${baselineFiles.length} baselines -> ${path.relative(root, candidateFile)})`,
+  );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
