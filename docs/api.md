@@ -44,6 +44,18 @@ New API modules should:
 
 The existing V1 routes predate the schema-first boundary and are being migrated incrementally. New routes are not allowed to expand that legacy pattern.
 
+### Time-bounded V1 compatibility exception
+
+Phase 1 moves legacy V1 routes behind API modules and application services **without tightening request validation or response serialization**, because changing validation while changing ownership would mix a contract migration with an architecture migration. Those moved legacy routes may therefore retain permissive/generated OpenAPI shapes until the dedicated contract-hardening/typed-client phase. This exception is time-bounded:
+
+- it applies only to public routes that existed before the Phase-1 modularization baseline;
+- it does not allow new public routes without request/response JSON Schema;
+- public path/status/field semantics must remain backward compatible during ownership migration;
+- OpenAPI drift remains a mandatory CI gate;
+- the exception closes when the typed-client/contract-hardening phase gives every retained V1 route an explicit schema.
+
+This separation keeps Phase 1 behavior-preserving while preventing the compatibility surface from growing.
+
 ## Client strategy
 
 The checked-in OpenAPI artifact is the source from which typed clients can be generated. A future standalone SDK should be generated from this contract rather than duplicating HTTP payload definitions by hand. Until that package exists, integrations should still use only documented HTTP routes and must tolerate additive fields.

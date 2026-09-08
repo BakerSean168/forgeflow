@@ -7,16 +7,21 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 import { registerOpenApi } from './api/openapi.js';
 import { registerApiErrorHandler } from './api/shared/errors.js';
-import { bodyRecord, requiredText } from './api/shared/input.js';
-import { planDeliveryConfig } from './api/shared/delivery.js';
+import { requiredText } from './api/shared/input.js';
 import { registerApiModules } from './api/module.js';
 import { createProjectApiModule } from './api/v1/projects.js';
 import { createSystemApiModule } from './api/v1/system/index.js';
 import { createResourceApiModule } from './api/v1/resources/index.js';
 import { createImprovementApiModule } from './api/v1/improvements/index.js';
+import { createPlanApiModule } from './api/v1/plans/index.js';
+import { createExecutionApiModule } from './api/v1/executions/index.js';
+import { createSupervisorApiModule } from './api/v1/supervisors/index.js';
 import { SystemApplication } from './application/system/index.js';
 import { ResourceApplication } from './application/resources/index.js';
 import { ImprovementApplication } from './application/improvements/index.js';
+import { PlanApplication } from './application/plans/index.js';
+import { ExecutionApplication } from './application/executions/index.js';
+import { SupervisorApplication } from './application/supervisors/index.js';
 
 import {
   AntigravityExecutionProvider,
@@ -56,8 +61,7 @@ import {
   type ResourceProbePort,
 } from './core/adapters/resourceDirectory.js';
 import { ForgeFlowError } from './core/domain/errors.js';
-import { EXECUTION_STATUSES, type ExecutionStatus } from './core/domain/execution.js';
-import { isTerminalPlanStatus, PLAN_STATUSES, type PlanStatus } from './core/domain/plan.js';
+import { isTerminalPlanStatus } from './core/domain/plan.js';
 import {
   DEFAULT_AFFINITY_POLICY,
   createExecutionResourceSelection,
@@ -100,7 +104,6 @@ import {
 import { bootstrapForgeFlow } from './core/persistence/bootstrap.js';
 import { createRepositories, type ForgeFlowRepositories } from './core/persistence/repositories.js';
 import { SupervisorActionExecutor, type SupervisorKernelPort } from './core/supervisor/executor.js';
-import { buildBoundedProjection } from './core/supervisor/projection.js';
 import { ResourceSelectedSupervisorDecisionClient } from './core/supervisor/resourceClient.js';
 import { SupervisorDirectAdmissionProbe } from './core/adapters/supervisorDirectAdmission.js';
 import {
@@ -1864,10 +1867,6 @@ export async function buildControlPlane(
     checkedAt: item.checkedAt,
     errorCode: item.errorCode ?? null,
   });
-  const executionProjection = (execution: ReturnType<ForgeFlowRepositories['executions']['get']>) => ({
-    ...execution,
-    resourceSelection: repositories.resourceSelections.get(execution.identity.executionId) ?? null,
-  });
   const workspaceStorage = () => automation?.workspace.storageStatus?.() ?? null;
   const hostCacheMaintenance = () =>
     readHostCacheMaintenance(env.FORGEFLOW_HOST_CACHE_STATE_FILE);
@@ -1933,558 +1932,40 @@ export async function buildControlPlane(
   });
 
 
-  const planView = (planId: string) => {
-    const plan = repositories.plans.getPlan(planId);
-    const graph = repositories.plans.getActiveGraphVersion(planId);
-    return {
-      plan,
-      delivery: plan.delivery ?? null,
-      graph,
-      workItems: graph ? repositories.plans.listWorkItems(planId, graph.graphVersionId) : [],
-      executions: repositories.executions.listByPlan(planId).map(executionProjection),
-      reviews: repositories.reviews.listByPlan(planId),
-      sessions: repositories.sessions.listByPlan(planId),
-      worktrees: repositories.planWorktrees.listByPlan(planId),
-      activationEvents: repositories.events
-        .listRecentByAggregate(planId, 500)
-        .filter((event) => event.type.startsWith('PLAN_ACTIVATION_')),
-      supervisor: repositories.supervisors.getByPlanId(planId),
-    };
-  };
+  const planApplication = new PlanApplication({
+    repositories,
+    planKernel: kernels.plan,
+    projects,
+    ...(projectPlanQueue ? { projectPlanQueue } : {}),
+    singleActivePlanEnabled,
+    requireAutomation,
+    ...(automation ? { automation } : {}),
+  });
+
+  const executionApplication = new ExecutionApplication({
+    repositories,
+    telemetry: executionTelemetry,
+    requireRuntime: requireAutomation,
+    ...(automation ? { runtime: automation } : {}),
+  });
+
+  const supervisorApplication = new SupervisorApplication(db, supervisorActions);
 
   const improvementApplication = new ImprovementApplication(
     improvementRegistry,
     improvements,
-    planView,
+    (planId) => planApplication.view(planId),
   );
 
-
-  app.get('/api/v1/plans', async (request) => {
-    const query = request.query as { limit?: string; status?: string; view?: string };
-    const limit = integerValue(query.limit, 100, 1, 1000, 'PLAN_LIST_LIMIT_INVALID');
-    const status = query.status;
-    if (status && !(PLAN_STATUSES as readonly string[]).includes(status))
-      throw new ForgeFlowError('PLAN_STATUS_INVALID');
-    if (query.view && query.view !== 'full' && query.view !== 'summary')
-      throw new ForgeFlowError('PLAN_LIST_VIEW_INVALID');
-    const plans = repositories.plans.listPlans({
-      limit,
-      ...(status ? { status: status as PlanStatus } : {}),
-    });
-    const items =
-      query.view === 'summary'
-        ? plans.map((plan) => {
-            const graph = repositories.plans.getActiveGraphVersion(plan.planId);
-            return {
-              plan,
-              delivery: plan.delivery ?? null,
-              graph,
-              workItems: graph
-                ? repositories.plans.listWorkItems(plan.planId, graph.graphVersionId)
-                : [],
-              executions: repositories.executions
-                .listByPlan(plan.planId)
-                .filter((execution) => ['QUEUED', 'RUNNING', 'BLOCKED'].includes(execution.status))
-                .map(executionProjection),
-            };
-          })
-        : plans.map((plan) => planView(plan.planId));
-    return { items, count: items.length };
-  });
-
-  app.get('/api/v1/projects/:projectKey/plan-queue', async (request) => {
-    requireProjectPlanQueue();
-    const projectKey = requiredText(
-      (request.params as { projectKey?: string }).projectKey,
-      'PLAN_PROJECT_REQUIRED',
-    );
-    return {
-      projectKey,
-      lease: repositories.projectPlans.getLease(projectKey) ?? null,
-      items: repositories.projectPlans.listQueue(projectKey),
-    };
-  });
-
-  app.post('/api/v1/plans/:planId/reprioritize', async (request) => {
-    requireProjectPlanQueue();
-    const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
-    const body = bodyRecord(request.body);
-    const priority = body.priority;
-    if (typeof priority !== 'number' || !Number.isInteger(priority))
-      throw new ForgeFlowError('PROJECT_PLAN_PRIORITY_INVALID');
-    const result = repositories.projectPlans.reprioritize(planId, priority);
-    if (result.status === 'rejected')
-      throw new ForgeFlowError(result.reason ?? 'PROJECT_PLAN_REPRIORITIZE_FAILED');
-    return { queueEntry: result.value, mutation: result.status };
-  });
-
-  app.post('/api/v1/plans/:planId/cancel-queued', async (request) => {
-    const runtime = requireProjectPlanQueue();
-    const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
-    runtime.cancelQueued(planId);
-    return {
-      plan: repositories.plans.getPlan(planId),
-      queueEntry: repositories.projectPlans.getQueueEntry(planId) ?? null,
-    };
-  });
-
-  app.post('/api/v1/plans/:planId/cancel', async (request) => {
-    const runtime = requireProjectPlanQueue();
-    const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
-    const body = request.body === undefined ? {} : bodyRecord(request.body);
-    const idempotencyKey = requiredText(
-      request.headers['idempotency-key'] ?? body.idempotencyKey,
-      'PROJECT_PLAN_CANCEL_IDEMPOTENCY_REQUIRED',
-    );
-    const reason = requiredText(body.reason, 'PROJECT_PLAN_CANCEL_REASON_INVALID');
-    const result = await runtime.cancelPlan(planId, idempotencyKey, reason);
-    return {
-      ...result,
-      plan: repositories.plans.getPlan(planId),
-      lease: repositories.projectPlans.getLease(repositories.plans.getPlan(planId).projectKey) ?? null,
-    };
-  });
-
-  app.post('/api/v1/plans', async (request, reply) => {
-    const body = bodyRecord(request.body);
-    const idempotencyKey = requiredText(
-      request.headers['idempotency-key'] ?? body.idempotencyKey,
-      'PLAN_IDEMPOTENCY_REQUIRED',
-    );
-    const delivery = planDeliveryConfig(body.delivery);
-    const projectKey = requiredText(body.projectKey, 'PLAN_PROJECT_REQUIRED');
-    const requestedRepositoryPath =
-      typeof body.repositoryPath === 'string' && body.repositoryPath.trim()
-        ? body.repositoryPath.trim()
-        : undefined;
-    const repositoryPath = requiredText(
-      projects.resolveRepository(projectKey, requestedRepositoryPath),
-      'PLAN_REPOSITORY_REQUIRED',
-    );
-    const planResult = kernels.plan.createPlan({
-      idempotencyKey,
-      projectKey,
-      objective: requiredText(body.objective, 'PLAN_OBJECTIVE_REQUIRED'),
-      repositoryPath,
-      baseRevision: requiredText(body.baseRevision, 'PLAN_BASE_REVISION_REQUIRED'),
-      ...(delivery ? { delivery } : {}),
-    });
-    const plan = planResult.value;
-    if (!plan) throw new ForgeFlowError('PLAN_CREATE_FAILED');
-    const rawItems = Array.isArray(body.workItems)
-      ? body.workItems
-      : [
-          {
-            itemKey: 'objective',
-            title: 'Complete objective',
-            objective: plan.objective,
-            dependencies: [],
-            acceptanceCriteria: [],
-          },
-        ];
-    const graph = kernels.plan.ensureReadyGraph(
-      plan.planId,
-      rawItems.map((item) => {
-        const value = bodyRecord(item);
-        return {
-          itemKey: requiredText(value.itemKey, 'GRAPH_ITEM_KEY_REQUIRED'),
-          title: requiredText(value.title, 'GRAPH_TITLE_REQUIRED'),
-          objective: requiredText(value.objective, 'GRAPH_ITEM_OBJECTIVE_REQUIRED'),
-          dependencies: Array.isArray(value.dependencies)
-            ? value.dependencies.map((entry) => requiredText(entry, 'GRAPH_DEPENDENCY_INVALID'))
-            : [],
-          acceptanceCriteria: Array.isArray(value.acceptanceCriteria)
-            ? value.acceptanceCriteria.map((entry) =>
-                requiredText(entry, 'GRAPH_ACCEPTANCE_INVALID'),
-              )
-            : [],
-          parallelSafe: value.parallelSafe === true,
-          writeScopes: Array.isArray(value.writeScopes)
-            ? value.writeScopes.map((entry) =>
-                requiredText(entry, 'WORK_ITEM_WRITE_SCOPES_INVALID'),
-              )
-            : [],
-          conflictKeys: Array.isArray(value.conflictKeys)
-            ? value.conflictKeys.map((entry) =>
-                requiredText(entry, 'WORK_ITEM_CONFLICT_KEYS_INVALID'),
-              )
-            : [],
-        };
-      }),
-      { activate: !singleActivePlanEnabled },
-    );
-    const scheduling = projectPlanQueue
-      ? projectPlanQueue.scheduleRootPlan(
-          plan.planId,
-          body.priority === undefined
-            ? 0
-            : typeof body.priority === 'number' && Number.isInteger(body.priority)
-              ? body.priority
-              : (() => {
-                  throw new ForgeFlowError('PROJECT_PLAN_PRIORITY_INVALID');
-                })(),
-        )
-      : undefined;
-    if (
-      scheduling?.status === 'ACTIVE' &&
-      automation?.planWorktreeManager &&
-      automation.literalWorktreeProjectKeys.includes(plan.projectKey)
-    )
-      await automation.planWorktreeManager.ensurePlanActivated(plan.planId);
-    let supervisor = repositories.supervisors.getByPlanId(plan.planId);
-    if (!projectPlanQueue) {
-      supervisor = supervisor ?? repositories.supervisors.create({ planId: plan.planId }).value;
-      if (!supervisor) throw new ForgeFlowError('SUPERVISOR_CREATE_FAILED');
-      if (supervisor.status === 'CREATED')
-        repositories.supervisors.updateStatus(supervisor.supervisorId, 'ACTIVE');
-      supervisor = repositories.supervisors.getById(supervisor.supervisorId);
-    } else if (scheduling?.status === 'ACTIVE') {
-      supervisor = repositories.supervisors.getByPlanId(plan.planId);
-    }
-    reply.code(planResult.status === 'created' ? 201 : 200);
-    return {
-      plan: repositories.plans.getPlan(plan.planId),
-      graph,
-      supervisor: supervisor ?? null,
-      ...(scheduling ? { scheduling } : {}),
-    };
-  });
-
-  app.post('/api/v1/plans/:planId/children', async (request, reply) => {
-    const parentPlanId = requiredText(
-      (request.params as { planId?: string }).planId,
-      'PLAN_ID_REQUIRED',
-    );
-    const body = bodyRecord(request.body);
-    const relation = requiredText(body.relation ?? 'FOLLOW_UP', 'CHILD_RELATION_INVALID');
-    if (
-      relation !== 'SYSTEM_REPAIR' &&
-      relation !== 'INFRASTRUCTURE_REPAIR' &&
-      relation !== 'FOLLOW_UP'
-    )
-      throw new ForgeFlowError('CHILD_RELATION_INVALID');
-    const parent = repositories.plans.getPlan(parentPlanId);
-    const child = kernels.plan.createChildPlan({
-      parentPlanId,
-      childPlanId: requiredText(body.childPlanId, 'CHILD_PLAN_ID_REQUIRED'),
-      repositoryPath: requiredText(
-        body.repositoryPath ?? parent.repositoryPath,
-        'CHILD_REPOSITORY_REQUIRED',
-      ),
-      objective: requiredText(body.objective, 'CHILD_OBJECTIVE_REQUIRED'),
-      relation,
-    });
-    const rawItems = Array.isArray(body.workItems)
-      ? body.workItems
-      : [
-          {
-            itemKey: 'objective',
-            title: 'Complete child objective',
-            objective: child.plan.objective,
-            dependencies: [],
-            acceptanceCriteria: [],
-          },
-        ];
-    const graph = kernels.plan.ensureReadyGraph(
-      child.plan.planId,
-      rawItems.map((item) => {
-        const value = bodyRecord(item);
-        return {
-          itemKey: requiredText(value.itemKey, 'GRAPH_ITEM_KEY_REQUIRED'),
-          title: requiredText(value.title, 'GRAPH_TITLE_REQUIRED'),
-          objective: requiredText(value.objective, 'GRAPH_ITEM_OBJECTIVE_REQUIRED'),
-          dependencies: Array.isArray(value.dependencies)
-            ? value.dependencies.map((entry) => requiredText(entry, 'GRAPH_DEPENDENCY_INVALID'))
-            : [],
-          acceptanceCriteria: Array.isArray(value.acceptanceCriteria)
-            ? value.acceptanceCriteria.map((entry) =>
-                requiredText(entry, 'GRAPH_ACCEPTANCE_INVALID'),
-              )
-            : [],
-          parallelSafe: value.parallelSafe === true,
-          writeScopes: Array.isArray(value.writeScopes)
-            ? value.writeScopes.map((entry) =>
-                requiredText(entry, 'WORK_ITEM_WRITE_SCOPES_INVALID'),
-              )
-            : [],
-          conflictKeys: Array.isArray(value.conflictKeys)
-            ? value.conflictKeys.map((entry) =>
-                requiredText(entry, 'WORK_ITEM_CONFLICT_KEYS_INVALID'),
-              )
-            : [],
-        };
-      }),
-    );
-    const delivery = planDeliveryConfig(body.delivery);
-    if (delivery) repositories.plans.attachDelivery(child.plan.planId, delivery);
-    let supervisor = repositories.supervisors.getByPlanId(child.plan.planId);
-    if (!supervisor) {
-      supervisor = repositories.supervisors.create({ planId: child.plan.planId }).value;
-      if (!supervisor) throw new ForgeFlowError('SUPERVISOR_CREATE_FAILED');
-      if (supervisor.status === 'CREATED')
-        repositories.supervisors.updateStatus(supervisor.supervisorId, 'ACTIVE');
-    }
-    reply.code(201);
-    return {
-      plan: repositories.plans.getPlan(child.plan.planId),
-      graph,
-      relationshipId: child.relationshipId,
-      supervisor: repositories.supervisors.getByPlanId(child.plan.planId),
-      statusUrl: '/api/v1/plans/' + encodeURIComponent(child.plan.planId),
-    };
-  });
-
-  app.post('/api/v1/plans/:planId/delivery', async (request, reply) => {
-    const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
-    const config = planDeliveryConfig(request.body);
-    if (!config) throw new ForgeFlowError('PLAN_DELIVERY_REQUIRED');
-    const result = repositories.plans.attachDelivery(planId, config);
-    reply.code(result.status === 'created' ? 201 : 200);
-    return {
-      planId,
-      delivery: result.value,
-      statusUrl: '/api/v1/plans/' + encodeURIComponent(planId),
-    };
-  });
-
-  app.get('/api/v1/plans/:planId', async (request) => {
-    const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
-    return planView(planId);
-  });
-
-  app.post('/api/v1/plans/:planId/run', async (request) => {
-    const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
-    const runtime = requireAutomation();
-    await runtime.reconcileRuntimeAdmission();
-    return await runtime.plans.runPlan(planId);
-  });
-
-  app.post('/api/v1/plans/:planId/reconcile', async (request, reply) => {
-    const planId = requiredText((request.params as { planId?: string }).planId, 'PLAN_ID_REQUIRED');
-    const body = request.body === undefined ? {} : bodyRecord(request.body);
-    const mode =
-      body.mode === undefined ? 'auto' : requiredText(body.mode, 'PLAN_RECONCILE_MODE_INVALID');
-    const runtime = requireAutomation();
-    await runtime.reconcileRuntimeAdmission();
-    const result = await runtime.plans.reconcilePlan(planId, mode);
-    reply.code(202);
-    return { ...result, statusUrl: '/api/v1/plans/' + encodeURIComponent(planId) };
-  });
-
-  app.get('/api/v1/executions', async (request) => {
-    const query = request.query as {
-      limit?: string;
-      planId?: string;
-      status?: string;
-      view?: string;
-    };
-    const limit = integerValue(query.limit, 100, 1, 1000, 'EXECUTION_LIST_LIMIT_INVALID');
-    const status = query.status;
-    if (status && !(EXECUTION_STATUSES as readonly string[]).includes(status))
-      throw new ForgeFlowError('EXECUTION_STATUS_INVALID');
-    if (query.view && query.view !== 'dashboard') throw new ForgeFlowError('EXECUTION_LIST_VIEW_INVALID');
-    const items = repositories.executions.list({
-      limit,
-      ...(query.planId ? { planId: requiredText(query.planId, 'EXECUTION_PLAN_REQUIRED') } : {}),
-      ...(status ? { status: status as ExecutionStatus } : {}),
-    });
-    if (query.view !== 'dashboard') {
-      const projected = items.map(executionProjection);
-      return { items: projected, count: projected.length };
-    }
-
-    const enriched = new Array(items.length);
-    let cursor = 0;
-    const workers = Array.from({ length: Math.min(8, items.length) }, async () => {
-      while (cursor < items.length) {
-        const index = cursor++;
-        const execution = items[index]!;
-        const telemetry = await executionTelemetry.project({
-          executionId: execution.identity.executionId,
-          status: execution.status,
-          createdAt: execution.createdAt,
-          updatedAt: execution.updatedAt,
-        });
-        const selection = repositories.resourceSelections.get(execution.identity.executionId);
-        const providerNativeRoute =
-          selection?.transport === 'PROVIDER_NATIVE'
-            ? {
-                deploymentId: 'provider-native:' + selection.resourceId,
-                providerKey: selection.resourceId,
-                model: selection.modelFamily,
-                modelGroup: selection.modelFamily,
-                commercialType: 'SUBSCRIPTION',
-                supplyOrigin: 'OFFICIAL',
-              }
-            : execution.identity.route === 'codex-business-review' && automation
-              ? {
-                  deploymentId: 'provider-native:openai-business',
-                  providerKey: 'openai-business',
-                  model:
-                    automation.routeModels[execution.identity.route] ?? execution.identity.route,
-                  modelGroup: execution.identity.route,
-                  commercialType: 'SUBSCRIPTION',
-                  supplyOrigin: 'OFFICIAL',
-                }
-              : undefined;
-        enriched[index] = {
-          ...executionProjection(execution),
-          telemetry:
-            telemetry.usage || telemetry.route || telemetry.routeUsage.length > 0
-              ? telemetry
-              : { ...telemetry, ...(providerNativeRoute ? { route: providerNativeRoute } : {}) },
-        };
-      }
-    });
-    await Promise.all(workers);
-    return { items: enriched, count: enriched.length };
-  });
-
-  app.get('/api/v1/executions/:executionId', async (request) => {
-    const executionId = requiredText(
-      (request.params as { executionId?: string }).executionId,
-      'EXECUTION_ID_REQUIRED',
-    );
-    return {
-      execution: executionProjection(repositories.executions.get(executionId)),
-      resourceSelection: repositories.resourceSelections.get(executionId) ?? null,
-      session: repositories.sessions.getOptional(executionId),
-      evidence: repositories.evidence.listByExecution(executionId),
-      reviewAsImplementation: repositories.reviews.findByImplementationExecution(executionId),
-      reviewAsReviewer: repositories.reviews.findByReviewerExecution(executionId),
-    };
-  });
-
-  app.post('/api/v1/executions/:executionId/run', async (request) => {
-    const executionId = requiredText(
-      (request.params as { executionId?: string }).executionId,
-      'EXECUTION_ID_REQUIRED',
-    );
-    return await requireAutomation().worker.runExecution(executionId);
-  });
-
-  app.post('/api/v1/executions/:executionId/continue', async (request) => {
-    const executionId = requiredText(
-      (request.params as { executionId?: string }).executionId,
-      'EXECUTION_ID_REQUIRED',
-    );
-    const body = request.body === undefined ? {} : bodyRecord(request.body);
-    const instruction =
-      typeof body.instruction === 'string' && body.instruction.trim()
-        ? body.instruction.trim()
-        : undefined;
-    if (body.interruptCurrent !== undefined && typeof body.interruptCurrent !== 'boolean')
-      throw new ForgeFlowError('EXECUTION_CONTINUE_INTERRUPT_INVALID');
-    return await requireAutomation().worker.continueExecution(executionId, instruction, {
-      interruptCurrent: body.interruptCurrent === true,
-    });
-  });
-
-  app.post('/api/v1/executions/:executionId/adopt-workspace', async (request) => {
-    const executionId = requiredText(
-      (request.params as { executionId?: string }).executionId,
-      'EXECUTION_ID_REQUIRED',
-    );
-    const body = request.body === undefined ? {} : bodyRecord(request.body);
-    const idempotencyKey = requiredText(
-      request.headers['idempotency-key'] ?? body.idempotencyKey,
-      'OPERATOR_ADOPTION_IDEMPOTENCY_REQUIRED',
-    );
-    const reason = requiredText(body.reason, 'OPERATOR_ADOPTION_REASON_INVALID');
-    return await requireAutomation().worker.adoptPausedImplementation(
-      executionId,
-      idempotencyKey,
-      reason,
-    );
-  });
-
-  app.post('/api/v1/executions/:executionId/abort-paused-provider', async (request) => {
-    const executionId = requiredText(
-      (request.params as { executionId?: string }).executionId,
-      'EXECUTION_ID_REQUIRED',
-    );
-    const body = request.body === undefined ? {} : bodyRecord(request.body);
-    const idempotencyKey = requiredText(
-      request.headers['idempotency-key'] ?? body.idempotencyKey,
-      'PROVIDER_ABORT_IDEMPOTENCY_REQUIRED',
-    );
-    const reason = requiredText(body.reason, 'PROVIDER_ABORT_REASON_INVALID');
-    return await requireAutomation().worker.abortPausedProviderAttempt(
-      executionId,
-      idempotencyKey,
-      reason,
-    );
-  });
-
-  app.post('/api/v1/executions/:executionId/provider-cleanup', async (request) => {
-    const executionId = requiredText(
-      (request.params as { executionId?: string }).executionId,
-      'EXECUTION_ID_REQUIRED',
-    );
-    const body = request.body === undefined ? {} : bodyRecord(request.body);
-    const idempotencyKey = requiredText(
-      request.headers['idempotency-key'] ?? body.idempotencyKey,
-      'PROVIDER_CLEANUP_IDEMPOTENCY_REQUIRED',
-    );
-    const reason = requiredText(body.reason, 'PROVIDER_CLEANUP_REASON_INVALID');
-    return await requireAutomation().worker.cleanupProviderSession(
-      executionId,
-      idempotencyKey,
-      reason,
-    );
-  });
-
-  app.post('/api/v1/executions/:executionId/replace-provider-session', async (request) => {
-    const executionId = requiredText(
-      (request.params as { executionId?: string }).executionId,
-      'EXECUTION_ID_REQUIRED',
-    );
-    const body = request.body === undefined ? {} : bodyRecord(request.body);
-    const idempotencyKey = requiredText(
-      request.headers['idempotency-key'] ?? body.idempotencyKey,
-      'PROVIDER_REPLACEMENT_IDEMPOTENCY_REQUIRED',
-    );
-    const instruction =
-      typeof body.instruction === 'string' && body.instruction.trim()
-        ? body.instruction.trim()
-        : undefined;
-    const reason =
-      typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim() : undefined;
-    return await requireAutomation().worker.replaceStalledProviderSession(
-      executionId,
-      idempotencyKey,
-      instruction,
-      reason,
-    );
-  });
-
-  app.get('/api/v1/supervisors/:supervisorId/projection', async (request) => {
-    const supervisorId = requiredText(
-      (request.params as { supervisorId?: string }).supervisorId,
-      'SUPERVISOR_ID_REQUIRED',
-    );
-    return buildBoundedProjection(db, supervisorId);
-  });
-
-  app.post('/api/v1/supervisors/:supervisorId/decisions', async (request) => {
-    const supervisorId = requiredText(
-      (request.params as { supervisorId?: string }).supervisorId,
-      'SUPERVISOR_ID_REQUIRED',
-    );
-    const projection = buildBoundedProjection(db, supervisorId);
-    const decisionBody = bodyRecord(request.body);
-    const decision = (await import('./core/supervisor/protocol.js')).parseSupervisorDecision(
-      JSON.stringify(decisionBody),
-    );
-    if (decision.supervisorId !== supervisorId) throw new ForgeFlowError('ACTION_SUPERVISOR_MISMATCH');
-    return await supervisorActions.execute(decision, projection);
-  });
 
   await registerApiModules(app, [
     createSystemApiModule(systemApplication),
     createProjectApiModule(projects),
     createResourceApiModule(resourceApplication),
     createImprovementApiModule(improvementApplication),
+    createPlanApiModule(planApplication),
+    createExecutionApiModule(executionApplication),
+    createSupervisorApiModule(supervisorApplication),
   ]);
 
   const supervisorInterval = supervisorRuntimeEnabled
