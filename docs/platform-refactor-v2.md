@@ -885,6 +885,7 @@ Hardening:
 - literal worktree provisioning now treats tracked Git submodules as controller-owned topology: exact HEAD gitlinks are initialized recursively before writer access, nested gitfiles are source-owned/read-only, and retry handoff reconstructs corrupted nested metadata only from committed gitlink authority;
 - a real Digital Biome attempt exposed a post-commit finalization failure after the model rewrote an uninitialized submodule gitfile to a temporary path; `retry-finalization` now preserves a clean committed same-wave candidate without rewriting the failed Execution, while siblings without a commit restart from their original source;
 - preserved candidates do not receive synthetic test evidence: the next real provider execution starts from the candidate, reruns verification, and still requires normal exact-SHA independent review; whole-wave recovery is persistence-atomic and preserves product attempt budgets.
+- terminal provider cleanup/cancellation repairs corrupted pinned submodule metadata before workspace teardown using the same committed gitlink authority; this repair never resets the superproject HEAD, so a committed candidate remains available for explicit finalization recovery until the later abandon/reset step is actually authorized.
 - `plansReconcile` now supports explicit `retry-infrastructure`: only `WAITING_FOR_RESOURCE` Plans with terminal provider/resource/workspace-capacity failures qualify; product failures remain ineligible, product-attempt budgets are preserved, the existing Plan/worktree/source revision is verified, all sibling recoveries are preflighted before commit, and only each latest failed route is reopened while older exclusions remain durable.
 
 Verification before PR:
@@ -896,7 +897,7 @@ Verification before PR:
 - linked-source Git provenance fixtures accept normal and legitimate linked control worktrees while rejecting forged admin backlinks and symlinked Git metadata;
 - deployment regression proves the exact provenance helper is syntax-checked, installed, and byte-compared with the Antigravity runner;
 - focused infrastructure-recovery regression proves same-wave recovery, exact latest-route reopening, product-failure rejection, route-substitution rejection, repeat-call idempotence, and worktree revision fail-closed behavior;
-- full repository tests: 419/419 passing;
+- full repository tests: 427/427 passing;
 - client tests: 7/7 passing;
 - OpenAPI/API compatibility remains unchanged at 45 operations and both committed V1 floors pass;
 - architecture, generated client drift, TypeScript, server/client builds, and npm-pack gates pass.
