@@ -1,5 +1,8 @@
 # Extensibility model
 
+> Strategic architecture authority: [`platform-architecture-north-star.md`](./platform-architecture-north-star.md).
+> Active migration plan: [`platform-refactor-v2.md`](./platform-refactor-v2.md).
+
 ForgeFlow uses a **modular monolith with explicit extension points**. The goal is to make projects and capabilities easy to add without turning privileged controller code into an unrestricted runtime plugin host.
 
 ## Why not arbitrary runtime plugins?
