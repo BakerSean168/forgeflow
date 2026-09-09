@@ -229,3 +229,51 @@ def review_decision(snapshot, *, expected_head_sha: str):
         reviewer_run_id=snapshot.run_id,
         findings=tuple(normalized),
     )
+
+
+def blocking_repair_findings(snapshot, *, expected_head_sha: str):
+    """Extract bounded repair details from a valid exact-head official review."""
+    from forgeflow.adapters.openswe import ReviewerSnapshot
+    from forgeflow.prompts.repair import RepairFinding
+
+    # Reuse exact-head/run-success validation and structured id/severity/status checks.
+    review_decision(snapshot, expected_head_sha=expected_head_sha)
+    if not isinstance(snapshot, ReviewerSnapshot):
+        raise TypeError("snapshot must be ReviewerSnapshot")
+    findings = []
+    for item in snapshot.findings:
+        if item.get("status", "open") != "open" or item.get("severity") not in {
+            "critical",
+            "high",
+            "medium",
+        }:
+            continue
+        finding_id = item["id"]
+        severity = item["severity"]
+        findings.append(
+            RepairFinding(
+                id=finding_id,
+                severity=severity,
+                title=_bounded_string(item.get("title"), fallback="Review finding", limit=240),
+                file=_bounded_string(item.get("file"), fallback="unknown", limit=500),
+                start_line=_positive_int_or_none(item.get("start_line")),
+                end_line=_positive_int_or_none(item.get("end_line")),
+                description=_bounded_string(item.get("description"), fallback="", limit=1800),
+            )
+        )
+    return tuple(findings)
+
+
+def _bounded_string(value: Any, *, fallback: str, limit: int) -> str:
+    if not isinstance(value, str):
+        return fallback
+    compact = " ".join(value.split())
+    if not compact:
+        return fallback
+    return compact[:limit]
+
+
+def _positive_int_or_none(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
