@@ -192,3 +192,40 @@ def ci_decision(signals, policy):
     if unresolved:
         return CiDecision(head_sha=signals.head_sha, status="UNRESOLVED", failure_code="CI_UNRESOLVED")
     return CiDecision(head_sha=signals.head_sha, status="PASS")
+
+
+class EvidenceViolation(ValueError):
+    """Observed external evidence is malformed or stale for the current policy head."""
+
+
+def review_decision(snapshot, *, expected_head_sha: str):
+    """Normalize an official reviewer snapshot and require exact-head completion."""
+    from forgeflow.adapters.openswe import ReviewerSnapshot
+    from forgeflow.models import FindingSummary, ReviewDecision
+
+    if not isinstance(snapshot, ReviewerSnapshot):
+        raise TypeError("snapshot must be ReviewerSnapshot")
+    if snapshot.run_status != "success":
+        raise EvidenceViolation("official reviewer run is not successful")
+    if not expected_head_sha or snapshot.last_reviewed_sha != expected_head_sha:
+        raise EvidenceViolation("official reviewer evidence is stale for the current PR head")
+
+    normalized = []
+    for item in snapshot.findings:
+        finding_id = item.get("id")
+        severity = item.get("severity")
+        status = item.get("status", "open")
+        if not isinstance(finding_id, str) or not finding_id:
+            raise EvidenceViolation("review finding has no stable id")
+        if severity not in {"critical", "high", "medium", "low"}:
+            raise EvidenceViolation(f"review finding {finding_id} has unknown severity")
+        if status not in {"open", "resolved", "dismissed"}:
+            raise EvidenceViolation(f"review finding {finding_id} has unknown status")
+        normalized.append(FindingSummary(id=finding_id, severity=severity, status=status))
+
+    return ReviewDecision(
+        head_sha=expected_head_sha,
+        reviewer_thread_id=snapshot.thread_id,
+        reviewer_run_id=snapshot.run_id,
+        findings=tuple(normalized),
+    )

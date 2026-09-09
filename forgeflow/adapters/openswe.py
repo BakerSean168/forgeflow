@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from agent.dashboard.team_settings import get_team_default_model_pair
 from agent.dispatch import dispatch_agent_run
 from agent.github.app import get_github_app_installation_token
 from agent.github.ci import list_check_runs, list_commit_statuses
@@ -209,6 +210,7 @@ __all__ = [
     "fetch_github_pr_metadata",
     "get_github_app_installation_token",
     "get_pull_request_check_states",
+    "get_team_default_model_pair",
     "implementation_config",
     "implementation_thread_id",
     "list_check_runs",
@@ -219,3 +221,73 @@ __all__ = [
     "reviewer_config",
     "trigger_pr_review_from_ref",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewerSnapshot:
+    thread_id: str
+    run_id: str
+    run_status: str
+    last_reviewed_sha: str
+    findings: tuple[dict[str, Any], ...]
+
+
+class OpenSweReviewerRuntime:
+    """Official Open SWE reviewer trigger/read adapter; no custom reviewer graph."""
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        trigger: ReviewTrigger = trigger_pr_review_from_ref,
+        findings_reader: FindingsReader = list_findings,
+        model_pair_reader: Callable[..., Awaitable[Any]] = get_team_default_model_pair,
+    ) -> None:
+        self._client = client
+        self._trigger = trigger
+        self._findings_reader = findings_reader
+        self._model_pair_reader = model_pair_reader
+
+    async def assert_model_policy(self) -> None:
+        main, subagent = await self._model_pair_reader("reviewer")
+        expected = ("openai:gpt-5.6-sol", "medium")
+        if tuple(main) != expected or tuple(subagent) != expected:
+            raise OpenSweAdapterError(
+                f"official reviewer model policy mismatch: main={main!r} subagent={subagent!r}"
+            )
+
+    async def trigger_review(self, pr_url: str) -> tuple[str, str]:
+        await self.assert_model_policy()
+        pr_ref = parse_github_pr_url(pr_url)
+        if pr_ref is None:
+            raise OpenSweAdapterError("invalid GitHub PR URL")
+        result = await self._trigger(pr_ref, source="forgeflow")
+        if not result.get("success"):
+            raise OpenSweAdapterError(str(result.get("error") or "official reviewer trigger failed"))
+        thread_id = result.get("thread_id")
+        if not isinstance(thread_id, str) or not thread_id:
+            raise OpenSweAdapterError("official reviewer trigger returned no thread_id")
+        thread = await self._client.threads.get(thread_id)
+        metadata = thread.get("metadata") if isinstance(thread, Mapping) else None
+        run_id = metadata.get("current_reviewer_run_id") if isinstance(metadata, Mapping) else None
+        if not isinstance(run_id, str) or not run_id:
+            raise OpenSweAdapterError("reviewer thread has no current_reviewer_run_id")
+        return thread_id, run_id
+
+    async def read_review(self, *, thread_id: str, run_id: str) -> ReviewerSnapshot:
+        thread = await self._client.threads.get(thread_id)
+        metadata = thread.get("metadata") if isinstance(thread, Mapping) else None
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        run = await self._client.runs.get(thread_id, run_id)
+        status = run.get("status") if isinstance(run, Mapping) else None
+        findings = await self._findings_reader(thread_id)
+        last_reviewed_sha = metadata.get("last_reviewed_sha")
+        return ReviewerSnapshot(
+            thread_id=thread_id,
+            run_id=run_id,
+            run_status=status if isinstance(status, str) else "unknown",
+            last_reviewed_sha=last_reviewed_sha if isinstance(last_reviewed_sha, str) else "",
+            findings=tuple(dict(item) for item in findings),
+        )
+
+__all__ += ["OpenSweReviewerRuntime", "ReviewerSnapshot", "get_team_default_model_pair"]
