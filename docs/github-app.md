@@ -41,6 +41,28 @@ For the full Open SWE dashboard/webhook surface, configure callback URL
 The current GCP Dev service is loopback-only, so inbound webhooks require a separately secured
 tunnel/reverse proxy; ForgeFlow's direct review dispatch does not require a public webhook.
 
+## One-time Tailscale manifest bootstrap
+
+On GCP Dev, the preferred setup path is the one-time manifest bootstrap. It binds only to the
+server's Tailscale IPv4 address, keeps webhook delivery disabled during local Policy V1
+acceptance, and writes manifest-conversion credentials directly to the external `0600` env file.
+No PEM, client secret, or webhook secret is printed to the terminal or browser.
+
+```bash
+uv run python deploy/gcp-dev/github_app_manifest_bootstrap.py \
+  --bind "$(tailscale ip -4)" --port 8765
+```
+
+Open the printed Tailscale URL from a browser on the same tailnet. GitHub still requires the human
+owner to approve App creation and installation. On the installation page choose **Only select
+repositories** and select exactly `digital-biome` and `forgeflow`. The install callback verifies
+both repositories resolve to the same installation before persisting
+`GITHUB_APP_INSTALLATION_ID`; failed verification leaves ForgeFlow fail-closed.
+
+The manifest uses GitHub's official three-step flow: browser registration, state-checked redirect,
+and server-side `POST /app-manifests/{code}/conversions`. The bootstrap exits after successful
+installation and restarts `forgeflow-policy.service` so Open SWE reloads the App credentials.
+
 ## Configure GCP Dev
 
 Create `~/.config/forgeflow-policy/github-app.env` with mode `0600`, using
