@@ -6,6 +6,8 @@ from typing import Any
 from forgeflow.adapters.openswe import (
     fetch_github_pr_metadata,
     get_github_app_installation_token,
+    list_check_runs,
+    list_commit_statuses,
     parse_github_pr_url,
 )
 
@@ -21,6 +23,13 @@ class PullRequestEvidence:
     head_ref: str
     base_sha: str
     base_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class CiSignals:
+    head_sha: str
+    check_runs: tuple[dict[str, Any], ...]
+    statuses: tuple[dict[str, Any], ...]
 
 
 async def fetch_pull_request(pr_url: str) -> PullRequestEvidence | None:
@@ -54,6 +63,22 @@ async def fetch_pull_request(pr_url: str) -> PullRequestEvidence | None:
         head_ref=_string(head.get("ref")),
         base_sha=base_sha,
         base_ref=_string(base.get("ref")),
+    )
+
+
+async def fetch_ci_signals(pr: PullRequestEvidence) -> CiSignals | None:
+    """Read checks/statuses for the exact current head via Open SWE's GitHub auth path."""
+    token = await get_github_app_installation_token()
+    if not token:
+        return None
+    check_runs = await list_check_runs(owner=pr.owner, repo=pr.repo, ref=pr.head_sha, token=token)
+    statuses = await list_commit_statuses(owner=pr.owner, repo=pr.repo, ref=pr.head_sha, token=token)
+    if check_runs is None or statuses is None:
+        return None
+    return CiSignals(
+        head_sha=pr.head_sha,
+        check_runs=tuple(check_runs),
+        statuses=tuple(statuses),
     )
 
 

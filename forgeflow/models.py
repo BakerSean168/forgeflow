@@ -37,3 +37,9 @@ class ReviewDecision:
     reviewer_thread_id: str
     reviewer_run_id: str
     findings: tuple[FindingSummary, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryPolicy:
+    ci_required: bool = True
+    required_checks: tuple[str, ...] = ()

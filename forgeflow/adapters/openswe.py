@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from agent.dispatch import dispatch_agent_run
 from agent.github.app import get_github_app_installation_token
+from agent.github.ci import list_check_runs, list_commit_statuses
 from agent.github.pull_request_checks import get_pull_request_check_states
 from agent.github.webhook import trigger_pr_review_from_ref
 from agent.graphs.agent import traced_agent
@@ -210,6 +211,8 @@ __all__ = [
     "get_pull_request_check_states",
     "implementation_config",
     "implementation_thread_id",
+    "list_check_runs",
+    "list_commit_statuses",
     "list_findings",
     "open_swe_webapp",
     "parse_github_pr_url",

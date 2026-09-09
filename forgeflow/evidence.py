@@ -108,3 +108,87 @@ def _no_progress(code: str) -> ImplementationEvidence:
 
 def _string(value: Any) -> str:
     return value if isinstance(value, str) else ""
+
+
+_SUCCESSFUL_CHECK_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
+_FAILED_CHECK_CONCLUSIONS = frozenset(
+    {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}
+)
+
+
+def ci_decision(signals, policy):
+    """Normalize GitHub check runs/statuses for one exact head into a deterministic gate."""
+    from forgeflow.adapters.github import CiSignals
+    from forgeflow.models import CiDecision, RepositoryPolicy
+
+    if not isinstance(signals, CiSignals):
+        raise TypeError("signals must be CiSignals")
+    if not isinstance(policy, RepositoryPolicy):
+        raise TypeError("policy must be RepositoryPolicy")
+
+    named_checks = {
+        str(run.get("name")): ("check", run)
+        for run in signals.check_runs
+        if isinstance(run.get("name"), str) and run.get("name")
+    }
+    named_statuses = {
+        str(status.get("context")): ("status", status)
+        for status in signals.statuses
+        if isinstance(status.get("context"), str) and status.get("context")
+    }
+    observed = {**named_checks, **named_statuses}
+
+    if policy.required_checks:
+        missing = [name for name in policy.required_checks if name not in observed]
+        if missing:
+            return CiDecision(
+                head_sha=signals.head_sha,
+                status="UNRESOLVED",
+                failure_code="MISSING_REQUIRED_CHECK:" + ",".join(missing),
+            )
+        selected = [observed[name] for name in policy.required_checks]
+    else:
+        selected = list(observed.values())
+
+    if not selected:
+        return CiDecision(
+            head_sha=signals.head_sha,
+            status="UNRESOLVED" if policy.ci_required else "PASS",
+            failure_code="NO_CI_SIGNALS" if policy.ci_required else None,
+        )
+
+    pending = False
+    unresolved = False
+    for kind, record in selected:
+        if kind == "check":
+            status = record.get("status")
+            conclusion = record.get("conclusion")
+            if status != "completed":
+                pending = True
+                continue
+            if conclusion in _FAILED_CHECK_CONCLUSIONS:
+                return CiDecision(
+                    head_sha=signals.head_sha,
+                    status="FAIL",
+                    failure_code=f"CHECK_FAILED:{record.get('name') or 'unknown'}",
+                )
+            if conclusion not in _SUCCESSFUL_CHECK_CONCLUSIONS:
+                unresolved = True
+        else:
+            state = record.get("state")
+            if state == "pending":
+                pending = True
+            elif state in {"failure", "error"}:
+                return CiDecision(
+                    head_sha=signals.head_sha,
+                    status="FAIL",
+                    failure_code=f"STATUS_FAILED:{record.get('context') or 'unknown'}",
+                )
+            elif state != "success":
+                unresolved = True
+
+    if pending:
+        return CiDecision(head_sha=signals.head_sha, status="PENDING")
+    if unresolved:
+        return CiDecision(head_sha=signals.head_sha, status="UNRESOLVED", failure_code="CI_UNRESOLVED")
+    return CiDecision(head_sha=signals.head_sha, status="PASS")
