@@ -170,10 +170,34 @@ def read_app_env(path: Path) -> dict[str, str]:
     return values
 
 
-def finalize_installation(env_path: Path, installation_id: int) -> tuple[dict[str, str], list[str]]:
-    env = read_app_env(env_path)
-    app_id = env.get("GITHUB_APP_ID", "")
-    private_key = env.get("GITHUB_APP_PRIVATE_KEY", "")
+def write_pending_app(path: Path, app: dict[str, Any]) -> None:
+    required = ("id", "client_id", "client_secret", "pem", "webhook_secret", "slug")
+    missing = [key for key in required if not app.get(key)]
+    if missing:
+        raise RuntimeError(f"manifest conversion omitted required fields: {missing}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps({key: app[key] for key in required}), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+    os.chmod(path, 0o600)
+
+
+def read_pending_app(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise RuntimeError("GitHub App manifest conversion has not completed")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError("pending GitHub App payload is invalid")
+    return payload
+
+
+def finalize_installation(
+    env_path: Path, app: dict[str, Any], installation_id: int
+) -> tuple[dict[str, str], list[str]]:
+    app_id = str(app.get("id") or "")
+    pem = app.get("pem")
+    private_key = pem if isinstance(pem, str) else ""
     if not app_id or not private_key:
         raise RuntimeError("GitHub App manifest conversion has not completed")
     observed = {
@@ -187,14 +211,7 @@ def finalize_installation(env_path: Path, installation_id: int) -> tuple[dict[st
         raise RuntimeError(
             "installation does not cover the required repositories: " + ", ".join(mismatched)
         )
-    app_payload: dict[str, Any] = {
-        "id": app_id,
-        "client_id": env["GITHUB_APP_CLIENT_ID"],
-        "client_secret": env["GITHUB_APP_CLIENT_SECRET"],
-        "pem": private_key.replace("\\n", "\n"),
-        "webhook_secret": env["GITHUB_WEBHOOK_SECRET"],
-    }
-    write_app_env(env_path, app_payload, installation_id=installation_id)
+    write_app_env(env_path, app, installation_id=installation_id)
     root = Path(__file__).resolve().parents[2]
     results: list[str] = []
     subprocess.run(["systemctl", "--user", "restart", "forgeflow-policy.service"], check=True)
@@ -220,6 +237,7 @@ class BootstrapServer(ThreadingHTTPServer):
         self.csrf_state = secrets.token_urlsafe(32)
         self.base_url = f"http://{address[0]}:{address[1]}"
         self.env_path = env_path
+        self.pending_path = env_path.with_suffix(env_path.suffix + ".pending.json")
         self.app_slug: str | None = None
         self.completed = False
 
@@ -291,14 +309,14 @@ class Handler(BaseHTTPRequestHandler):
         if not secrets.compare_digest(state, self.server.csrf_state) or not code:
             raise RuntimeError("manifest callback state/code validation failed")
         app = exchange_manifest(code)
-        write_app_env(self.server.env_path, app)
+        write_pending_app(self.server.pending_path, app)
         slug = app.get("slug")
         if not isinstance(slug, str) or not slug:
             raise RuntimeError("GitHub manifest response omitted app slug")
         self.server.app_slug = slug
         install_url = f"https://github.com/apps/{urllib.parse.quote(slug, safe='-')}/installations/new"
         body = f"""
-        <p>Registration succeeded and credentials were stored on GCP Dev with mode 0600.</p>
+        <p>Registration succeeded. Credentials are held in a private pending file until repository installation is verified.</p>
         <p>Install the App on <strong>{OWNER}</strong>. Choose <strong>Only select repositories</strong> and select:</p>
         <ul><li><code>digital-biome</code></li><li><code>forgeflow</code></li></ul>
         <p><a class="button" href="{html.escape(install_url, quote=True)}">Install App on repositories</a></p>
@@ -309,7 +327,9 @@ class Handler(BaseHTTPRequestHandler):
         raw = query.get("installation_id", [""])[0]
         if not raw.isdigit() or int(raw) <= 0:
             raise RuntimeError("installation callback did not provide a valid installation_id")
-        observed, checks = finalize_installation(self.server.env_path, int(raw))
+        app = read_pending_app(self.server.pending_path)
+        observed, checks = finalize_installation(self.server.env_path, app, int(raw))
+        self.server.pending_path.unlink(missing_ok=True)
         self.server.completed = True
         detail = "".join(f"<li><code>{html.escape(item)}</code></li>" for item in checks)
         body = (

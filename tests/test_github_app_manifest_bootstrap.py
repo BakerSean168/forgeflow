@@ -57,3 +57,20 @@ def test_app_env_is_mode_600_and_escapes_multiline_pem(tmp_path: Path) -> None:
 def test_required_repo_set_is_narrow() -> None:
     assert module.OWNER == "BakerSean168"
     assert module.REQUIRED_REPOS == ("digital-biome", "forgeflow")
+
+
+def test_manifest_conversion_can_be_held_pending_without_final_env(tmp_path: Path) -> None:
+    pending = tmp_path / "github-app.env.pending.json"
+    final_env = tmp_path / "github-app.env"
+    app = {
+        "id": 123,
+        "client_id": "Iv1.test",
+        "client_secret": "secret",
+        "pem": "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
+        "webhook_secret": "hook",
+        "slug": "forgeflow-open-swe-test",
+    }
+    module.write_pending_app(pending, app)
+    assert stat.S_IMODE(pending.stat().st_mode) == 0o600
+    assert not final_env.exists()
+    assert module.read_pending_app(pending)["slug"] == "forgeflow-open-swe-test"

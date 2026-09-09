@@ -45,7 +45,7 @@ tunnel/reverse proxy; ForgeFlow's direct review dispatch does not require a publ
 
 On GCP Dev, the preferred setup path is the one-time manifest bootstrap. It binds only to the
 server's Tailscale IPv4 address, keeps webhook delivery disabled during local Policy V1
-acceptance, and writes manifest-conversion credentials directly to the external `0600` env file.
+acceptance, and holds manifest-conversion credentials in a private `0600` pending file. The final env file is created only after the installation is verified against both governed repositories.
 No PEM, client secret, or webhook secret is printed to the terminal or browser.
 
 ```bash
