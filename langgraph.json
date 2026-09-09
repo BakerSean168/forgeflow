@@ -3,11 +3,11 @@
   "python_version": "3.14",
   "api_version": "0.13.3",
   "graphs": {
-    "agent": "agent.graphs.agent:traced_agent",
-    "reviewer": "agent.graphs.reviewer:traced_reviewer_agent",
-    "analyzer": "agent.graphs.analyzer:traced_analyzer",
-    "chat": "agent.graphs.chat:traced_chat_agent",
-    "scheduler": "agent.graphs.scheduler:get_scheduler",
+    "agent": "openswe_ext.graphs:agent_graph",
+    "reviewer": "openswe_ext.graphs:reviewer_graph",
+    "analyzer": "openswe_ext.graphs:analyzer_graph",
+    "chat": "openswe_ext.graphs:chat_graph",
+    "scheduler": "openswe_ext.graphs:scheduler_graph",
     "forgeflow": "forgeflow.graph:get_forgeflow_graph"
   },
   "dependencies": [
