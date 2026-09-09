@@ -71,6 +71,7 @@ def implementation_config(
     thread_id: str,
     repo_owner: str,
     repo_name: str,
+    workspace_path: str | None = None,
     model_id: str = "openai:gpt-5.6-luna",
     effort: str = "xhigh",
     draft_prs: bool = True,
@@ -78,12 +79,14 @@ def implementation_config(
     """Build the minimal Open SWE configurable contract for implementation/repair."""
     config = {
         "thread_id": thread_id,
-        "source": "forgeflow",
+        "source": "desktop" if workspace_path else "forgeflow",
         "repo": {"owner": repo_owner, "name": repo_name},
         "agent_model_id": model_id,
         "agent_effort": effort,
         "draft_prs": draft_prs,
     }
+    if workspace_path:
+        config["local_project_path"] = workspace_path
     # Fail locally if upstream renamed a field we rely on.
     parsed = RunConfig.parse(config)
     return parsed.dump()
@@ -148,6 +151,7 @@ class OpenSweChildRuntime:
         repo_owner: str,
         repo_name: str,
         operation_key: str,
+        workspace_path: str | None = None,
     ) -> str:
         run = await self._dispatch(
             thread_id,
@@ -156,6 +160,7 @@ class OpenSweChildRuntime:
                 thread_id=thread_id,
                 repo_owner=repo_owner,
                 repo_name=repo_name,
+                workspace_path=workspace_path,
             ),
             source="forgeflow",
             metadata={"kind": "forgeflow_child", "forgeflow_operation_key": operation_key},
@@ -175,6 +180,7 @@ class OpenSweChildRuntime:
         repo_owner: str,
         repo_name: str,
         operation_key: str,
+        workspace_path: str | None = None,
     ) -> str:
         return await self.dispatch_implementation(
             thread_id=thread_id,
@@ -182,6 +188,7 @@ class OpenSweChildRuntime:
             repo_owner=repo_owner,
             repo_name=repo_name,
             operation_key=operation_key,
+            workspace_path=workspace_path,
         )
 
     async def find_run_by_operation(self, *, thread_id: str, operation_key: str) -> str | None:

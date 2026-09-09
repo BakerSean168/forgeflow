@@ -45,6 +45,14 @@ def test_default_model_policy_uses_luna_for_build_and_sol_for_review() -> None:
     assert review["reviewer_subagent_reasoning_effort"] == "medium"
 
 
+def test_workspace_reference_selects_upstream_desktop_execution_without_owning_it() -> None:
+    impl = implementation_config(
+        thread_id="thread-1", repo_owner="o", repo_name="r", workspace_path="/tmp/open-swe-worktree"
+    )
+    assert impl["source"] == "desktop"
+    assert impl["local_project_path"] == "/tmp/open-swe-worktree"
+
+
 def test_github_adapter_returns_bounded_reference_shape() -> None:
     evidence = PullRequestEvidence(
         owner="o",

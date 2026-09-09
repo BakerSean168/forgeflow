@@ -66,15 +66,17 @@ async def test_implementation_and_repair_dispatch_reuse_same_thread() -> None:
         policy_thread_id="policy-1", repo_owner="o", repo_name="r", objective="Do work"
     )
     first = await runtime.dispatch_implementation(
-        thread_id=thread_id, objective="Do work", repo_owner="o", repo_name="r", operation_key="initial:0"
+        thread_id=thread_id, objective="Do work", repo_owner="o", repo_name="r", operation_key="initial:0", workspace_path="/tmp/worktree"
     )
     second = await runtime.dispatch_repair(
-        thread_id=thread_id, prompt="Fix finding f1", repo_owner="o", repo_name="r", operation_key="repair:1"
+        thread_id=thread_id, prompt="Fix finding f1", repo_owner="o", repo_name="r", operation_key="repair:1", workspace_path="/tmp/worktree"
     )
     assert (first, second) == ("run-1", "run-2")
     assert {call[0] for call in calls} == {thread_id}
     assert all(call[2]["agent_model_id"] == "openai:gpt-5.6-luna" for call in calls)
     assert all(call[2]["agent_effort"] == "xhigh" for call in calls)
+    assert all(call[2]["source"] == "desktop" for call in calls)
+    assert all(call[2]["local_project_path"] == "/tmp/worktree" for call in calls)
     assert all(call[3]["multitask_strategy"] == "enqueue" for call in calls)
     assert [call[3]["metadata"]["forgeflow_operation_key"] for call in calls] == ["initial:0", "repair:1"]
 

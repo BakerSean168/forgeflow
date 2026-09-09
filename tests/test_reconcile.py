@@ -67,6 +67,7 @@ class FakeServices:
         repo_owner: str,
         repo_name: str,
         operation_key: str,
+        workspace_path: str | None,
     ) -> str:
         return self._dispatch_child(operation_key, crash_attr="crash_child_once")
 
@@ -78,6 +79,7 @@ class FakeServices:
         repo_owner: str,
         repo_name: str,
         operation_key: str,
+        workspace_path: str | None,
     ) -> str:
         return self._dispatch_child(operation_key, crash_attr="crash_repair_once")
 

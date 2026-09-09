@@ -80,6 +80,7 @@ class PolicyServices(Protocol):
         repo_owner: str,
         repo_name: str,
         operation_key: str,
+        workspace_path: str | None,
     ) -> str: ...
 
     async def dispatch_repair(
@@ -90,6 +91,7 @@ class PolicyServices(Protocol):
         repo_owner: str,
         repo_name: str,
         operation_key: str,
+        workspace_path: str | None,
     ) -> str: ...
 
     async def read_child_run(self, *, thread_id: str, run_id: str) -> ChildRunSnapshot: ...
@@ -182,6 +184,7 @@ class DefaultPolicyServices:
         repo_owner: str,
         repo_name: str,
         operation_key: str,
+        workspace_path: str | None,
     ) -> str:
         return await self.child.dispatch_implementation(
             thread_id=thread_id,
@@ -189,6 +192,7 @@ class DefaultPolicyServices:
             repo_owner=repo_owner,
             repo_name=repo_name,
             operation_key=operation_key,
+            workspace_path=workspace_path,
         )
 
     async def dispatch_repair(
@@ -199,6 +203,7 @@ class DefaultPolicyServices:
         repo_owner: str,
         repo_name: str,
         operation_key: str,
+        workspace_path: str | None,
     ) -> str:
         return await self.child.dispatch_repair(
             thread_id=thread_id,
@@ -206,6 +211,7 @@ class DefaultPolicyServices:
             repo_owner=repo_owner,
             repo_name=repo_name,
             operation_key=operation_key,
+            workspace_path=workspace_path,
         )
 
     async def read_child_run(self, *, thread_id: str, run_id: str) -> ChildRunSnapshot:
@@ -331,6 +337,7 @@ async def _adopt_or_dispatch_initial(
             repo_owner=_required(state, "repo_owner"),
             repo_name=_required(state, "repo_name"),
             operation_key=operation_key,
+            workspace_path=state.get("workspace_path"),
         )
     result = start_implementation(state) if state["status"] == "NEW" else deepcopy(state)
     result["implementation_run_id"] = run_id
@@ -475,6 +482,7 @@ async def _reconcile_repair(
                 repo_owner=_required(state, "repo_owner"),
                 repo_name=_required(state, "repo_name"),
                 operation_key=operation_key,
+                workspace_path=state.get("workspace_path"),
             )
         result = mark_repair_dispatched(state) if fresh_repair else deepcopy(state)
         result["implementation_run_id"] = run_id

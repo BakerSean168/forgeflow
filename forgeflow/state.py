@@ -35,6 +35,7 @@ class ForgeFlowState(TypedDict, total=False):
     repo_owner: str
     repo_name: str
     base_ref: str
+    workspace_path: str | None
     implementation_thread_id: str
     implementation_run_id: str | None
     implementation_phase: Literal["INITIAL", "REPAIR"]
