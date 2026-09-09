@@ -17,7 +17,7 @@ sudo -n systemctl stop forgeflow-host-cache.service forgeflow-self-promote.servi
 while read -r unit _; do
   [[ -n "$unit" ]] || continue
   sudo -n systemctl stop "$unit" || true
-done < <(systemctl list-units 'forgeflow-antigravity@*.service' --all --no-legend 2>/dev/null || true)
+done < <(systemctl list-units 'forgeflow-antigravity@*.service' --all --plain --no-legend 2>/dev/null || true)
 
 if docker ps -a --format '{{.Names}}' | grep -Fxq 'forgeflow-openhands'; then
   docker rm -f forgeflow-openhands >/dev/null
@@ -38,6 +38,7 @@ sudo -n rm -rf /etc/systemd/system/forgeflow.service.d
 sudo -n rm -f /usr/local/libexec/forgeflow-*
 sudo -n rm -f /etc/forgeflow/forgeflow.env /etc/forgeflow/openhands.env
 sudo -n systemctl daemon-reload
+sudo -n systemctl reset-failed 'forgeflow-antigravity@*.service' 2>/dev/null || true
 
 # Do not delete /etc/forgeflow/litellm.env: it may be shared by LiteLLM outside ForgeFlow.
 echo 'Legacy ForgeFlow Node/OpenHands/Antigravity state purged.'

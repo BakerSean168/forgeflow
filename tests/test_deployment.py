@@ -43,3 +43,9 @@ def test_user_units_avoid_capability_hardening_unsupported_on_gcp_dev() -> None:
     assert "ProtectKernelModules=true" not in units
     assert "NoNewPrivileges=true" in units
     assert "ProtectSystem=" in units
+
+
+def test_legacy_purge_parses_systemd_units_without_decorative_bullets() -> None:
+    purge = (DEPLOY / "purge-legacy.sh").read_text(encoding="utf-8")
+    assert "--plain --no-legend" in purge
+    assert "reset-failed 'forgeflow-antigravity@*.service'" in purge
