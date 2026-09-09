@@ -87,6 +87,8 @@ def test_pr_identity_or_branch_mismatch_fails_closed() -> None:
     tracked = _tracked()
     assert tracked is not None
     mismatched = tracked.__class__(
+        owner=tracked.owner,
+        repo=tracked.repo,
         url=tracked.url,
         number=tracked.number,
         state=tracked.state,
@@ -106,3 +108,31 @@ def test_non_success_child_run_never_counts_as_repository_progress() -> None:
     )
     assert evidence.progressed is False
     assert evidence.failure_code == "CHILD_RUN_NOT_SUCCESS"
+
+
+def test_authoritative_pr_must_match_objective_repository_and_base() -> None:
+    state = initial_state(objective="x", repo_owner="o", repo_name="r", base_ref="main")
+    foreign = PullRequestEvidence(
+        owner="other", repo="repo", number=1, url="https://github.com/other/repo/pull/1",
+        state="open", head_sha=HEAD, head_ref="open-swe/task", base_sha=BASE, base_ref="main"
+    )
+    tracked = tracked_pull_request({
+        "pr_url": foreign.url, "pr_number": 1, "pr_state": "open",
+        "branch_name": "open-swe/task", "base_branch": "main"
+    })
+    evidence = implementation_evidence(
+        state, run_status="success", tracked_pr=tracked, authoritative_pr=foreign
+    )
+    assert evidence.progressed is False
+    assert evidence.failure_code == "PR_REPOSITORY_MISMATCH"
+
+    wrong_base = _authoritative()
+    wrong_base = wrong_base.__class__(
+        owner=wrong_base.owner, repo=wrong_base.repo, number=wrong_base.number, url=wrong_base.url,
+        state=wrong_base.state, head_sha=wrong_base.head_sha, head_ref=wrong_base.head_ref,
+        base_sha=wrong_base.base_sha, base_ref="release"
+    )
+    evidence = implementation_evidence(
+        state, run_status="success", tracked_pr=_tracked(), authoritative_pr=wrong_base
+    )
+    assert evidence.failure_code == "PR_BASE_MISMATCH"

@@ -1,6 +1,9 @@
 [
   {
     "cwd": "/home/dev/projects/example-project",
-    "name": "Example project"
+    "name": "Example project",
+    "repo": "OWNER/REPO",
+    "ci_required": true,
+    "required_checks": ["verify"]
   }
 ]

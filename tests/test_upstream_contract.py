@@ -1,48 +1,57 @@
+import re
+import tomllib
 from pathlib import Path
 
-from agent.dispatch import dispatch_agent_run
-from agent.github.pull_request_checks import get_pull_request_check_states
-from agent.github.webhook import trigger_pr_review_from_ref
-from agent.graphs.agent import traced_agent
-from agent.graphs.reviewer import traced_reviewer_agent
-from agent.graphs.scheduler import get_scheduler
-from agent.review.findings import list_findings
-from agent.run_config import RunConfig
+from forgeflow.adapters.openswe import GRAPH_ENTRIES, RunConfig
 
-EXPECTED_OPEN_SWE_SHA = "0ff86e22a94cc84e32883fcb1beee568560d4140"
+REPO = Path(__file__).resolve().parents[1]
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
-def test_exact_upstream_pin_file_matches_contract_baseline() -> None:
-    pin = Path("UPSTREAM_OPEN_SWE_SHA").read_text(encoding="utf-8").strip()
-    assert pin == EXPECTED_OPEN_SWE_SHA
+def _pinned_shas() -> tuple[str, str, str]:
+    marker = (REPO / "UPSTREAM_OPEN_SWE_SHA").read_text(encoding="utf-8").strip()
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    dependency = next(
+        item for item in pyproject["project"]["dependencies"] if item.startswith("open-swe-agent @ git+")
+    )
+    pyproject_match = re.search(r"@([0-9a-f]{40})$", dependency)
+    if pyproject_match is None:
+        raise AssertionError(f"Open SWE pyproject dependency is not exact-SHA pinned: {dependency}")
+    pyproject_sha = pyproject_match.group(1)
+
+    lock = (REPO / "uv.lock").read_text(encoding="utf-8")
+    source_match = re.search(
+        r'git = "https://github\.com/langchain-ai/open-swe\.git\?rev=([0-9a-f]{40})#[0-9a-f]{40}"',
+        lock,
+    )
+    if source_match is None:
+        raise AssertionError("uv.lock has no exact Open SWE source revision")
+    return marker, pyproject_sha, source_match.group(1)
 
 
-def test_required_open_swe_graphs_and_adapters_are_importable() -> None:
-    assert callable(traced_agent)
-    assert callable(traced_reviewer_agent)
-    assert callable(get_scheduler)
-    assert callable(dispatch_agent_run)
-    assert callable(list_findings)
-    assert callable(trigger_pr_review_from_ref)
-    assert callable(get_pull_request_check_states)
+def test_open_swe_pin_is_exact_and_identical_in_marker_manifest_and_lock() -> None:
+    marker, pyproject_sha, lock_sha = _pinned_shas()
+    assert SHA_RE.fullmatch(marker)
+    assert marker == pyproject_sha == lock_sha
 
 
-def test_required_run_config_contract_exists() -> None:
-    required = {
-        "thread_id",
-        "run_id",
-        "repo",
-        "branch_name",
-        "pr_number",
-        "pr_url",
-        "head_sha",
-        "base_sha",
-        "agent_model_id",
-        "agent_effort",
-        "reviewer_model_id",
-        "reviewer_reasoning_effort",
-        "reviewer_subagent_model_id",
-        "reviewer_subagent_reasoning_effort",
-        "draft_prs",
-    }
-    assert required <= set(RunConfig.model_fields)
+def test_upstream_graph_contracts_import_through_single_adapter() -> None:
+    assert set(GRAPH_ENTRIES) == {"agent", "reviewer", "analyzer", "chat", "scheduler"}
+    assert all(callable(value) for value in GRAPH_ENTRIES.values())
+
+
+def test_upstream_run_config_still_accepts_policy_model_and_desktop_fields() -> None:
+    parsed = RunConfig.parse(
+        {
+            "thread_id": "thread",
+            "source": "desktop",
+            "local_project_path": "/tmp/worktree",
+            "agent_model_id": "openai:gpt-5.6-luna",
+            "agent_effort": "xhigh",
+            "reviewer_model_id": "openai:gpt-5.6-sol",
+            "reviewer_reasoning_effort": "medium",
+        }
+    )
+    assert parsed.local_project_path == "/tmp/worktree"
+    assert parsed.agent_model_id == "openai:gpt-5.6-luna"
+    assert parsed.reviewer_model_id == "openai:gpt-5.6-sol"

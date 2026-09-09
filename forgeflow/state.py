@@ -15,7 +15,7 @@ PolicyStatus = Literal[
     "CANCELLED",
 ]
 
-TERMINAL_STATUSES: frozenset[PolicyStatus] = frozenset({"READY", "ESCALATED", "CANCELLED"})
+TERMINAL_STATUSES: frozenset[PolicyStatus] = frozenset({"ESCALATED", "CANCELLED"})
 
 ALLOWED_SUCCESSORS: dict[PolicyStatus, frozenset[PolicyStatus]] = {
     "NEW": frozenset({"IMPLEMENTING", "CANCELLED", "ESCALATED"}),
@@ -23,11 +23,22 @@ ALLOWED_SUCCESSORS: dict[PolicyStatus, frozenset[PolicyStatus]] = {
     "VERIFYING": frozenset({"IMPLEMENTING", "REPAIRING", "WAITING_FOR_CI", "ESCALATED", "CANCELLED"}),
     "WAITING_FOR_CI": frozenset({"REVIEWING", "REPAIRING", "ESCALATED", "CANCELLED"}),
     "REVIEWING": frozenset({"WAITING_FOR_CI", "REPAIRING", "READY", "ESCALATED", "CANCELLED"}),
-    "REPAIRING": frozenset({"VERIFYING", "ESCALATED", "CANCELLED"}),
-    "READY": frozenset(),
+    "REPAIRING": frozenset({"VERIFYING", "WAITING_FOR_CI", "ESCALATED", "CANCELLED"}),
+    "READY": frozenset({"WAITING_FOR_CI", "CANCELLED", "ESCALATED"}),
     "ESCALATED": frozenset(),
     "CANCELLED": frozenset(),
 }
+
+
+class ForgeFlowInput(TypedDict, total=False):
+    """Untrusted graph input. Lifecycle/evidence fields are deliberately excluded."""
+
+    objective: str
+    repo_owner: str
+    repo_name: str
+    base_ref: str
+    workspace_path: str | None
+    cancel_requested: bool
 
 
 class ForgeFlowState(TypedDict, total=False):
@@ -38,6 +49,7 @@ class ForgeFlowState(TypedDict, total=False):
     workspace_path: str | None
     implementation_thread_id: str
     implementation_run_id: str | None
+    implementation_operation_key: str | None
     implementation_phase: Literal["INITIAL", "REPAIR"]
     pr_url: str | None
     pr_number: int
@@ -52,6 +64,8 @@ class ForgeFlowState(TypedDict, total=False):
     repair_round: int
     blocking_finding_ids: list[str]
     last_failure_code: str | None
+    wait_stage: str | None
+    wait_count: int
     reconcile_cron_id: str | None
     cancel_requested: bool
     status: PolicyStatus
@@ -63,6 +77,9 @@ class PolicyBudget:
     no_progress_retries: int = 2
     reviewer_retries: int = 2
     repair_rounds: int = 5
+    external_evidence_reconciles: int = 10
+    ci_pending_reconciles: int = 60
+    reviewer_running_reconciles: int = 45
 
 
 DEFAULT_BUDGET = PolicyBudget()
@@ -80,5 +97,7 @@ def initial_state(*, objective: str, repo_owner: str, repo_name: str, base_ref: 
         "reviewer_retry_pending": False,
         "blocking_finding_ids": [],
         "last_failure_code": None,
+        "wait_stage": None,
+        "wait_count": 0,
         "status": "NEW",
     }

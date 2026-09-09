@@ -24,8 +24,7 @@ export OPEN_SWE_OPENAI_OAUTH_BROKER_URL="http://127.0.0.1:${broker_port}/token"
 export OPEN_SWE_OPENAI_OAUTH_BROKER_TOKEN="$(<"$broker_secret")"
 export LANGSMITH_TRACING="${LANGSMITH_TRACING:-false}"
 export LLM_FALLBACK_MODEL_ID="${LLM_FALLBACK_MODEL_ID:-openai:gpt-5.6-sol}"
-export SANDBOX_TYPE="${SANDBOX_TYPE:-local}"
-export LOCAL_SANDBOX_ROOT_DIR="${LOCAL_SANDBOX_ROOT_DIR:-$state_dir/reviewer-sandbox}"
+export SANDBOX_TYPE="${SANDBOX_TYPE:-langsmith}"
 
 # Full official Reviewer requires a separate Open SWE GitHub App. Loading this
 # file is optional for graph health but mandatory for real reviewer acceptance.

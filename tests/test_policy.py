@@ -13,7 +13,7 @@ from forgeflow.policy import (
     severity_to_policy,
     start_implementation,
 )
-from forgeflow.state import ALLOWED_SUCCESSORS, PolicyBudget, initial_state
+from forgeflow.state import ALLOWED_SUCCESSORS, DEFAULT_BUDGET, PolicyBudget, initial_state
 
 HEAD_A = "a" * 40
 HEAD_B = "b" * 40
@@ -205,3 +205,41 @@ def test_cancel_is_terminal_and_idempotent() -> None:
 )
 def test_severity_mapping(source, expected) -> None:
     assert severity_to_policy(source) == expected
+
+
+def test_bounded_external_wait_escalates_and_can_be_cleared() -> None:
+    from forgeflow.policy import clear_wait, note_wait
+
+    state = initial_state(objective="x", repo_owner="o", repo_name="r")
+    state = start_implementation(state)
+    first = note_wait(state, "github", "GITHUB_UNAVAILABLE", limit=2)
+    assert first["status"] == "IMPLEMENTING"
+    assert first["wait_stage"] == "github"
+    assert first["wait_count"] == 1
+    second = note_wait(first, "github", "GITHUB_UNAVAILABLE", limit=2)
+    assert second["wait_count"] == 2
+    exhausted = note_wait(second, "github", "GITHUB_UNAVAILABLE", limit=2)
+    assert exhausted["status"] == "ESCALATED"
+    assert exhausted["last_failure_code"] == "GITHUB_UNAVAILABLE_WAIT_EXHAUSTED"
+
+    cleared = clear_wait(second)
+    assert cleared["wait_stage"] is None
+    assert cleared["wait_count"] == 0
+
+
+def test_head_epoch_change_resets_external_wait_budget() -> None:
+    from forgeflow.policy import note_wait, observe_external_head
+
+    state = _waiting_for_ci()
+    state = note_wait(state, "ci_pending", "CI_PENDING", limit=10)
+    state = note_wait(state, "ci_pending", "CI_PENDING", limit=10)
+    assert state["wait_count"] == 2
+    changed = observe_external_head(state, HEAD_B)
+    assert changed["observed_head_sha"] == HEAD_B
+    assert changed["wait_stage"] is None
+    assert changed["wait_count"] == 0
+
+
+def test_wait_budget_exposes_longer_bounded_windows_for_ci_and_reviewer() -> None:
+    assert DEFAULT_BUDGET.ci_pending_reconciles > DEFAULT_BUDGET.external_evidence_reconciles
+    assert DEFAULT_BUDGET.reviewer_running_reconciles > DEFAULT_BUDGET.external_evidence_reconciles

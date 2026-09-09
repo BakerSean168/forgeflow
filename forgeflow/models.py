@@ -47,5 +47,10 @@ class RepositoryPolicy:
 
 @dataclass(frozen=True, slots=True)
 class RepositoryPreflight:
-    status: Literal["READY", "CONFIG_MISSING", "REPO_OR_PERMISSION_UNAVAILABLE"]
+    status: Literal[
+        "READY",
+        "CONFIG_MISSING",
+        "REPO_OR_PERMISSION_UNAVAILABLE",
+        "REVIEWER_SANDBOX_UNAVAILABLE",
+    ]
     installation_id: int | None = None

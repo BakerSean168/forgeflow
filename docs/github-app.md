@@ -12,7 +12,7 @@ recover after the installation is fixed.
 ## Create a dedicated App
 
 Do not reuse the MemoFlow App. Create a separate GitHub App for this Open SWE deployment and
-install it only on repositories ForgeFlow may operate on.
+install it only on repositories ForgeFlow may operate on. ForgeFlow Policy V1 also requires the target repository to resolve to the exact configured `GITHUB_APP_INSTALLATION_ID`; it will not fall across multiple installations.
 
 Use the pinned Open SWE permission contract:
 
@@ -60,3 +60,11 @@ Expected result:
 
 After changing the env file, restart `forgeflow-policy.service`; Open SWE reads App credentials at
 process import time.
+
+
+## Required-check policy
+
+ForgeFlow extends the same `OPEN_SWE_LOCAL_PROJECTS_FILE` entries Open SWE already uses. It does
+not maintain a second project database. Each governed repository that requires CI must declare
+`repo`, `ci_required`, and an explicit non-empty `required_checks` list. Missing required-check
+policy escalates before the first implementation model call.

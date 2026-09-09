@@ -88,8 +88,11 @@ def test_review_repair_rereview_reaches_ready_only_on_new_exact_head() -> None:
     state = apply_review_decision(state, review_decision(first_snapshot, expected_head_sha=HEAD1))
     assert state["status"] == "REPAIRING"
     findings = blocking_repair_findings(first_snapshot, expected_head_sha=HEAD1)
-    prompt = build_review_repair_prompt(pr_url=PR, rejected_head_sha=HEAD1, findings=findings)
+    prompt = build_review_repair_prompt(
+        pr_url=PR, rejected_head_sha=HEAD1, findings=findings, operation_key="repair:test"
+    )
     assert "f1" in prompt and HEAD1 in prompt and "existing branch and PR" in prompt
+    assert "ForgeFlow-Operation: repair:test" in prompt
 
     state = mark_repair_dispatched(state)
     assert state["repair_round"] == 1
@@ -133,6 +136,7 @@ def test_repair_prompt_is_bounded_and_does_not_embed_unlimited_review_text() -> 
         pr_url=PR,
         rejected_head_sha=HEAD1,
         findings=blocking_repair_findings(snapshot, expected_head_sha=HEAD1),
+        operation_key="repair:test",
     )
     assert len(prompt) < 4000
     assert "y" * 2000 not in prompt

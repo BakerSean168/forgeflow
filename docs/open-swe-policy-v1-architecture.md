@@ -1,5 +1,19 @@
 # ForgeFlow Policy V1 — Open SWE Quality Governance Architecture
 
+
+## Authoritative destructive cutover order
+
+This section is the authoritative cutover contract and overrides any earlier shorthand that could be read as deleting the legacy runtime first. ForgeFlow Policy V1 has **no migration compatibility path**, but destructive deletion still occurs only after the replacement proves it is healthy.
+
+1. Build and validate the exact candidate checkout.
+2. Install/start `open-swe-codex-broker.service` and `forgeflow-policy.service` side-by-side with the legacy runtime.
+3. Authenticate to the replacement and require `/ok`, all six graph ids (`agent`, `reviewer`, `analyzer`, `chat`, `scheduler`, `forgeflow`), the expected systemd fragment/ExecStart identity, and a successful authenticated broker token probe.
+4. Only after that proof, stop every known legacy ForgeFlow/OpenHands/Antigravity unit and verify each is inactive. Stop failure is a hard blocker.
+5. Only after quiescence proof, remove legacy container/image, `/var/lib/forgeflow`, old unit/drop-in files, exact known libexec helpers, the legacy AppArmor profile, and the old OpenHands literal-worktree override. Preserve independently owned `/etc/forgeflow/litellm.env`.
+6. Re-run replacement health after cleanup. There is no legacy database/schema migration or compatibility adapter.
+
+The implementation of this contract lives in `deploy/gcp-dev/purge-legacy.sh`; the script refuses destructive work unless the replacement preflight passes.
+
 > Status: proposed north-star architecture for the destructive ForgeFlow rebuild.
 > Decision: ForgeFlow no longer owns an autonomous coding runtime. ForgeFlow becomes a thin, deterministic software-engineering quality policy layered on Open SWE.
 > Compatibility: intentionally none with the current Node/SQLite control plane, HTTP API, database schema, execution/worktree state, provider registry, or deployment units.

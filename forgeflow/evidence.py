@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from forgeflow.adapters.github import PullRequestEvidence
 from forgeflow.models import ImplementationEvidence
@@ -11,6 +12,8 @@ from forgeflow.state import ForgeFlowState
 
 @dataclass(frozen=True, slots=True)
 class TrackedPullRequest:
+    owner: str
+    repo: str
     url: str
     number: int
     state: str
@@ -52,6 +55,9 @@ def implementation_evidence(
         return _no_progress("NO_PROGRESS_NO_TRACKED_PR")
     if authoritative_pr is None:
         return _no_progress("PR_EVIDENCE_UNAVAILABLE")
+    target_failure = pull_request_target_failure(state, authoritative_pr)
+    if target_failure:
+        return _no_progress(target_failure)
     if authoritative_pr.state != "open":
         return _no_progress("PR_NOT_OPEN")
     if tracked_pr.url != authoritative_pr.url or tracked_pr.number != authoritative_pr.number:
@@ -93,7 +99,12 @@ def _record_to_pr(record: Mapping[str, Any]) -> TrackedPullRequest | None:
         return None
     if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
         return None
+    parsed = _parse_github_pr_url(url)
+    if parsed is None or parsed[2] != number:
+        return None
     return TrackedPullRequest(
+        owner=parsed[0],
+        repo=parsed[1],
         url=url,
         number=number,
         state=_string(record.get("state")) or "unknown",
@@ -117,7 +128,7 @@ _FAILED_CHECK_CONCLUSIONS = frozenset(
 
 
 def ci_decision(signals, policy):
-    """Normalize GitHub check runs/statuses for one exact head into a deterministic gate."""
+    """Normalize exact-head GitHub CI without collapsing conflicting signal sources."""
     from forgeflow.adapters.github import CiSignals
     from forgeflow.models import CiDecision, RepositoryPolicy
 
@@ -125,54 +136,121 @@ def ci_decision(signals, policy):
         raise TypeError("signals must be CiSignals")
     if not isinstance(policy, RepositoryPolicy):
         raise TypeError("policy must be RepositoryPolicy")
+    if policy.ci_required and not policy.required_checks:
+        return CiDecision(
+            head_sha=signals.head_sha,
+            status="UNRESOLVED",
+            failure_code="REQUIRED_CHECK_POLICY_MISSING",
+        )
+    if not policy.ci_required and not policy.required_checks:
+        return CiDecision(head_sha=signals.head_sha, status="PASS")
 
-    named_checks = {
-        str(run.get("name")): ("check", run)
-        for run in signals.check_runs
-        if isinstance(run.get("name"), str) and run.get("name")
-    }
-    named_statuses = {
-        str(status.get("context")): ("status", status)
-        for status in signals.statuses
-        if isinstance(status.get("context"), str) and status.get("context")
-    }
-    observed = {**named_checks, **named_statuses}
+    checks, check_error = _normalize_check_runs(signals.check_runs)
+    if check_error:
+        return CiDecision(head_sha=signals.head_sha, status="UNRESOLVED", failure_code=check_error)
+    statuses, status_error = _normalize_statuses(signals.statuses)
+    if status_error:
+        return CiDecision(head_sha=signals.head_sha, status="UNRESOLVED", failure_code=status_error)
 
-    if policy.required_checks:
-        missing = [name for name in policy.required_checks if name not in observed]
-        if missing:
+    for required in policy.required_checks:
+        sources: list[tuple[str, dict[str, Any]]] = []
+        if required in checks:
+            sources.append(("check", checks[required]))
+        if required in statuses:
+            sources.append(("status", statuses[required]))
+        if not sources:
             return CiDecision(
                 head_sha=signals.head_sha,
                 status="UNRESOLVED",
-                failure_code="MISSING_REQUIRED_CHECK:" + ",".join(missing),
+                failure_code=f"MISSING_REQUIRED_CHECK:{required}",
             )
-        selected = [observed[name] for name in policy.required_checks]
-    else:
-        selected = list(observed.values())
+        decision = _evaluate_required_signal(required, sources, signals.head_sha)
+        if decision is not None:
+            return decision
+    from forgeflow.models import CiDecision
 
-    if not selected:
-        return CiDecision(
-            head_sha=signals.head_sha,
-            status="UNRESOLVED" if policy.ci_required else "PASS",
-            failure_code="NO_CI_SIGNALS" if policy.ci_required else None,
-        )
+    return CiDecision(head_sha=signals.head_sha, status="PASS")
+
+
+def _normalize_check_runs(
+    runs: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, dict[str, Any]], str | None]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for run in runs:
+        name = run.get("name")
+        if isinstance(name, str) and name:
+            grouped.setdefault(name, []).append(run)
+    normalized: dict[str, dict[str, Any]] = {}
+    for name, candidates in grouped.items():
+        if len(candidates) == 1:
+            normalized[name] = candidates[0]
+            continue
+        ranked = sorted(candidates, key=_check_rank, reverse=True)
+        top_rank = _check_rank(ranked[0])
+        tied = [item for item in ranked if _check_rank(item) == top_rank]
+        signatures = {(item.get("status"), item.get("conclusion")) for item in tied}
+        if top_rank == ("", -1) or len(signatures) > 1:
+            return {}, f"AMBIGUOUS_CHECK_NAME:{name}"
+        normalized[name] = ranked[0]
+    return normalized, None
+
+
+def _check_rank(check: dict[str, Any]) -> tuple[str, int]:
+    timestamp = check.get("completed_at") or check.get("started_at") or check.get("created_at")
+    stamp = timestamp if isinstance(timestamp, str) else ""
+    raw_id = check.get("id")
+    check_id = raw_id if isinstance(raw_id, int) and not isinstance(raw_id, bool) else -1
+    return stamp, check_id
+
+
+def _normalize_statuses(
+    statuses: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, dict[str, Any]], str | None]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for status in statuses:
+        context = status.get("context")
+        if isinstance(context, str) and context:
+            grouped.setdefault(context, []).append(status)
+    normalized: dict[str, dict[str, Any]] = {}
+    for context, candidates in grouped.items():
+        if len(candidates) == 1:
+            normalized[context] = candidates[0]
+            continue
+        ranked = sorted(candidates, key=_status_rank, reverse=True)
+        top_rank = _status_rank(ranked[0])
+        tied = [item for item in ranked if _status_rank(item) == top_rank]
+        if top_rank == ("", -1) or len({item.get("state") for item in tied}) > 1:
+            return {}, f"AMBIGUOUS_STATUS_CONTEXT:{context}"
+        normalized[context] = ranked[0]
+    return normalized, None
+
+
+def _status_rank(status: dict[str, Any]) -> tuple[str, int]:
+    timestamp = status.get("updated_at") or status.get("created_at")
+    stamp = timestamp if isinstance(timestamp, str) else ""
+    raw_id = status.get("id")
+    status_id = raw_id if isinstance(raw_id, int) and not isinstance(raw_id, bool) else -1
+    return stamp, status_id
+
+
+def _evaluate_required_signal(required: str, sources, head_sha: str):
+    from forgeflow.models import CiDecision
 
     pending = False
     unresolved = False
-    for kind, record in selected:
+    for kind, record in sources:
         if kind == "check":
             status = record.get("status")
             conclusion = record.get("conclusion")
             if status != "completed":
                 pending = True
-                continue
-            if conclusion in _FAILED_CHECK_CONCLUSIONS:
+            elif conclusion in _FAILED_CHECK_CONCLUSIONS:
                 return CiDecision(
-                    head_sha=signals.head_sha,
+                    head_sha=head_sha,
                     status="FAIL",
-                    failure_code=f"CHECK_FAILED:{record.get('name') or 'unknown'}",
+                    failure_code=f"CHECK_FAILED:{required}",
                 )
-            if conclusion not in _SUCCESSFUL_CHECK_CONCLUSIONS:
+            elif conclusion not in _SUCCESSFUL_CHECK_CONCLUSIONS:
                 unresolved = True
         else:
             state = record.get("state")
@@ -180,18 +258,19 @@ def ci_decision(signals, policy):
                 pending = True
             elif state in {"failure", "error"}:
                 return CiDecision(
-                    head_sha=signals.head_sha,
+                    head_sha=head_sha,
                     status="FAIL",
-                    failure_code=f"STATUS_FAILED:{record.get('context') or 'unknown'}",
+                    failure_code=f"STATUS_FAILED:{required}",
                 )
             elif state != "success":
                 unresolved = True
-
     if pending:
-        return CiDecision(head_sha=signals.head_sha, status="PENDING")
+        return CiDecision(head_sha=head_sha, status="PENDING")
     if unresolved:
-        return CiDecision(head_sha=signals.head_sha, status="UNRESOLVED", failure_code="CI_UNRESOLVED")
-    return CiDecision(head_sha=signals.head_sha, status="PASS")
+        return CiDecision(
+            head_sha=head_sha, status="UNRESOLVED", failure_code=f"CI_UNRESOLVED:{required}"
+        )
+    return None
 
 
 class EvidenceViolation(ValueError):
@@ -277,3 +356,43 @@ def _positive_int_or_none(value: Any) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return None
+
+
+def tracked_pr_target_failure(state: ForgeFlowState, tracked: TrackedPullRequest) -> str | None:
+    if tracked.owner.casefold() != str(state.get("repo_owner") or "").casefold():
+        return "PR_REPOSITORY_MISMATCH"
+    if tracked.repo.casefold() != str(state.get("repo_name") or "").casefold():
+        return "PR_REPOSITORY_MISMATCH"
+    expected_base = state.get("base_ref")
+    if expected_base and tracked.base_ref and tracked.base_ref != expected_base:
+        return "PR_BASE_MISMATCH"
+    return None
+
+
+def pull_request_target_failure(
+    state: ForgeFlowState, authoritative_pr: PullRequestEvidence
+) -> str | None:
+    if authoritative_pr.owner.casefold() != str(state.get("repo_owner") or "").casefold():
+        return "PR_REPOSITORY_MISMATCH"
+    if authoritative_pr.repo.casefold() != str(state.get("repo_name") or "").casefold():
+        return "PR_REPOSITORY_MISMATCH"
+    expected_base = state.get("base_ref")
+    if expected_base and authoritative_pr.base_ref != expected_base:
+        return "PR_BASE_MISMATCH"
+    return None
+
+
+def _parse_github_pr_url(url: str) -> tuple[str, str, int] | None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc.casefold() != "github.com":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) != 4 or parts[2] != "pull":
+        return None
+    try:
+        number = int(parts[3])
+    except ValueError:
+        return None
+    if number <= 0:
+        return None
+    return parts[0], parts[1], number

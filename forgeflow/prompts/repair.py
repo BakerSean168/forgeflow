@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from forgeflow.prompts.implementation import operation_trailer
+
 
 @dataclass(frozen=True, slots=True)
 class RepairFinding:
@@ -20,6 +22,7 @@ def build_review_repair_prompt(
     pr_url: str,
     rejected_head_sha: str,
     findings: tuple[RepairFinding, ...],
+    operation_key: str,
 ) -> str:
     if not findings:
         raise ValueError("review repair requires at least one blocking finding")
@@ -50,12 +53,15 @@ def build_review_repair_prompt(
             "- Preserve the existing branch and PR; do not open a replacement PR.",
             "- Run focused regression tests first, then the repository's wider required gate.",
             "- Commit and push a new revision. Do not claim completion without a new PR head.",
+            f"- The final pushed HEAD commit message MUST contain this exact trailer on its own line: `{operation_trailer(operation_key)}`",
         ]
     )
     return "\n".join(lines)
 
 
-def build_ci_repair_prompt(*, pr_url: str, rejected_head_sha: str, failure_code: str) -> str:
+def build_ci_repair_prompt(
+    *, pr_url: str, rejected_head_sha: str, failure_code: str, operation_key: str
+) -> str:
     return "\n".join(
         [
             "Repair the existing pull request in this same Open SWE thread.",
@@ -67,6 +73,7 @@ def build_ci_repair_prompt(*, pr_url: str, rejected_head_sha: str, failure_code:
             "Investigate the failing required checks, fix the root cause, run focused tests first,",
             "then run the wider required gate. Preserve the existing branch/PR, commit, and push a",
             "new revision. Do not claim completion without a new PR head.",
+            f"The final pushed HEAD commit message MUST contain this exact trailer on its own line: `{operation_trailer(operation_key)}`",
         ]
     )
 

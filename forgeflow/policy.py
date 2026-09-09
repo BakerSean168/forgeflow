@@ -50,6 +50,7 @@ def apply_implementation_evidence(
         retry_target = "REPAIRING" if state.get("implementation_phase") == "REPAIR" else "IMPLEMENTING"
         result = _transition(state, retry_target)
         result["implementation_run_id"] = None
+        result["implementation_operation_key"] = None
         result["run_retry_count"] = retry_count
         result["last_failure_code"] = evidence.failure_code or "NO_PROGRESS"
         return result
@@ -86,6 +87,7 @@ def apply_ci_decision(
             return _escalated(state, decision.failure_code or "REPAIR_BUDGET_EXHAUSTED")
         result = _transition(state, "REPAIRING")
         result["implementation_run_id"] = None
+        result["implementation_operation_key"] = None
         result["last_failure_code"] = decision.failure_code or "CI_FAILED"
         return result
 
@@ -122,6 +124,7 @@ def apply_review_decision(
             return _escalated(result, "REPAIR_BUDGET_EXHAUSTED")
         result = _transition(result, "REPAIRING")
         result["implementation_run_id"] = None
+        result["implementation_operation_key"] = None
         result["last_failure_code"] = "REVIEW_BLOCKED"
         return result
 
@@ -165,6 +168,7 @@ def note_child_run_failure(
         return _escalated(state, failure_code or "RUN_RETRY_EXHAUSTED")
     result = deepcopy(state)
     result["implementation_run_id"] = None
+    result["implementation_operation_key"] = None
     result["run_retry_count"] = retry_count
     result["last_failure_code"] = failure_code
     return result
@@ -189,18 +193,46 @@ def note_reviewer_run_failure(
 
 def observe_external_head(state: ForgeFlowState, head_sha: str) -> ForgeFlowState:
     current = state.get("status", "NEW")
-    if current not in {"WAITING_FOR_CI", "REVIEWING"}:
+    if current not in {"WAITING_FOR_CI", "REVIEWING", "REPAIRING", "READY"}:
         raise PolicyViolation(f"external head observation is invalid in {current}")
     if not head_sha:
         raise PolicyViolation("external head SHA is required")
     if state.get("observed_head_sha") == head_sha:
         return deepcopy(state)
     result = deepcopy(state)
-    if current == "REVIEWING":
+    if current in {"REVIEWING", "REPAIRING", "READY"}:
         result = _transition(result, "WAITING_FOR_CI")
     result["observed_head_sha"] = head_sha
     _invalidate_exact_head_evidence(result)
+    result["wait_stage"] = None
+    result["wait_count"] = 0
     result["last_failure_code"] = None
+    return result
+
+
+def note_wait(
+    state: ForgeFlowState,
+    stage: str,
+    failure_code: str,
+    *,
+    limit: int,
+) -> ForgeFlowState:
+    if limit < 1:
+        raise ValueError("wait limit must be positive")
+    result = deepcopy(state)
+    count = state.get("wait_count", 0) + 1 if state.get("wait_stage") == stage else 1
+    if count > limit:
+        return _escalated(state, f"{failure_code}_WAIT_EXHAUSTED")
+    result["wait_stage"] = stage
+    result["wait_count"] = count
+    result["last_failure_code"] = failure_code
+    return result
+
+
+def clear_wait(state: ForgeFlowState) -> ForgeFlowState:
+    result = deepcopy(state)
+    result["wait_stage"] = None
+    result["wait_count"] = 0
     return result
 
 def cancel(state: ForgeFlowState) -> ForgeFlowState:
@@ -249,4 +281,6 @@ def _invalidate_exact_head_evidence(state: ForgeFlowState) -> None:
     state["ci_head_sha"] = None
     state["reviewed_head_sha"] = None
     state["reviewer_run_id"] = None
+    state["reviewer_retry_count"] = 0
+    state["reviewer_retry_pending"] = False
     state["blocking_finding_ids"] = []

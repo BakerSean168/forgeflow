@@ -9,7 +9,7 @@ from forgeflow.reconcile import (
     ReconcileError,
     reconcile_once,
 )
-from forgeflow.state import ForgeFlowState
+from forgeflow.state import ForgeFlowInput, ForgeFlowState
 
 
 def build_forgeflow_graph(
@@ -31,7 +31,7 @@ def build_forgeflow_graph(
             services=resolved_services,
         )
 
-    builder = StateGraph(ForgeFlowState)
+    builder = StateGraph(ForgeFlowState, input_schema=ForgeFlowInput)
     builder.add_node("reconcile", reconcile_node)
     builder.add_edge(START, "reconcile")
     builder.add_edge("reconcile", END)

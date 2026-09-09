@@ -14,6 +14,11 @@ for tool in git openssl systemctl curl python3; do
 done
 [[ -x "$HOME/.local/bin/uv" ]] || { echo "uv is required at $HOME/.local/bin/uv" >&2; exit 2; }
 [[ -r "$HOME/.codex/auth.json" ]] || { echo "Codex auth is required at ~/.codex/auth.json" >&2; exit 2; }
+linger="$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)"
+[[ "$linger" == yes ]] || {
+  echo "systemd user lingering must be enabled for $USER before installing ForgeFlow Policy" >&2
+  exit 2
+}
 
 mkdir -p "$config_dir" "$state_dir" "$state_dir/worktrees" "$state_dir/artifacts" \
   "$state_dir/reviewer-sandbox" "$unit_dir"
