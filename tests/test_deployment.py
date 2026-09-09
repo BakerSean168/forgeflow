@@ -32,3 +32,14 @@ def test_legacy_purge_is_explicit_guarded_and_scoped() -> None:
     assert "forgeflow-openhands-agent-server:1.39.1-source" in purge
     assert "/usr/local/libexec/forgeflow-*" in purge
     assert "litellm.env" in purge and "Do not delete" in purge
+
+
+def test_user_units_avoid_capability_hardening_unsupported_on_gcp_dev() -> None:
+    units = "\n".join(
+        (DEPLOY / name).read_text(encoding="utf-8")
+        for name in ("forgeflow-policy.service.in", "open-swe-codex-broker.service.in")
+    )
+    assert "PrivateDevices=true" not in units
+    assert "ProtectKernelModules=true" not in units
+    assert "NoNewPrivileges=true" in units
+    assert "ProtectSystem=" in units
