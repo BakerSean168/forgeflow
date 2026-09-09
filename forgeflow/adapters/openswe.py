@@ -23,8 +23,10 @@ from agent.graphs.scheduler import get_scheduler
 from agent.review.findings import list_findings
 from agent.run_config import RunConfig
 from agent.slack.client import GitHubPrRef, parse_github_pr_url
+from agent.thread_ids import reviewer_thread_id
 from agent.webapp import app as open_swe_webapp
 from agent.webhooks.common import fetch_github_pr_metadata
+from langgraph_sdk.errors import NotFoundError
 
 GRAPH_ENTRIES: Mapping[str, Callable[..., Any]] = {
     "agent": traced_agent,
@@ -145,6 +147,7 @@ class OpenSweChildRuntime:
         objective: str,
         repo_owner: str,
         repo_name: str,
+        operation_key: str,
     ) -> str:
         run = await self._dispatch(
             thread_id,
@@ -155,6 +158,7 @@ class OpenSweChildRuntime:
                 repo_name=repo_name,
             ),
             source="forgeflow",
+            metadata={"kind": "forgeflow_child", "forgeflow_operation_key": operation_key},
             client=self._client,
             multitask_strategy="enqueue",
         )
@@ -170,13 +174,34 @@ class OpenSweChildRuntime:
         prompt: str,
         repo_owner: str,
         repo_name: str,
+        operation_key: str,
     ) -> str:
         return await self.dispatch_implementation(
             thread_id=thread_id,
             objective=prompt,
             repo_owner=repo_owner,
             repo_name=repo_name,
+            operation_key=operation_key,
         )
+
+    async def find_run_by_operation(self, *, thread_id: str, operation_key: str) -> str | None:
+        runs = await self._client.runs.list(thread_id, limit=100)
+        matches: list[str] = []
+        for run in runs:
+            if not isinstance(run, Mapping):
+                continue
+            metadata = run.get("metadata")
+            if not isinstance(metadata, Mapping):
+                continue
+            if metadata.get("forgeflow_operation_key") != operation_key:
+                continue
+            run_id = run.get("run_id")
+            if isinstance(run_id, str) and run_id:
+                matches.append(run_id)
+        unique = list(dict.fromkeys(matches))
+        if len(unique) > 1:
+            raise OpenSweAdapterError(f"duplicate child runs for operation {operation_key!r}: {unique!r}")
+        return unique[0] if unique else None
 
     async def read_run(self, *, thread_id: str, run_id: str) -> ChildRunSnapshot:
         run = await self._client.runs.get(thread_id, run_id)
@@ -255,6 +280,26 @@ class OpenSweReviewerRuntime:
             raise OpenSweAdapterError(
                 f"official reviewer model policy mismatch: main={main!r} subagent={subagent!r}"
             )
+
+    async def find_current_review(
+        self, *, pr_url: str, expected_head_sha: str
+    ) -> tuple[str, str] | None:
+        pr_ref = parse_github_pr_url(pr_url)
+        if pr_ref is None:
+            raise OpenSweAdapterError("invalid GitHub PR URL")
+        thread_id = reviewer_thread_id(pr_ref.owner, pr_ref.repo, pr_ref.number)
+        try:
+            thread = await self._client.threads.get(thread_id)
+        except NotFoundError:
+            return None
+        metadata = thread.get("metadata") if isinstance(thread, Mapping) else None
+        if not isinstance(metadata, Mapping):
+            return None
+        head_sha = metadata.get("head_sha")
+        run_id = metadata.get("current_reviewer_run_id")
+        if head_sha != expected_head_sha or not isinstance(run_id, str) or not run_id:
+            return None
+        return thread_id, run_id
 
     async def trigger_review(self, pr_url: str) -> tuple[str, str]:
         await self.assert_model_policy()

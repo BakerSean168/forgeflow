@@ -99,8 +99,8 @@ def test_review_repair_rereview_reaches_ready_only_on_new_exact_head() -> None:
     )
     state = apply_implementation_evidence(state, repaired_evidence)
     assert state["observed_head_sha"] == HEAD2
-    assert "reviewed_head_sha" not in state
-    assert "ci_head_sha" not in state
+    assert state.get("reviewed_head_sha") is None
+    assert state.get("ci_head_sha") is None
 
     state = apply_ci_decision(state, CiDecision(head_sha=HEAD2, status="PASS"))
     second_snapshot = _review(HEAD2, status="resolved")

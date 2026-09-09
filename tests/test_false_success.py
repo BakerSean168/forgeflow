@@ -23,5 +23,5 @@ def test_success_status_without_repository_delta_never_reaches_ci_or_ready() -> 
     assert state["status"] == "IMPLEMENTING"
     assert state["run_retry_count"] == 1
     assert state["last_failure_code"] == "NO_PROGRESS_NO_TRACKED_PR"
-    assert "ci_head_sha" not in state
-    assert "reviewed_head_sha" not in state
+    assert state.get("ci_head_sha") is None
+    assert state.get("reviewed_head_sha") is None

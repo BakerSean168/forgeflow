@@ -112,9 +112,9 @@ def test_new_head_invalidates_old_ci_and_review_evidence() -> None:
         state, ImplementationEvidence(pr_url=PR, pr_number=1, head_sha=HEAD_B, progressed=True)
     )
     assert state["status"] == "WAITING_FOR_CI"
-    assert "ci_head_sha" not in state
-    assert "reviewed_head_sha" not in state
-    assert "reviewer_run_id" not in state
+    assert state.get("ci_head_sha") is None
+    assert state.get("reviewed_head_sha") is None
+    assert state.get("reviewer_run_id") is None
     assert state["blocking_finding_ids"] == []
 
 

@@ -47,7 +47,9 @@ def apply_implementation_evidence(
         retry_count = state.get("run_retry_count", 0) + 1
         if retry_count > budget.no_progress_retries:
             return _escalated(state, evidence.failure_code or "NO_PROGRESS_RETRY_EXHAUSTED")
-        result = _transition(state, "IMPLEMENTING")
+        retry_target = "REPAIRING" if state.get("implementation_phase") == "REPAIR" else "IMPLEMENTING"
+        result = _transition(state, retry_target)
+        result["implementation_run_id"] = None
         result["run_retry_count"] = retry_count
         result["last_failure_code"] = evidence.failure_code or "NO_PROGRESS"
         return result
@@ -83,6 +85,7 @@ def apply_ci_decision(
         if state.get("repair_round", 0) >= budget.repair_rounds:
             return _escalated(state, decision.failure_code or "REPAIR_BUDGET_EXHAUSTED")
         result = _transition(state, "REPAIRING")
+        result["implementation_run_id"] = None
         result["last_failure_code"] = decision.failure_code or "CI_FAILED"
         return result
 
@@ -118,10 +121,13 @@ def apply_review_decision(
         if state.get("repair_round", 0) >= budget.repair_rounds:
             return _escalated(result, "REPAIR_BUDGET_EXHAUSTED")
         result = _transition(result, "REPAIRING")
+        result["implementation_run_id"] = None
         result["last_failure_code"] = "REVIEW_BLOCKED"
         return result
 
     result = _transition(result, "READY")
+    result["reviewer_retry_count"] = 0
+    result["reviewer_retry_pending"] = False
     result["last_failure_code"] = None
     return result
 
@@ -143,6 +149,59 @@ def mark_repair_dispatched(
 def mark_repair_run_terminal(state: ForgeFlowState) -> ForgeFlowState:
     return _transition(state, "VERIFYING")
 
+
+
+def note_child_run_failure(
+    state: ForgeFlowState,
+    failure_code: str,
+    *,
+    budget: PolicyBudget = DEFAULT_BUDGET,
+) -> ForgeFlowState:
+    current = state.get("status", "NEW")
+    if current not in {"IMPLEMENTING", "REPAIRING"}:
+        raise PolicyViolation(f"child-run failure is invalid in {current}")
+    retry_count = state.get("run_retry_count", 0) + 1
+    if retry_count > budget.transient_run_retries:
+        return _escalated(state, failure_code or "RUN_RETRY_EXHAUSTED")
+    result = deepcopy(state)
+    result["implementation_run_id"] = None
+    result["run_retry_count"] = retry_count
+    result["last_failure_code"] = failure_code
+    return result
+
+
+def note_reviewer_run_failure(
+    state: ForgeFlowState,
+    failure_code: str,
+    *,
+    budget: PolicyBudget = DEFAULT_BUDGET,
+) -> ForgeFlowState:
+    _require_status(state, "REVIEWING")
+    retry_count = state.get("reviewer_retry_count", 0) + 1
+    if retry_count > budget.reviewer_retries:
+        return _escalated(state, failure_code or "REVIEWER_RETRY_EXHAUSTED")
+    result = deepcopy(state)
+    result["reviewer_retry_count"] = retry_count
+    result["reviewer_retry_pending"] = True
+    result["last_failure_code"] = failure_code
+    return result
+
+
+def observe_external_head(state: ForgeFlowState, head_sha: str) -> ForgeFlowState:
+    current = state.get("status", "NEW")
+    if current not in {"WAITING_FOR_CI", "REVIEWING"}:
+        raise PolicyViolation(f"external head observation is invalid in {current}")
+    if not head_sha:
+        raise PolicyViolation("external head SHA is required")
+    if state.get("observed_head_sha") == head_sha:
+        return deepcopy(state)
+    result = deepcopy(state)
+    if current == "REVIEWING":
+        result = _transition(result, "WAITING_FOR_CI")
+    result["observed_head_sha"] = head_sha
+    _invalidate_exact_head_evidence(result)
+    result["last_failure_code"] = None
+    return result
 
 def cancel(state: ForgeFlowState) -> ForgeFlowState:
     if state.get("status", "NEW") in TERMINAL_STATUSES:
@@ -187,7 +246,7 @@ def _require_current_head(state: ForgeFlowState, head_sha: str) -> None:
 
 
 def _invalidate_exact_head_evidence(state: ForgeFlowState) -> None:
-    state.pop("ci_head_sha", None)
-    state.pop("reviewed_head_sha", None)
-    state.pop("reviewer_run_id", None)
+    state["ci_head_sha"] = None
+    state["reviewed_head_sha"] = None
+    state["reviewer_run_id"] = None
     state["blocking_finding_ids"] = []
