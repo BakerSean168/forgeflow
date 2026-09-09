@@ -1,9 +1,0 @@
-[Unit]
-Description=Watch for ForgeFlow self-promotion requests
-
-[Path]
-PathChanged=/var/lib/forgeflow/self-promotion-request.json
-Unit=forgeflow-self-promote.service
-
-[Install]
-WantedBy=multi-user.target

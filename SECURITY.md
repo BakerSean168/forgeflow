@@ -1,25 +1,18 @@
-# Security policy
+# Security
 
-ForgeFlow can execute code, manage mutable Git worktrees, launch external coding agents, and interact with provider credentials. Please treat security reports as potentially high impact.
+ForgeFlow Policy V1 must not become a second privileged execution runtime. Open SWE/LangGraph own
+agent execution and sandbox/runtime state; ForgeFlow consumes bounded identities and evidence.
 
-## Reporting a vulnerability
+Security-sensitive invariants:
 
-Please do **not** publish exploitable security details in a public GitHub Issue.
+- never treat an agent/run `success` status as engineering completion by itself;
+- bind CI and review decisions to the exact current PR head SHA;
+- never persist provider credentials, GitHub tokens, raw model responses, or sandbox secrets in
+  ForgeFlow policy state;
+- do not expose an unauthenticated LangGraph API to public networks;
+- use the upstream Open SWE GitHub authentication path rather than implementing a second token
+  store;
+- bounded retries must escalate rather than loop forever.
 
-Use GitHub's private vulnerability reporting / Security Advisory flow for the repository when available. Include:
-
-- affected ForgeFlow revision or release;
-- impact and required preconditions;
-- a minimal reproduction;
-- whether the issue crosses a repository, credential, provider, process, or release-provenance boundary;
-- suggested containment, if known.
-
-## Sensitive material
-
-Do not include real API keys, auth/session files, SSH keys, private repository contents, production database rows, raw authorization headers, or unredacted provider response bodies in reports, fixtures, screenshots, or logs.
-
-## Security model
-
-ForgeFlow intentionally treats model/provider output as untrusted input. Acceptance is based on deterministic controller checks such as Git provenance, write-scope validation, exact-SHA review lineage, provider cleanup evidence, worktree retirement, and release provenance rather than a model saying that work is complete.
-
-Self-change, self-promotion, autonomous improvement diagnosis/adoption, and related high-privilege paths are separately gated and default off unless an operator explicitly enables them.
+Report suspected vulnerabilities privately to the repository owner rather than opening a public
+issue with exploit details.

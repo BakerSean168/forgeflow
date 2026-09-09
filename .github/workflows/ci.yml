@@ -15,13 +15,13 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: astral-sh/setup-uv@v7
         with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: npm audit --audit-level=high --omit=dev
-      - run: npm run check
+          python-version: '3.14'
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest -q
+      - run: uv run ruff check forgeflow tests
