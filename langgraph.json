@@ -10,7 +10,9 @@
     "scheduler": "agent.graphs.scheduler:get_scheduler",
     "forgeflow": "forgeflow.graph:get_forgeflow_graph"
   },
-  "dependencies": ["."],
+  "dependencies": [
+    "."
+  ],
   "http": {
     "app": "agent.webapp:app"
   },
@@ -21,5 +23,9 @@
       "default_ttl": 43200
     }
   },
-  "env": ".env"
+  "env": ".env",
+  "auth": {
+    "path": "agent.local_auth:auth",
+    "disable_studio_auth": true
+  }
 }

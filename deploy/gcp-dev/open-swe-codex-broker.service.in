@@ -1,0 +1,28 @@
+[Unit]
+Description=Open SWE Codex OAuth loopback broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@ROOT@
+Environment=FORGEFLOW_POLICY_STATE_DIR=@STATE_DIR@
+Environment=OPEN_SWE_CODEX_BROKER_PORT=@BROKER_PORT@
+ExecStart=/usr/bin/python3 @ROOT@/deploy/gcp-dev/codex_oauth_broker.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=%h/.codex/auth.json
+ReadWritePaths=@STATE_DIR@
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target
