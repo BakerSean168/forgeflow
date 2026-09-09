@@ -49,3 +49,13 @@ def test_legacy_purge_parses_systemd_units_without_decorative_bullets() -> None:
     purge = (DEPLOY / "purge-legacy.sh").read_text(encoding="utf-8")
     assert "--plain --no-legend" in purge
     assert "reset-failed 'forgeflow-antigravity@*.service'" in purge
+
+
+def test_github_app_preflight_is_secret_free_and_fail_closed() -> None:
+    check = (DEPLOY / "check-github-app.sh").read_text(encoding="utf-8")
+    docs = (REPO / "docs/github-app.md").read_text(encoding="utf-8")
+    assert "python -m forgeflow.preflight github" in check
+    assert "CONFIG_MISSING" in check
+    assert "GITHUB_APP_PRIVATE_KEY" not in check
+    assert "GITHUB_APP_NOT_CONFIGURED" in docs
+    assert "GITHUB_APP_REPO_OR_PERMISSION_UNAVAILABLE" in docs

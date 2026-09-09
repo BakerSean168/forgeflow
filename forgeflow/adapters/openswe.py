@@ -11,7 +11,13 @@ from uuid import NAMESPACE_URL, uuid5
 
 from agent.dashboard.team_settings import get_team_default_model_pair
 from agent.dispatch import dispatch_agent_run
-from agent.github.app import get_github_app_installation_token
+from agent.github.app import (
+    GITHUB_APP_ID,
+    GITHUB_APP_INSTALLATION_ID,
+    GITHUB_APP_PRIVATE_KEY,
+    get_github_app_installation_id_for_repo,
+    get_github_app_installation_token,
+)
 from agent.github.ci import list_check_runs, list_commit_statuses
 from agent.github.pull_request_checks import get_pull_request_check_states
 from agent.github.webhook import trigger_pr_review_from_ref
@@ -58,6 +64,17 @@ class ThreadSnapshot:
     status: str
     metadata: dict[str, Any]
 
+
+
+def github_app_configured() -> bool:
+    """Return only configuration readiness; never expose App credentials."""
+    installation = str(GITHUB_APP_INSTALLATION_ID or "").strip()
+    return bool(
+        str(GITHUB_APP_ID or "").strip()
+        and str(GITHUB_APP_PRIVATE_KEY or "").strip()
+        and installation.isdigit()
+        and int(installation) > 0
+    )
 
 def implementation_thread_id(policy_thread_id: str) -> str:
     """Derive one stable implementation thread per ForgeFlow policy thread."""
@@ -240,9 +257,11 @@ __all__ = [
     "ThreadSnapshot",
     "dispatch_agent_run",
     "fetch_github_pr_metadata",
+    "get_github_app_installation_id_for_repo",
     "get_github_app_installation_token",
     "get_pull_request_check_states",
     "get_team_default_model_pair",
+    "github_app_configured",
     "implementation_config",
     "implementation_thread_id",
     "list_check_runs",

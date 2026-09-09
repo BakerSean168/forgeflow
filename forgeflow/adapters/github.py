@@ -5,11 +5,14 @@ from typing import Any
 
 from forgeflow.adapters.openswe import (
     fetch_github_pr_metadata,
+    get_github_app_installation_id_for_repo,
     get_github_app_installation_token,
+    github_app_configured,
     list_check_runs,
     list_commit_statuses,
     parse_github_pr_url,
 )
+from forgeflow.models import RepositoryPreflight
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +33,31 @@ class CiSignals:
     head_sha: str
     check_runs: tuple[dict[str, Any], ...]
     statuses: tuple[dict[str, Any], ...]
+
+
+async def preflight_github_repository(owner: str, repo: str) -> RepositoryPreflight:
+    """Verify the dedicated Open SWE App can mint the scopes ForgeFlow gates require."""
+    if not github_app_configured():
+        return RepositoryPreflight(status="CONFIG_MISSING")
+    installation_id = await get_github_app_installation_id_for_repo(owner, repo)
+    if installation_id is None:
+        return RepositoryPreflight(status="REPO_OR_PERMISSION_UNAVAILABLE")
+    token = await get_github_app_installation_token(
+        installation_id=installation_id,
+        repositories=[repo],
+        permissions={
+            "contents": "read",
+            "pull_requests": "write",
+            "checks": "write",
+            "statuses": "read",
+        },
+        log_errors=False,
+    )
+    if not token:
+        return RepositoryPreflight(
+            status="REPO_OR_PERMISSION_UNAVAILABLE", installation_id=installation_id
+        )
+    return RepositoryPreflight(status="READY", installation_id=installation_id)
 
 
 async def fetch_pull_request(pr_url: str) -> PullRequestEvidence | None:

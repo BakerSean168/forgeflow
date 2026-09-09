@@ -5,7 +5,7 @@ import pytest
 from forgeflow.adapters.github import CiSignals, PullRequestEvidence
 from forgeflow.adapters.openswe import ChildRunSnapshot, ReviewerSnapshot, ThreadSnapshot
 from forgeflow.graph import build_forgeflow_graph
-from forgeflow.models import RepositoryPolicy
+from forgeflow.models import RepositoryPolicy, RepositoryPreflight
 from forgeflow.reconcile import reconcile_once
 from forgeflow.state import ForgeFlowState, initial_state
 
@@ -36,6 +36,11 @@ class FakeServices:
     crash_repair_once: bool = False
     _child_sequence: int = 0
     _review_sequence: int = 0
+
+    preflight_status: str = "READY"
+
+    async def preflight_repository(self, state: ForgeFlowState) -> RepositoryPreflight:
+        return RepositoryPreflight(status=self.preflight_status)  # type: ignore[arg-type]
 
     async def ensure_reconcile_cron(self, policy_thread_id: str) -> str:
         if self.cron_id is None:
@@ -317,3 +322,29 @@ async def test_new_external_head_invalidates_checkpointed_exact_head_evidence_in
     assert result["reviewed_head_sha"] is None
     assert result["reviewer_run_id"] is None
     assert result["blocking_finding_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_missing_github_app_escalates_before_child_thread_or_model_dispatch() -> None:
+    services = FakeServices(cron_id="cron-1", preflight_status="CONFIG_MISSING")
+    state = _base_state("NEW")
+    result = await reconcile_once(state, policy_thread_id="policy-1", services=services)
+    assert result["status"] == "ESCALATED"
+    assert result["last_failure_code"] == "GITHUB_APP_NOT_CONFIGURED"
+    assert services.actions == []
+    assert services.implementation_thread is None
+    assert services.child_operations == {}
+
+
+@pytest.mark.asyncio
+async def test_repo_permission_preflight_blocks_without_spending_model_and_can_recover() -> None:
+    services = FakeServices(cron_id="cron-1", preflight_status="REPO_OR_PERMISSION_UNAVAILABLE")
+    state = _base_state("NEW")
+    blocked = await reconcile_once(state, policy_thread_id="policy-1", services=services)
+    assert blocked["status"] == "NEW"
+    assert blocked["last_failure_code"] == "GITHUB_APP_REPO_OR_PERMISSION_UNAVAILABLE"
+    assert services.actions == []
+    services.preflight_status = "READY"
+    recovered = await reconcile_once(blocked, policy_thread_id="policy-1", services=services)
+    assert recovered["implementation_thread_id"] == "implementation-thread"
+    assert services.actions == ["create_implementation_thread"]

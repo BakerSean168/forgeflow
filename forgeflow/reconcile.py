@@ -17,6 +17,7 @@ from forgeflow.adapters.github import (
     PullRequestEvidence,
     fetch_ci_signals,
     fetch_pull_request,
+    preflight_github_repository,
 )
 from forgeflow.adapters.openswe import (
     ChildRunSnapshot,
@@ -33,7 +34,7 @@ from forgeflow.evidence import (
     review_decision,
     tracked_pull_request,
 )
-from forgeflow.models import RepositoryPolicy
+from forgeflow.models import RepositoryPolicy, RepositoryPreflight
 from forgeflow.policy import (
     apply_ci_decision,
     apply_implementation_evidence,
@@ -65,6 +66,8 @@ class PolicyServices(Protocol):
     async def ensure_reconcile_cron(self, policy_thread_id: str) -> str: ...
 
     async def delete_reconcile_cron(self, cron_id: str) -> None: ...
+
+    async def preflight_repository(self, state: ForgeFlowState) -> RepositoryPreflight: ...
 
     async def ensure_implementation_thread(
         self, *, policy_thread_id: str, repo_owner: str, repo_name: str, objective: str
@@ -160,6 +163,11 @@ class DefaultPolicyServices:
             await self.client.crons.delete(cron_id)
         except NotFoundError:
             return
+
+    async def preflight_repository(self, state: ForgeFlowState) -> RepositoryPreflight:
+        return await preflight_github_repository(
+            _required(state, "repo_owner"), _required(state, "repo_name")
+        )
 
     async def ensure_implementation_thread(
         self, *, policy_thread_id: str, repo_owner: str, repo_name: str, objective: str
@@ -295,6 +303,14 @@ async def reconcile_once(
 async def _reconcile_new(
     state: ForgeFlowState, policy_thread_id: str, services: PolicyServices
 ) -> ForgeFlowState:
+    preflight = await services.preflight_repository(state)
+    if preflight.status == "CONFIG_MISSING":
+        return escalate(state, "GITHUB_APP_NOT_CONFIGURED")
+    if preflight.status != "READY":
+        result = deepcopy(state)
+        result["last_failure_code"] = "GITHUB_APP_REPO_OR_PERMISSION_UNAVAILABLE"
+        return result
+
     thread_id = state.get("implementation_thread_id")
     if not thread_id:
         thread_id = await services.ensure_implementation_thread(

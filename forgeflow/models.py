@@ -43,3 +43,9 @@ class ReviewDecision:
 class RepositoryPolicy:
     ci_required: bool = True
     required_checks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryPreflight:
+    status: Literal["READY", "CONFIG_MISSING", "REPO_OR_PERMISSION_UNAVAILABLE"]
+    installation_id: int | None = None
