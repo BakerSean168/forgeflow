@@ -5,7 +5,9 @@ upstream bump has one compatibility surface instead of leaking through policy co
 """
 
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from agent.dispatch import dispatch_agent_run
 from agent.github.app import get_github_app_installation_token
@@ -35,9 +37,36 @@ FindingsReader = Callable[[str], Awaitable[list[dict[str, Any]]]]
 ReviewTrigger = Callable[..., Awaitable[dict[str, Any]]]
 
 
+class OpenSweAdapterError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ChildRunSnapshot:
+    thread_id: str
+    run_id: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadSnapshot:
+    thread_id: str
+    status: str
+    metadata: dict[str, Any]
+
+
+def implementation_thread_id(policy_thread_id: str) -> str:
+    """Derive one stable implementation thread per ForgeFlow policy thread."""
+    if not policy_thread_id:
+        raise ValueError("policy_thread_id is required")
+    return str(uuid5(NAMESPACE_URL, f"forgeflow:implementation:{policy_thread_id}"))
+
+
 def implementation_config(
     *,
     thread_id: str,
+    repo_owner: str,
+    repo_name: str,
     model_id: str = "openai:gpt-5.6-luna",
     effort: str = "xhigh",
     draft_prs: bool = True,
@@ -46,6 +75,7 @@ def implementation_config(
     config = {
         "thread_id": thread_id,
         "source": "forgeflow",
+        "repo": {"owner": repo_owner, "name": repo_name},
         "agent_model_id": model_id,
         "agent_effort": effort,
         "draft_prs": draft_prs,
@@ -74,15 +104,112 @@ def reviewer_config(
     return RunConfig.parse(config).dump()
 
 
+class OpenSweChildRuntime:
+    """Thin child-thread/run adapter; LangGraph remains the runtime owner."""
+
+    def __init__(self, client: Any, *, dispatch: DispatchFn = dispatch_agent_run) -> None:
+        self._client = client
+        self._dispatch = dispatch
+
+    async def ensure_implementation_thread(
+        self,
+        *,
+        policy_thread_id: str,
+        repo_owner: str,
+        repo_name: str,
+        objective: str,
+    ) -> str:
+        thread_id = implementation_thread_id(policy_thread_id)
+        await self._client.threads.create(
+            thread_id=thread_id,
+            if_exists="do_nothing",
+            metadata={
+                "agent_kind": "agent",
+                "source": "forgeflow",
+                "origin": "forgeflow",
+                "thread_category": "interactive",
+                "repo": {"owner": repo_owner, "name": repo_name},
+                "repo_owner": repo_owner,
+                "repo_name": repo_name,
+                "title": objective[:80],
+            },
+        )
+        return thread_id
+
+    async def dispatch_implementation(
+        self,
+        *,
+        thread_id: str,
+        objective: str,
+        repo_owner: str,
+        repo_name: str,
+    ) -> str:
+        run = await self._dispatch(
+            thread_id,
+            objective,
+            implementation_config(
+                thread_id=thread_id,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+            ),
+            source="forgeflow",
+            client=self._client,
+            multitask_strategy="enqueue",
+        )
+        run_id = run.get("run_id") if isinstance(run, Mapping) else None
+        if not isinstance(run_id, str) or not run_id:
+            raise OpenSweAdapterError("Open SWE dispatch returned no run_id")
+        return run_id
+
+    async def dispatch_repair(
+        self,
+        *,
+        thread_id: str,
+        prompt: str,
+        repo_owner: str,
+        repo_name: str,
+    ) -> str:
+        return await self.dispatch_implementation(
+            thread_id=thread_id,
+            objective=prompt,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+        )
+
+    async def read_run(self, *, thread_id: str, run_id: str) -> ChildRunSnapshot:
+        run = await self._client.runs.get(thread_id, run_id)
+        status = run.get("status") if isinstance(run, Mapping) else None
+        if not isinstance(status, str):
+            raise OpenSweAdapterError("Open SWE run has no status")
+        return ChildRunSnapshot(thread_id=thread_id, run_id=run_id, status=status)
+
+    async def read_thread(self, thread_id: str) -> ThreadSnapshot:
+        thread = await self._client.threads.get(thread_id)
+        if not isinstance(thread, Mapping):
+            raise OpenSweAdapterError("Open SWE thread payload is not a mapping")
+        metadata = thread.get("metadata")
+        status = thread.get("status")
+        return ThreadSnapshot(
+            thread_id=thread_id,
+            status=status if isinstance(status, str) else "unknown",
+            metadata=dict(metadata) if isinstance(metadata, Mapping) else {},
+        )
+
+
 __all__ = [
     "GRAPH_ENTRIES",
+    "ChildRunSnapshot",
     "GitHubPrRef",
+    "OpenSweAdapterError",
+    "OpenSweChildRuntime",
     "RunConfig",
+    "ThreadSnapshot",
     "dispatch_agent_run",
     "fetch_github_pr_metadata",
     "get_github_app_installation_token",
     "get_pull_request_check_states",
     "implementation_config",
+    "implementation_thread_id",
     "list_findings",
     "open_swe_webapp",
     "parse_github_pr_url",
