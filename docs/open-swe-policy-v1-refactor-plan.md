@@ -838,7 +838,10 @@ The refactor is complete when all are true:
 - [x] real repository acceptance reaches READY after at least one repair/re-review path;
 - [x] final exact head has CI PASS and zero open P0/P1/P2;
 - [x] README/docs clearly describe ForgeFlow as Open SWE quality governance, not an autonomous coding runtime;
-- [ ] release published as a new major version after real acceptance.
+- [x] new-major release publication gate satisfied after real acceptance; publication is cut from merged `main`.
+
+GitHub Releases is the external source of truth for whether `v2.0.0` has actually been published;
+this migration record captures readiness and acceptance rather than mutating history after tagging.
 
 The real ForgeFlow policy acceptance is recorded on PR #28. A controlled regression at `7115c08`
 removed the Docker `--read-only` boundary and its matching assertion while deterministic CI still

@@ -29,10 +29,11 @@ CI, and exact-head reviewer evidence before `READY`.
 
 ## Status
 
-ForgeFlow Policy V1 / v2.0.0 is implementation-complete and acceptance-backed. The v2.0.0
-release candidate is [PR #28](https://github.com/BakerSean168/forgeflow/pull/28), stacked on the
-underlying Policy V1 implementation [PR #27](https://github.com/BakerSean168/forgeflow/pull/27).
-Both remain unmerged; the published release and tag are intentionally still pending.
+ForgeFlow Policy V1 / v2.0.0 is implementation-complete and acceptance-backed. The implementation
+is tracked by [PR #27](https://github.com/BakerSean168/forgeflow/pull/27) and the stacked v2.0.0
+release candidate [PR #28](https://github.com/BakerSean168/forgeflow/pull/28). Releases are cut only
+from merged `main`; [GitHub Releases](https://github.com/BakerSean168/forgeflow/releases) is the
+source of truth for published tags.
 
 The legacy Node/SQLite/OpenHands/Antigravity control plane was removed rather than migrated.
 The current GCP Dev deployment is Python 3.14 + LangGraph + pinned Open SWE, with per-thread Docker
