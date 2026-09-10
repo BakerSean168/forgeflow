@@ -47,6 +47,8 @@ def test_container_template_has_required_isolation_flags() -> None:
         '"1000:1000"',
     ):
         assert expected in text
+    assert 'f"/tmp:rw,nosuid,nodev,noexec,size={config.tmpfs_size}"' in text
+    assert '"/home/sandbox:rw,nosuid,nodev,noexec,mode=1777,size=256m"' in text
     assert "/var/run/docker.sock" not in text
     assert ".codex" not in text
     assert "github-app.env" not in text
