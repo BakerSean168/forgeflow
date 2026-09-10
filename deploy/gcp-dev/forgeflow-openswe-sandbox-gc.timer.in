@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly idle Open SWE Docker sandbox garbage collection
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=forgeflow-openswe-sandbox-gc.service
+
+[Install]
+WantedBy=timers.target

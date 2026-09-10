@@ -1,0 +1,31 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "python_version": "3.14",
+  "api_version": "0.13.3",
+  "graphs": {
+    "agent": "openswe_ext.graphs:agent_graph",
+    "reviewer": "openswe_ext.graphs:reviewer_graph",
+    "analyzer": "openswe_ext.graphs:analyzer_graph",
+    "chat": "openswe_ext.graphs:chat_graph",
+    "scheduler": "openswe_ext.graphs:scheduler_graph",
+    "forgeflow": "forgeflow.graph:get_forgeflow_graph"
+  },
+  "dependencies": [
+    "."
+  ],
+  "http": {
+    "app": "agent.webapp:app"
+  },
+  "checkpointer": {
+    "ttl": {
+      "strategy": "delete",
+      "sweep_interval_minutes": 60,
+      "default_ttl": 43200
+    }
+  },
+  "env": ".env",
+  "auth": {
+    "path": "agent.local_auth:auth",
+    "disable_studio_auth": true
+  }
+}

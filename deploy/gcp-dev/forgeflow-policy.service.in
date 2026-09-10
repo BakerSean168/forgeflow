@@ -1,0 +1,29 @@
+[Unit]
+Description=ForgeFlow Policy V1 on Open SWE/LangGraph
+After=network-online.target open-swe-codex-broker.service
+Wants=network-online.target
+Requires=open-swe-codex-broker.service
+
+[Service]
+Type=simple
+WorkingDirectory=@ROOT@
+Environment=FORGEFLOW_POLICY_ROOT=@ROOT@
+Environment=FORGEFLOW_POLICY_CONFIG_DIR=@CONFIG_DIR@
+Environment=FORGEFLOW_POLICY_STATE_DIR=@STATE_DIR@
+Environment=FORGEFLOW_POLICY_PORT=@PORT@
+Environment=OPEN_SWE_CODEX_BROKER_PORT=@BROKER_PORT@
+ExecStart=@ROOT@/deploy/gcp-dev/start-forgeflow-policy.sh
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=90
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=ForgeFlow Open SWE sandbox network isolation
+Requires=docker.service
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=@LIBEXEC@
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

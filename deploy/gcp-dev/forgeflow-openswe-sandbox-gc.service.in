@@ -1,0 +1,15 @@
+[Unit]
+Description=Garbage collect idle Open SWE Docker sandboxes
+ConditionPathExists=/var/run/docker.sock
+
+[Service]
+Type=oneshot
+WorkingDirectory=@ROOT@
+Environment=OPEN_SWE_DOCKER_IDLE_TTL_SECONDS=86400
+ExecStart=@ROOT@/.venv/bin/python -m openswe_ext.docker_gc
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+LockPersonality=true
+RestrictSUIDSGID=true
