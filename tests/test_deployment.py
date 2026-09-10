@@ -117,7 +117,54 @@ def test_installer_binds_langgraph_state_before_restart_and_restarts_broker() ->
     assert 'systemctl --user restart open-swe-codex-broker.service' in installer
     assert 'enable --now open-swe-codex-broker.service' not in installer
     assert 'langgraph_state_dir="$state_dir/langgraph"' in start
+    assert 'expected_langgraph_state="$(readlink -f "$langgraph_state_dir"' in start
     assert 'readlink -f "$langgraph_root_link"' in start
+    assert 'set -Eeuo pipefail' in installer
+    assert 'trap restore_policy_on_error ERR' in installer
+    assert 'policy_restore_pending=false' in installer
+    assert 'trap - ERR' in installer
+
+
+def test_start_script_accepts_canonical_equivalent_langgraph_state_path(tmp_path: Path) -> None:
+    import os
+    import subprocess
+
+    home = tmp_path / "home"
+    root = tmp_path / "repo"
+    config = home / ".config/forgeflow-policy"
+    state = home / ".local/share/forgeflow-policy"
+    stable = state / "langgraph"
+    uv = home / ".local/bin/uv"
+    root.mkdir(parents=True)
+    config.mkdir(parents=True)
+    stable.mkdir(parents=True)
+    uv.parent.mkdir(parents=True)
+    (config / "local-auth.secret").write_text("auth", encoding="utf-8")
+    (config / "projects.json").write_text("[]\n", encoding="utf-8")
+    (state / "codex-broker.secret").write_text("broker", encoding="utf-8")
+    uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    uv.chmod(0o700)
+    (root / ".langgraph_api").symlink_to(stable, target_is_directory=True)
+
+    # Deliberately non-canonical text: the link target is valid even though the
+    # configured state path contains a parent traversal and trailing slash.
+    configured_state = state / "nested" / ".."
+    (state / "nested").mkdir()
+    env = os.environ.copy()
+    env.update(
+        HOME=str(home),
+        FORGEFLOW_POLICY_ROOT=str(root),
+        FORGEFLOW_POLICY_CONFIG_DIR=str(config),
+        FORGEFLOW_POLICY_STATE_DIR=str(configured_state) + "/",
+    )
+    result = subprocess.run(
+        [str(DEPLOY / "start-forgeflow-policy.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_purge_verifies_authenticated_replacement_before_destructive_deletion() -> None:

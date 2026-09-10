@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 root="${FORGEFLOW_POLICY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 config_dir="${FORGEFLOW_POLICY_CONFIG_DIR:-$HOME/.config/forgeflow-policy}"
@@ -58,11 +58,26 @@ cd "$root"
 
 # LangGraph local-dev persists to .langgraph_api relative to its working directory.
 # Stop the writer before migrating/linking that state so changing code roots does
-# not create a second checkpoint universe.
+# not create a second checkpoint universe. Any failure until the replacement
+# policy process is started again restores a previously-active service.
+policy_restore_pending=false
+restore_policy_on_error() {
+  local status=$?
+  trap - ERR
+  if [[ "$policy_restore_pending" == true && "$policy_was_active" == true ]]; then
+    systemctl --user start forgeflow-policy.service || true
+  fi
+  exit "$status"
+}
+trap restore_policy_on_error ERR
 if [[ "$policy_was_active" == true ]]; then
+  policy_restore_pending=true
   systemctl --user stop forgeflow-policy.service
   if systemctl --user is-active --quiet forgeflow-policy.service; then
     echo "forgeflow-policy.service is still active; refusing LangGraph state migration" >&2
+    systemctl --user start forgeflow-policy.service || true
+    policy_restore_pending=false
+    trap - ERR
     exit 1
   fi
 fi
@@ -100,6 +115,8 @@ systemctl --user restart open-swe-codex-broker.service
 systemctl --user enable --now forgeflow-openswe-sandbox-gc.timer
 systemctl --user enable forgeflow-policy.service
 systemctl --user restart forgeflow-policy.service
+policy_restore_pending=false
+trap - ERR
 
 auth="$(<"$config_dir/local-auth.secret")"
 ready=false

@@ -17,9 +17,10 @@ langgraph_root_link="$root/.langgraph_api"
 for required in "$auth_file" "$broker_secret" "$projects_file"; do
   [[ -r "$required" ]] || { echo "missing required ForgeFlow Policy file: $required" >&2; exit 2; }
 done
+expected_langgraph_state="$(readlink -f "$langgraph_state_dir" 2>/dev/null || true)"
 resolved_langgraph_state="$(readlink -f "$langgraph_root_link" 2>/dev/null || true)"
-[[ -d "$langgraph_state_dir" && "$resolved_langgraph_state" == "$langgraph_state_dir" ]] || {
-  echo "LangGraph state link must resolve to $langgraph_state_dir" >&2
+[[ -n "$expected_langgraph_state" && -d "$expected_langgraph_state" && "$resolved_langgraph_state" == "$expected_langgraph_state" ]] || {
+  echo "LangGraph state link must resolve to $expected_langgraph_state" >&2
   exit 2
 }
 
