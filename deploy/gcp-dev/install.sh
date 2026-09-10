@@ -59,7 +59,13 @@ cd "$root"
 # LangGraph local-dev persists to .langgraph_api relative to its working directory.
 # Stop the writer before migrating/linking that state so changing code roots does
 # not create a second checkpoint universe.
-systemctl --user stop forgeflow-policy.service 2>/dev/null || true
+if [[ "$policy_was_active" == true ]]; then
+  systemctl --user stop forgeflow-policy.service
+  if systemctl --user is-active --quiet forgeflow-policy.service; then
+    echo "forgeflow-policy.service is still active; refusing LangGraph state migration" >&2
+    exit 1
+  fi
+fi
 migration_args=(--root "$root" --state-dir "$state_dir")
 if [[ -n "$previous_root" && -d "$previous_root" ]]; then
   migration_args+=(--previous-root "$previous_root")

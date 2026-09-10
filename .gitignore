@@ -11,4 +11,4 @@ htmlcov/
 !.env.example
 .DS_Store
 
-.langgraph_api/
+/.langgraph_api

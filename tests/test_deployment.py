@@ -95,13 +95,21 @@ def test_installer_requires_systemd_user_linger() -> None:
 
 
 
+def test_gitignore_covers_langgraph_state_directory_and_symlink() -> None:
+    gitignore = (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "/.langgraph_api" in gitignore
+    assert ".langgraph_api/" not in gitignore
+
+
 def test_installer_binds_langgraph_state_before_restart_and_restarts_broker() -> None:
     installer = (DEPLOY / "install.sh").read_text(encoding="utf-8")
     start = (DEPLOY / "start-forgeflow-policy.sh").read_text(encoding="utf-8")
     stop_at = installer.index("systemctl --user stop forgeflow-policy.service")
+    verify_stopped_at = installer.index("is still active; refusing LangGraph state migration")
     migrate_at = installer.index("migrate_langgraph_state.py")
     restart_at = installer.index("systemctl --user restart forgeflow-policy.service")
-    assert stop_at < migrate_at < restart_at
+    assert stop_at < verify_stopped_at < migrate_at < restart_at
+    assert 'systemctl --user stop forgeflow-policy.service 2>/dev/null || true' not in installer
     assert 'WorkingDirectory --value' in installer
     assert 'policy_was_active=false' in installer
     assert 'if ! python3 "$root/deploy/gcp-dev/migrate_langgraph_state.py"' in installer
