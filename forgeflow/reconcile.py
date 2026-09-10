@@ -389,7 +389,9 @@ async def _adopt_or_dispatch_initial(
         run_id = await services.dispatch_implementation(
             thread_id=thread_id,
             objective=build_implementation_prompt(
-                objective=_required(state, "objective"), operation_key=operation_key
+                objective=_required(state, "objective"),
+                operation_key=operation_key,
+                base_ref=_required(state, "base_ref"),
             ),
             repo_owner=_required(state, "repo_owner"),
             repo_name=_required(state, "repo_name"),

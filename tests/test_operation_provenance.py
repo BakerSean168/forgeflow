@@ -3,10 +3,16 @@ from forgeflow.prompts.repair import build_ci_repair_prompt
 
 
 def test_implementation_prompt_requires_exact_final_head_trailer() -> None:
-    prompt = build_implementation_prompt(objective="Fix the bug", operation_key="implementation:p:retry:0")
+    prompt = build_implementation_prompt(
+        objective="Fix the bug",
+        operation_key="implementation:p:retry:0",
+        base_ref="release/policy-v1",
+    )
     assert "Fix the bug" in prompt
     assert "ForgeFlow-Operation: implementation:p:retry:0" in prompt
     assert "final pushed HEAD commit message" in prompt
+    assert "origin/release/policy-v1" in prompt
+    assert "against exactly `release/policy-v1`" in prompt
 
 
 def test_repair_prompt_requires_new_operation_trailer() -> None:
@@ -17,3 +23,10 @@ def test_repair_prompt_requires_new_operation_trailer() -> None:
         operation_key="repair:p:head:round:1:retry:0",
     )
     assert operation_trailer("repair:p:head:round:1:retry:0") in prompt
+
+
+def test_implementation_prompt_rejects_empty_base_ref() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="base_ref is required"):
+        build_implementation_prompt(objective="Fix", operation_key="op", base_ref="  ")
