@@ -37,6 +37,23 @@ Normal upstream-internal imports must eventually be centralized in
 separate reviewed change: update the exact SHA, regenerate `uv.lock`, run the contract suite,
 run ForgeFlow's policy tests, and then repeat real-repository acceptance before promotion.
 
+## Self-hosted compatibility extensions
+
+The GCP Dev deployment adds narrowly scoped runtime extensions under `openswe_ext/`; these are
+compatibility adapters, not forks of Open SWE graphs:
+
+- `docker_sandbox.py` supplies the self-hosted Docker sandbox provider and least-privilege GitHub
+  credential bridge.
+- `workflow_push_guard.py` preserves Open SWE's workflow approval gate while correcting one pinned
+  upstream edge case: for a new task branch that tracks a non-default `origin/*` base, workflow
+  diffs are evaluated against that tracked base rather than unconditionally against `origin/HEAD`.
+  Real task-authored `.github/workflows/*` changes remain approval-gated.
+
+The extension installer runs before upstream graph imports in `openswe_ext/graphs.py` and fails
+closed if another implementation has already replaced the same pinned upstream hook. The
+characterization tests in `tests/test_workflow_push_guard.py` cover both the false-positive case
+and the retained human-approval case.
+
 ## Ownership rule
 
 Open SWE/LangGraph own agent execution, reviewer execution, scheduling, thread/run durability,
