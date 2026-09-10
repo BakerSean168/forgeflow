@@ -529,3 +529,31 @@ async def test_initial_dispatch_includes_operation_trailer_requirement() -> None
     result = await reconcile_once(state, policy_thread_id="policy-1", services=services)
     assert result["implementation_operation_key"] == "implementation:policy-1:retry:0"
     assert "ForgeFlow-Operation: implementation:policy-1:retry:0" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_default_preflight_moves_blocking_sandbox_probe_off_event_loop(monkeypatch) -> None:
+    import threading
+
+    import forgeflow.reconcile as reconcile_module
+    from forgeflow.models import RepositoryPreflight
+    from forgeflow.state import initial_state
+
+    async def github_ready(_owner: str, _repo: str) -> RepositoryPreflight:
+        return RepositoryPreflight(status="READY", installation_id=1)
+
+    caller_thread = threading.get_ident()
+    sandbox_threads: list[int] = []
+
+    def sandbox_ready():
+        sandbox_threads.append(threading.get_ident())
+        return type("SandboxReady", (), {"ready": True})()
+
+    monkeypatch.setattr(reconcile_module, "preflight_github_repository", github_ready)
+    monkeypatch.setattr(reconcile_module, "reviewer_sandbox_preflight", sandbox_ready)
+    services = reconcile_module.DefaultPolicyServices(client=object())
+    result = await services.preflight_repository(
+        initial_state(objective="x", repo_owner="o", repo_name="r")
+    )
+    assert result.status == "READY"
+    assert sandbox_threads and sandbox_threads[0] != caller_thread

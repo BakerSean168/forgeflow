@@ -5,6 +5,7 @@ ForgeFlow-owned upstream action (create/adopt scheduling, child dispatch, review
 dispatch, or terminal schedule cleanup). LangGraph remains the durable runtime.
 """
 
+import asyncio
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any, Protocol
@@ -183,7 +184,7 @@ class DefaultPolicyServices:
         )
         if github.status != "READY":
             return github
-        sandbox = reviewer_sandbox_preflight()
+        sandbox = await asyncio.to_thread(reviewer_sandbox_preflight)
         if not sandbox.ready:
             return RepositoryPreflight(
                 status="REVIEWER_SANDBOX_UNAVAILABLE", installation_id=github.installation_id
