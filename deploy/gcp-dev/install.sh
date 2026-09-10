@@ -65,9 +65,12 @@ render_unit() {
 }
 render_unit "$root/deploy/gcp-dev/open-swe-codex-broker.service.in" "$unit_dir/open-swe-codex-broker.service"
 render_unit "$root/deploy/gcp-dev/forgeflow-policy.service.in" "$unit_dir/forgeflow-policy.service"
+render_unit "$root/deploy/gcp-dev/forgeflow-openswe-sandbox-gc.service.in" "$unit_dir/forgeflow-openswe-sandbox-gc.service"
+render_unit "$root/deploy/gcp-dev/forgeflow-openswe-sandbox-gc.timer.in" "$unit_dir/forgeflow-openswe-sandbox-gc.timer"
 
 systemctl --user daemon-reload
 systemctl --user enable --now open-swe-codex-broker.service
+systemctl --user enable --now forgeflow-openswe-sandbox-gc.timer
 systemctl --user enable forgeflow-policy.service
 systemctl --user restart forgeflow-policy.service
 

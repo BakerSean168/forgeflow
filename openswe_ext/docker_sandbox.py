@@ -7,11 +7,14 @@ not create containers, mount workspaces, or manage container lifecycle.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 import shlex
 import subprocess
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -23,10 +26,41 @@ _DEFAULT_IMAGE = "forgeflow/openswe-sandbox:bookworm-node24"
 _DEFAULT_NETWORK = "openswe-sandbox"
 _DEFAULT_TIMEOUT = 120
 _DEFAULT_MAX_OUTPUT = 100_000
+_RUNTIME_ROOT = "/workspace/.open-swe-runtime"
+_LAST_USED_PATH = f"{_RUNTIME_ROOT}/last-used"
 
 
 class DockerSandboxError(RuntimeError):
     """The local Docker sandbox could not be created or reached safely."""
+
+
+def _lock_root() -> Path:
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    root = Path(runtime) if runtime else Path(f"/run/user/{os.getuid()}")
+    return root / "open-swe-sandbox-locks"
+
+
+@contextmanager
+def sandbox_operation_lock(
+    container_id: str, *, exclusive: bool, blocking: bool = True
+) -> Iterator[bool]:
+    """Coordinate provider operations and GC without serializing parallel tool calls."""
+    root = _lock_root()
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = root / f"{container_id}.lock"
+    with path.open("a+") as handle:
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if not blocking:
+            mode |= fcntl.LOCK_NB
+        try:
+            fcntl.flock(handle.fileno(), mode)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,9 +170,12 @@ def _runtime_env_prelude() -> str:
         "CARGO_HOME": f"{_CACHE_ROOT}/cargo",
         "PIP_CACHE_DIR": f"{_CACHE_ROOT}/pip",
     }
-    paths = " ".join(shlex.quote(value) for value in dirs.values())
+    paths = " ".join(shlex.quote(value) for value in [*dirs.values(), _RUNTIME_ROOT])
     exports = " ".join(f"{name}={shlex.quote(value)}" for name, value in dirs.items())
-    return f"mkdir -p -- {paths} && export {exports}; "
+    return (
+        f"mkdir -p -- {paths} && touch {shlex.quote(_LAST_USED_PATH)} "
+        f"&& export {exports}; "
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,174 +299,199 @@ class DockerSandbox(BaseSandbox):
         effective_timeout = self._default_timeout if timeout is None else timeout
         if effective_timeout <= 0:
             raise ValueError("timeout must be positive")
-        _assert_owned_container(self._container_id)
-        if not _container_running(self._container_id):
-            _docker("container", "start", self._container_id)
+        with sandbox_operation_lock(self._container_id, exclusive=False) as acquired:
+            if not acquired:
+                raise DockerSandboxError("sandbox operation lock was not acquired")
+            _assert_owned_container(self._container_id)
+            if not _container_running(self._container_id):
+                _docker("container", "start", self._container_id)
 
-        # GNU timeout creates a separate process group unless --foreground is used,
-        # so descendants receive the timeout signal as well instead of leaking into
-        # the persistent container after an agent command times out.
-        wrapped_command = (
-            _runtime_env_prelude()
-            + f'if [ -r {shlex.quote(self._github_read_token_path)} ]; then '
-            + f'export GH_TOKEN="$(cat {shlex.quote(self._github_read_token_path)})"; '
-            + 'export GITHUB_TOKEN="$GH_TOKEN"; '
-            + 'export GIT_TERMINAL_PROMPT=0; '
-            + 'export GIT_CONFIG_COUNT=2; '
-            + 'export GIT_CONFIG_KEY_0=credential.helper; '
-            + f'export GIT_CONFIG_VALUE_0={shlex.quote(self._git_credential_path)}; '
-            + 'export GIT_CONFIG_KEY_1=credential.useHttpPath; '
-            + 'export GIT_CONFIG_VALUE_1=true; fi; '
-            + command
-        )
-        result = _docker(
-            "exec",
-            "--workdir",
-            "/workspace",
-            self._container_id,
-            "timeout",
-            "--signal=TERM",
-            "--kill-after=5s",
-            f"{effective_timeout}s",
-            "bash",
-            "-lc",
-            wrapped_command,
-            timeout=effective_timeout + 10,
-            check=False,
-        )
-        stdout = result.stdout.decode("utf-8", errors="replace")
-        stderr = result.stderr.decode("utf-8", errors="replace")
-        parts: list[str] = []
-        if stdout:
-            parts.append(stdout)
-        if stderr:
-            parts.extend(f"[stderr] {line}" for line in stderr.rstrip().splitlines())
-        output = "\n".join(parts)
-        truncated = len(output.encode("utf-8")) > self._max_output_bytes
-        if truncated:
-            output = output.encode("utf-8")[: self._max_output_bytes].decode(
-                "utf-8", errors="ignore"
+            # GNU timeout creates a separate process group unless --foreground is used,
+            # so descendants receive the timeout signal as well instead of leaking into
+            # the persistent container after an agent command times out.
+            wrapped_command = (
+                _runtime_env_prelude()
+                + f'if [ -r {shlex.quote(self._github_read_token_path)} ]; then '
+                + f'export GH_TOKEN="$(cat {shlex.quote(self._github_read_token_path)})"; '
+                + 'export GITHUB_TOKEN="$GH_TOKEN"; '
+                + 'export GIT_TERMINAL_PROMPT=0; '
+                + 'export GIT_CONFIG_COUNT=2; '
+                + 'export GIT_CONFIG_KEY_0=credential.helper; '
+                + f'export GIT_CONFIG_VALUE_0={shlex.quote(self._git_credential_path)}; '
+                + 'export GIT_CONFIG_KEY_1=credential.useHttpPath; '
+                + 'export GIT_CONFIG_VALUE_1=true; fi; '
+                + command
             )
-            output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
-        if result.returncode != 0:
-            detail = output.rstrip()
-            output = (
-                f"{detail}\n\nExit code: {result.returncode}"
-                if detail
-                else f"Exit code: {result.returncode}"
+            result = _docker(
+                "exec",
+                "--workdir",
+                "/workspace",
+                self._container_id,
+                "timeout",
+                "--signal=TERM",
+                "--kill-after=5s",
+                f"{effective_timeout}s",
+                "bash",
+                "-lc",
+                wrapped_command,
+                timeout=effective_timeout + 10,
+                check=False,
             )
-        return ExecuteResponse(output=output, exit_code=result.returncode, truncated=truncated)
+            stdout = result.stdout.decode("utf-8", errors="replace")
+            stderr = result.stderr.decode("utf-8", errors="replace")
+            parts: list[str] = []
+            if stdout:
+                parts.append(stdout)
+            if stderr:
+                parts.extend(f"[stderr] {line}" for line in stderr.rstrip().splitlines())
+            output = "\n".join(parts)
+            truncated = len(output.encode("utf-8")) > self._max_output_bytes
+            if truncated:
+                output = output.encode("utf-8")[: self._max_output_bytes].decode(
+                    "utf-8", errors="ignore"
+                )
+                output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
+            if result.returncode != 0:
+                detail = output.rstrip()
+                output = (
+                    f"{detail}\n\nExit code: {result.returncode}"
+                    if detail
+                    else f"Exit code: {result.returncode}"
+                )
+            return ExecuteResponse(output=output, exit_code=result.returncode, truncated=truncated)
 
     def configure_github_credentials(self, credentials: GitHubSandboxCredentials) -> None:
         """Install short-lived tokens in tmpfs and a token-free credential helper on workspace."""
         if not credentials.read_token.strip():
             raise DockerSandboxError("GitHub read token is empty")
-        _assert_owned_container(self._container_id)
-        if not _container_running(self._container_id):
-            _docker("container", "start", self._container_id)
+        with sandbox_operation_lock(self._container_id, exclusive=True) as acquired:
+            if not acquired:
+                raise DockerSandboxError("sandbox credential lock was not acquired")
+            _assert_owned_container(self._container_id)
+            if not _container_running(self._container_id):
+                _docker("container", "start", self._container_id)
 
-        for path, token in (
-            (self._github_read_token_path, credentials.read_token),
-            (self._github_write_token_path, credentials.write_token),
-        ):
-            if token:
-                result = _docker(
-                    "exec",
-                    "-i",
-                    self._container_id,
-                    "bash",
-                    "-lc",
-                    f"umask 077; cat > {shlex.quote(path)}",
-                    input_bytes=token.encode(),
-                    timeout=15,
-                    check=False,
-                )
-            else:
-                result = _docker(
-                    "exec",
-                    self._container_id,
-                    "rm",
-                    "-f",
-                    path,
-                    timeout=15,
-                    check=False,
-                )
+            for path, token in (
+                (self._github_read_token_path, credentials.read_token),
+                (self._github_write_token_path, credentials.write_token),
+            ):
+                if token:
+                    tmp_path = f"{path}.new"
+                    result = _docker(
+                        "exec",
+                        "-i",
+                        self._container_id,
+                        "bash",
+                        "-lc",
+                        f"umask 077; cat > {shlex.quote(tmp_path)} && "
+                        f"mv -f {shlex.quote(tmp_path)} {shlex.quote(path)}",
+                        input_bytes=token.encode(),
+                        timeout=15,
+                        check=False,
+                    )
+                else:
+                    result = _docker(
+                        "exec",
+                        self._container_id,
+                        "rm",
+                        "-f",
+                        path,
+                        timeout=15,
+                        check=False,
+                    )
+                if result.returncode != 0:
+                    raise DockerSandboxError("failed to install ephemeral GitHub credentials")
+
+            helper = _git_credential_script(
+                read_token_path=self._github_read_token_path,
+                write_token_path=self._github_write_token_path,
+                write_repository=credentials.write_repository,
+            )
+            helper_parent = str(PurePosixPath(self._git_credential_path).parent)
+            helper_tmp = f"{self._git_credential_path}.new"
+            result = _docker(
+                "exec",
+                "-i",
+                self._container_id,
+                "bash",
+                "-lc",
+                f"mkdir -p -- {shlex.quote(helper_parent)}; chmod 700 {shlex.quote(helper_parent)}; "
+                f"umask 077; cat > {shlex.quote(helper_tmp)}; "
+                f"chmod 700 {shlex.quote(helper_tmp)}; "
+                f"mv -f {shlex.quote(helper_tmp)} {shlex.quote(self._git_credential_path)}; "
+                f"touch {shlex.quote(_LAST_USED_PATH)}",
+                input_bytes=helper.encode(),
+                timeout=15,
+                check=False,
+            )
             if result.returncode != 0:
-                raise DockerSandboxError("failed to install ephemeral GitHub credentials")
-
-        helper = _git_credential_script(
-            read_token_path=self._github_read_token_path,
-            write_token_path=self._github_write_token_path,
-            write_repository=credentials.write_repository,
-        )
-        helper_parent = str(PurePosixPath(self._git_credential_path).parent)
-        result = _docker(
-            "exec",
-            "-i",
-            self._container_id,
-            "bash",
-            "-lc",
-            f"mkdir -p -- {shlex.quote(helper_parent)}; chmod 700 {shlex.quote(helper_parent)}; "
-            f"umask 077; cat > {shlex.quote(self._git_credential_path)}; "
-            f"chmod 700 {shlex.quote(self._git_credential_path)}",
-            input_bytes=helper.encode(),
-            timeout=15,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise DockerSandboxError("failed to install Git credential bridge")
+                raise DockerSandboxError("failed to install Git credential bridge")
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         responses: list[FileUploadResponse] = []
-        for raw_path, content in files:
-            try:
-                path = _normalize_path(raw_path)
-                parent = str(PurePosixPath(path).parent)
-                command = f"mkdir -p -- {shlex.quote(parent)} && cat > {shlex.quote(path)}"
-                result = _docker(
-                    "exec",
-                    "-i",
-                    "--workdir",
-                    "/workspace",
-                    self._container_id,
-                    "bash",
-                    "-lc",
-                    command,
-                    input_bytes=content,
-                    timeout=30,
-                    check=False,
-                )
-                error = None if result.returncode == 0 else "permission_denied"
-                responses.append(FileUploadResponse(path=raw_path, error=error))
-            except (DockerSandboxError, ValueError) as exc:
-                responses.append(FileUploadResponse(path=raw_path, error=type(exc).__name__))
+        with sandbox_operation_lock(self._container_id, exclusive=False) as acquired:
+            if not acquired:
+                raise DockerSandboxError("sandbox upload lock was not acquired")
+            _assert_owned_container(self._container_id)
+            for raw_path, content in files:
+                try:
+                    path = _normalize_path(raw_path)
+                    parent = str(PurePosixPath(path).parent)
+                    command = (
+                        f"mkdir -p -- {shlex.quote(parent)} {shlex.quote(_RUNTIME_ROOT)} "
+                        f"&& touch {shlex.quote(_LAST_USED_PATH)} "
+                        f"&& cat > {shlex.quote(path)}"
+                    )
+                    result = _docker(
+                        "exec",
+                        "-i",
+                        "--workdir",
+                        "/workspace",
+                        self._container_id,
+                        "bash",
+                        "-lc",
+                        command,
+                        input_bytes=content,
+                        timeout=30,
+                        check=False,
+                    )
+                    error = None if result.returncode == 0 else "permission_denied"
+                    responses.append(FileUploadResponse(path=raw_path, error=error))
+                except (DockerSandboxError, ValueError) as exc:
+                    responses.append(FileUploadResponse(path=raw_path, error=type(exc).__name__))
         return responses
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         responses: list[FileDownloadResponse] = []
-        for raw_path in paths:
-            try:
-                path = _normalize_path(raw_path)
-                result = _docker(
-                    "exec",
-                    self._container_id,
-                    "bash",
-                    "-lc",
-                    f"if [ -f {shlex.quote(path)} ]; then cat -- {shlex.quote(path)}; "
-                    f"elif [ -d {shlex.quote(path)} ]; then exit 20; else exit 21; fi",
-                    timeout=30,
-                    check=False,
-                )
-                if result.returncode == 0:
-                    responses.append(FileDownloadResponse(path=raw_path, content=result.stdout))
-                elif result.returncode == 20:
-                    responses.append(FileDownloadResponse(path=raw_path, error="is_directory"))
-                elif result.returncode == 21:
-                    responses.append(FileDownloadResponse(path=raw_path, error="file_not_found"))
-                else:
-                    responses.append(FileDownloadResponse(path=raw_path, error="permission_denied"))
-            except (DockerSandboxError, ValueError) as exc:
-                responses.append(FileDownloadResponse(path=raw_path, error=type(exc).__name__))
+        with sandbox_operation_lock(self._container_id, exclusive=False) as acquired:
+            if not acquired:
+                raise DockerSandboxError("sandbox download lock was not acquired")
+            _assert_owned_container(self._container_id)
+            for raw_path in paths:
+                try:
+                    path = _normalize_path(raw_path)
+                    result = _docker(
+                        "exec",
+                        self._container_id,
+                        "bash",
+                        "-lc",
+                        f"mkdir -p -- {shlex.quote(_RUNTIME_ROOT)} && "
+                        f"touch {shlex.quote(_LAST_USED_PATH)} && "
+                        f"if [ -f {shlex.quote(path)} ]; then cat -- {shlex.quote(path)}; "
+                        f"elif [ -d {shlex.quote(path)} ]; then exit 20; else exit 21; fi",
+                        timeout=30,
+                        check=False,
+                    )
+                    if result.returncode == 0:
+                        responses.append(FileDownloadResponse(path=raw_path, content=result.stdout))
+                    elif result.returncode == 20:
+                        responses.append(FileDownloadResponse(path=raw_path, error="is_directory"))
+                    elif result.returncode == 21:
+                        responses.append(FileDownloadResponse(path=raw_path, error="file_not_found"))
+                    else:
+                        responses.append(FileDownloadResponse(path=raw_path, error="permission_denied"))
+                except (DockerSandboxError, ValueError) as exc:
+                    responses.append(FileDownloadResponse(path=raw_path, error=type(exc).__name__))
         return responses
 
 
@@ -457,9 +519,16 @@ def create_docker_sandbox_sync(sandbox_id: str | None = None) -> DockerSandbox:
     """Create or reconnect to one persistent local Docker sandbox."""
     config = DockerSandboxConfig.from_env()
     if sandbox_id:
-        _assert_owned_container(sandbox_id)
-        if not _container_running(sandbox_id):
-            _docker("container", "start", sandbox_id)
+        with sandbox_operation_lock(sandbox_id, exclusive=True) as acquired:
+            if not acquired:
+                raise DockerSandboxError("sandbox reconnect lock was not acquired")
+            if not _container_exists(sandbox_id):
+                from agent.sandboxes.providers.registry import SandboxGoneError
+
+                raise SandboxGoneError(f"Docker sandbox no longer exists: {sandbox_id}")
+            _assert_owned_container(sandbox_id)
+            if not _container_running(sandbox_id):
+                _docker("container", "start", sandbox_id)
         return DockerSandbox(sandbox_id)
 
     container_id = f"openswe-sbx-{uuid.uuid4().hex[:12]}"
@@ -570,8 +639,7 @@ async def create_docker_sandbox(sandbox_id: str | None = None) -> DockerSandbox:
     return backend
 
 
-def delete_docker_sandbox(container_id: str) -> None:
-    """Delete one provider-owned container and its provider-owned workspace volume."""
+def _delete_docker_sandbox_unlocked(container_id: str) -> None:
     _assert_owned_container(container_id)
     result = _docker(
         "container",
@@ -584,3 +652,11 @@ def delete_docker_sandbox(container_id: str) -> None:
     _docker("container", "rm", "-f", container_id)
     if volume_name:
         _docker("volume", "rm", "-f", volume_name, check=False)
+
+
+def delete_docker_sandbox(container_id: str) -> None:
+    """Delete one provider-owned container and its provider-owned workspace volume."""
+    with sandbox_operation_lock(container_id, exclusive=True) as acquired:
+        if not acquired:
+            raise DockerSandboxError("sandbox delete lock was not acquired")
+        _delete_docker_sandbox_unlocked(container_id)

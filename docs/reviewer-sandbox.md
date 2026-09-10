@@ -84,3 +84,24 @@ They can be selected explicitly through `SANDBOX_TYPE` and their upstream
 credentials, but ForgeFlow no longer maintains a separate LangSmith onboarding
 UI or `sandbox.env` compatibility layer. The GCP Dev default and tested path is
 local Docker isolation.
+
+## Idle garbage collection
+
+Local Docker does not have the managed TTL of a cloud sandbox provider, so the
+runtime extension owns its own conservative garbage collection rather than
+adding lifecycle state to ForgeFlow policy.
+
+Every provider operation updates `/workspace/.open-swe-runtime/last-used`.
+Foreground tool operations take a shared host lock; the collector requires a
+non-blocking exclusive lock and also refuses to delete a running container with
+any process beyond the provider's steady-state `docker-init` + `sleep` pair.
+This keeps Deep Agents subagent/tool parallelism concurrent while preventing a
+GC race with active foreground work. Background task processes are detected by
+the process check after the foreground launch call releases its lock.
+
+`forgeflow-openswe-sandbox-gc.timer` runs hourly. The default idle TTL is 24
+hours (`OPEN_SWE_DOCKER_IDLE_TTL_SECONDS=86400`). It only considers containers
+with the provider ownership label and removes the matching provider-owned named
+volume together with the container. A deleted sandbox reconnect raises Open
+SWE's `SandboxGoneError`, so the upstream thread lifecycle recreates a fresh
+sandbox instead of being permanently bound to a stale id.

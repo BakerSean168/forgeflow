@@ -171,6 +171,7 @@ def test_high_volume_package_caches_use_persistent_workspace_volume() -> None:
     assert "/workspace/.open-swe-cache/npm" in prelude
     assert "/workspace/.open-swe-cache/uv" in prelude
     assert "/workspace/.open-swe-cache/go-mod" in prelude
+    assert "/workspace/.open-swe-runtime/last-used" in prelude
     assert "/home/sandbox/.local" not in prelude
 
 

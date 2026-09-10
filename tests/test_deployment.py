@@ -121,3 +121,14 @@ def test_purge_uses_exact_legacy_file_list_and_removes_apparmor_but_preserves_li
     assert "/etc/apparmor.d/forgeflow-openhands-codex" in purge
     assert "/etc/forgeflow/openhands-literal-worktrees.override.yml" in purge
     assert "litellm.env" in purge and "preserved" in purge
+
+
+def test_docker_sandbox_gc_is_hourly_bounded_and_not_part_of_policy_runtime() -> None:
+    installer = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    service = (DEPLOY / "forgeflow-openswe-sandbox-gc.service.in").read_text(encoding="utf-8")
+    timer = (DEPLOY / "forgeflow-openswe-sandbox-gc.timer.in").read_text(encoding="utf-8")
+    assert "forgeflow-openswe-sandbox-gc.timer" in installer
+    assert "OPEN_SWE_DOCKER_IDLE_TTL_SECONDS=86400" in service
+    assert "python -m openswe_ext.docker_gc" in service
+    assert "OnUnitActiveSec=1h" in timer
+    assert "Persistent=true" in timer
