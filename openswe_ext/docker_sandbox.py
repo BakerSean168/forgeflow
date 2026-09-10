@@ -563,6 +563,7 @@ def create_docker_sandbox_sync(sandbox_id: str | None = None) -> DockerSandbox:
             "--label",
             f"dev.open-swe.workspace-volume={volume_name}",
             "--init",
+            "--read-only",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges:true",
             "--security-opt=apparmor=docker-default",

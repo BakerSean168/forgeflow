@@ -36,6 +36,7 @@ def test_container_template_has_required_isolation_flags() -> None:
     source = Path(__file__).resolve().parents[1] / "openswe_ext/docker_sandbox.py"
     text = source.read_text(encoding="utf-8")
     for expected in (
+        '"--read-only"',
         '"--cap-drop=ALL"',
         '"--security-opt=no-new-privileges:true"',
         '"--security-opt=apparmor=docker-default"',
