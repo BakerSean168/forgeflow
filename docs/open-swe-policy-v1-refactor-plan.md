@@ -815,11 +815,11 @@ Containment: intentional product decision. Git/GitHub/Open SWE are the only reta
 
 The refactor is complete when all are true:
 
-- [ ] old TypeScript/SQLite autonomous control plane deleted;
-- [ ] old API/client compatibility deleted;
-- [ ] old OpenHands/Antigravity execution plane deleted;
-- [ ] old DB/backups/workspaces/tooling deleted from the host;
-- [ ] old ForgeFlow systemd topology removed;
+- [x] old TypeScript/SQLite autonomous control plane deleted;
+- [x] old API/client compatibility deleted;
+- [x] old OpenHands/Antigravity execution plane deleted;
+- [x] old DB/backups/workspaces/tooling deleted from the host;
+- [x] old ForgeFlow systemd topology removed;
 - [x] Open SWE exact SHA pinned;
 - [x] upstream contract suite green;
 - [x] ForgeFlow policy graph runs in the same LangGraph deployment as Open SWE;
@@ -830,11 +830,20 @@ The refactor is complete when all are true:
 - [x] exact-head reviewer gate implemented;
 - [x] P0/P1/P2 repair loop bounded and same-thread;
 - [x] restart/replay produces no duplicate dispatch;
-- [ ] real repository acceptance reaches READY after at least one repair/re-review path;
-- [ ] final exact head has CI PASS and zero open P0/P1/P2;
+- [x] real repository acceptance reaches READY after at least one repair/re-review path;
+- [x] final exact head has CI PASS and zero open P0/P1/P2;
 - [x] README/docs clearly describe ForgeFlow as Open SWE quality governance, not an autonomous coding runtime;
 - [ ] release published as a new major version after real acceptance.
 
-The Digital Biome PR #59 evidence independently demonstrates the Open SWE review → repair →
-re-review loop and exact-head CI closure. It is not evidence that the ForgeFlow policy graph
-itself reached `READY`, so the real-repository `READY` item remains unchecked.
+The real ForgeFlow policy acceptance is recorded on PR #28. A controlled regression at `7115c08`
+removed the Docker `--read-only` boundary and its matching assertion while deterministic CI still
+passed. The Official Reviewer raised high finding `f_e4e59426d8`; ForgeFlow entered `REPAIRING`,
+incremented to `repair_round=1`, and dispatched Luna xhigh on the same implementation thread. Repair
+`94ddd70` restored both lines with the exact policy operation trailer, passed the full 145-test gate
+and GitHub CI, and an exact-head re-review resolved the high finding. The policy then returned to
+`READY` with observed/CI/reviewed SHA all equal to `94ddd70` and zero blocking findings.
+
+The destructive host-cleanup items were also re-audited on GCP Dev: every legacy path named by the
+purge contract is absent, the old OpenHands container/image are absent, and the final loaded legacy
+AppArmor profile was unloaded and removed. Digital Biome PR #59 remains separate corroborating
+evidence for the underlying Open SWE review → repair → re-review behavior.

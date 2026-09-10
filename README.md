@@ -25,15 +25,18 @@ CI, and exact-head reviewer evidence before `READY`.
 
 ## Status
 
-ForgeFlow Policy V1 / v2.0.0 is implementation-complete and acceptance-backed. The release
-candidate is tracked in [PR #27](https://github.com/BakerSean168/forgeflow/pull/27), which remains
-open and unmerged; the published release and tag are intentionally still pending.
+ForgeFlow Policy V1 / v2.0.0 is implementation-complete and acceptance-backed. The v2.0.0
+release candidate is [PR #28](https://github.com/BakerSean168/forgeflow/pull/28), stacked on the
+underlying Policy V1 implementation [PR #27](https://github.com/BakerSean168/forgeflow/pull/27).
+Both remain unmerged; the published release and tag are intentionally still pending.
 
 The legacy Node/SQLite/OpenHands control plane is intentionally retired rather than migrated.
 
-Acceptance evidence includes deterministic policy tests, exact-head CI and reviewer gates, and the
-Digital Biome PR #59 review → repair → re-review cycle. PR #59 is separate repository evidence for
-the implementation/reviewer loop, not a ForgeFlow policy-graph `READY` run.
+The real ForgeFlow policy acceptance on PR #28 reached `READY` after a controlled read-only-rootfs
+regression at `7115c08` passed CI, the Official Reviewer raised a blocking high finding, and the
+same implementation thread performed Luna xhigh repair `94ddd70`. Exact-head CI and re-review then
+resolved the blocker with `repair_round=1`. Digital Biome PR #59 remains separate corroborating
+evidence for the underlying Open SWE review → repair → re-review loop.
 
 See:
 
