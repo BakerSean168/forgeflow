@@ -47,6 +47,8 @@ def test_container_template_has_required_isolation_flags() -> None:
         '"1000:1000"',
     ):
         assert expected in text
+    assert 'f"/tmp:rw,nosuid,nodev,noexec,size={config.tmpfs_size}"' in text
+    assert '"/home/sandbox:rw,nosuid,nodev,noexec,mode=1777,size=256m"' in text
     assert "/var/run/docker.sock" not in text
     assert ".codex" not in text
     assert "github-app.env" not in text
@@ -92,6 +94,21 @@ def test_graph_wrapper_registers_docker_without_forking_upstream_graphs() -> Non
         "openswe_ext.docker_sandbox",
         "create_docker_sandbox",
     )
+
+
+def test_sandbox_image_pins_uv_and_python_314_toolchain() -> None:
+    dockerfile = (
+        Path(__file__).resolve().parents[1] / "deploy/gcp-dev/Dockerfile.openswe-sandbox"
+    ).read_text(encoding="utf-8")
+    assert (
+        "FROM ghcr.io/astral-sh/uv@sha256:"
+        "cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded AS uv"
+        in dockerfile
+    )
+    assert "COPY --from=uv /uv /uvx /usr/local/bin/" in dockerfile
+    assert "UV_PYTHON_INSTALL_DIR=/opt/uv/python" in dockerfile
+    assert "uv python install 3.14.6" in dockerfile
+    assert "uv python find 3.14.6" in dockerfile
 
 
 def test_package_includes_runtime_extension_without_putting_it_under_policy_package() -> None:
@@ -186,6 +203,8 @@ def test_high_volume_package_caches_use_persistent_workspace_volume() -> None:
     assert "/workspace/.open-swe-cache/uv" in prelude
     assert "/workspace/.open-swe-cache/go-mod" in prelude
     assert "/workspace/.open-swe-runtime/last-used" in prelude
+    assert "TMPDIR=/workspace/.open-swe-runtime/tmp" in prelude
+    assert "XDG_RUNTIME_DIR=/tmp/.runtime" in prelude
     assert "/home/sandbox/.local" not in prelude
 
 
