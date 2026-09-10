@@ -52,6 +52,20 @@ def test_container_template_has_required_isolation_flags() -> None:
     assert "github-app.env" not in text
 
 
+def test_deepagents_artifacts_share_the_persistent_workspace_volume() -> None:
+    source = Path(__file__).resolve().parents[1] / "openswe_ext/docker_sandbox.py"
+    text = source.read_text(encoding="utf-8")
+    assert '.open-swe-artifacts/large_tool_results' in text
+    assert '.open-swe-artifacts/conversation_history' in text
+    assert 'dst=/large_tool_results' in text
+    assert 'dst=/conversation_history' in text
+    assert 'volume-subpath={_LARGE_TOOL_RESULTS_SUBPATH}' in text
+    assert 'volume-subpath={_CONVERSATION_HISTORY_SUBPATH}' in text
+    # Artifacts reuse the one provider-owned workspace volume so GC ownership
+    # and cleanup do not gain extra volume lifecycle state.
+    assert 'container_id}-artifacts' not in text
+
+
 def test_network_setup_blocks_metadata_private_and_tailscale_ranges() -> None:
     setup = (
         Path(__file__).resolve().parents[1] / "deploy/gcp-dev/ensure-docker-sandbox-network.sh"

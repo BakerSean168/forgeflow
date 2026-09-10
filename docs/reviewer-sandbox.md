@@ -36,6 +36,14 @@ under the thread-scoped workspace volume at `/workspace/.open-swe-cache`, so
 pnpm/npm/uv/Go/Cargo caches survive reconnects without filling the small HOME
 tmpfs.
 
+Deep Agents also expects writable virtual artifact roots at
+`/large_tool_results` and `/conversation_history`. The provider does not make
+the container root writable for them. Instead, subdirectories of the same
+thread-scoped workspace volume are mounted at those two paths with Docker
+`volume-subpath`. Capture-at-source output and evicted conversation history
+therefore survive container reconnect/restart and remain covered by the same
+single-volume GC ownership boundary.
+
 ## Network boundary
 
 `forgeflow-openswe-sandbox-network.service` owns the dedicated

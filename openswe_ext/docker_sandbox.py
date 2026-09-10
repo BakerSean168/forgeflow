@@ -28,6 +28,9 @@ _DEFAULT_TIMEOUT = 120
 _DEFAULT_MAX_OUTPUT = 100_000
 _RUNTIME_ROOT = "/workspace/.open-swe-runtime"
 _LAST_USED_PATH = f"{_RUNTIME_ROOT}/last-used"
+_ARTIFACT_ROOT = "/workspace/.open-swe-artifacts"
+_LARGE_TOOL_RESULTS_SUBPATH = ".open-swe-artifacts/large_tool_results"
+_CONVERSATION_HISTORY_SUBPATH = ".open-swe-artifacts/conversation_history"
 
 
 class DockerSandboxError(RuntimeError):
@@ -497,7 +500,17 @@ class DockerSandbox(BaseSandbox):
 
 def _prepare_workspace_volume(volume_name: str, image: str) -> None:
     _docker("volume", "create", "--label", f"{_LABEL}=true", volume_name)
-    # This helper runs only provider-controlled chown before any untrusted code.
+    # Deep Agents persists capture-at-source output and evicted conversation
+    # history at root-level virtual paths. Keep those paths writable without
+    # relaxing the read-only rootfs by mounting subdirectories of the existing
+    # thread-scoped workspace volume there. The directories must exist before
+    # Docker accepts volume-subpath mounts.
+    artifact_dirs = (
+        _ARTIFACT_ROOT,
+        f"{_ARTIFACT_ROOT}/large_tool_results",
+        f"{_ARTIFACT_ROOT}/conversation_history",
+    )
+    quoted_dirs = " ".join(shlex.quote(path) for path in artifact_dirs)
     _docker(
         "run",
         "--rm",
@@ -508,9 +521,10 @@ def _prepare_workspace_volume(volume_name: str, image: str) -> None:
         "--user",
         "0:0",
         image,
-        "chown",
-        "1000:1000",
-        "/workspace",
+        "bash",
+        "-lc",
+        f"mkdir -p -- {quoted_dirs} && "
+        f"chown 1000:1000 /workspace {quoted_dirs}",
         timeout=30,
     )
 
@@ -563,6 +577,16 @@ def create_docker_sandbox_sync(sandbox_id: str | None = None) -> DockerSandbox:
             "/home/sandbox:rw,nosuid,nodev,mode=1777,size=256m",
             "--mount",
             f"type=volume,src={volume_name},dst=/workspace",
+            "--mount",
+            (
+                f"type=volume,src={volume_name},dst=/large_tool_results,"
+                f"volume-subpath={_LARGE_TOOL_RESULTS_SUBPATH}"
+            ),
+            "--mount",
+            (
+                f"type=volume,src={volume_name},dst=/conversation_history,"
+                f"volume-subpath={_CONVERSATION_HISTORY_SUBPATH}"
+            ),
             "--workdir",
             "/workspace",
             "--user",
