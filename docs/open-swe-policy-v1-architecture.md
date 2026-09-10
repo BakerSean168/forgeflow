@@ -587,6 +587,12 @@ systemd timer
   +-- forgeflow-openswe-sandbox-gc.timer -> conservative idle sandbox cleanup
 ```
 
+LangGraph local-dev persistence is anchored at `$FORGEFLOW_POLICY_STATE_DIR/langgraph`. The active
+checkout exposes `.langgraph_api` only as a symlink to that stable directory, so changing the code
+worktree does not create a second thread/run/checkpoint/store universe. The installer stops the
+policy writer before migrating or relinking state and fails closed if two non-empty state trees
+diverge.
+
 The tested default is `SANDBOX_TYPE=docker`; model-controlled commands do not run via the upstream
 `local` backend on the host principal. The desktop-only Open SWE configuration is not the
 production acceptance path because the policy requires the official reviewer graph.

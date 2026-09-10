@@ -94,6 +94,24 @@ def test_installer_requires_systemd_user_linger() -> None:
     assert '[[ "$linger" == yes ]]' in installer
 
 
+
+def test_installer_binds_langgraph_state_before_restart_and_restarts_broker() -> None:
+    installer = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    start = (DEPLOY / "start-forgeflow-policy.sh").read_text(encoding="utf-8")
+    stop_at = installer.index("systemctl --user stop forgeflow-policy.service")
+    migrate_at = installer.index("migrate_langgraph_state.py")
+    restart_at = installer.index("systemctl --user restart forgeflow-policy.service")
+    assert stop_at < migrate_at < restart_at
+    assert 'WorkingDirectory --value' in installer
+    assert 'policy_was_active=false' in installer
+    assert 'if ! python3 "$root/deploy/gcp-dev/migrate_langgraph_state.py"' in installer
+    assert 'systemctl --user start forgeflow-policy.service || true' in installer
+    assert 'systemctl --user restart open-swe-codex-broker.service' in installer
+    assert 'enable --now open-swe-codex-broker.service' not in installer
+    assert 'langgraph_state_dir="$state_dir/langgraph"' in start
+    assert 'readlink -f "$langgraph_root_link"' in start
+
+
 def test_purge_verifies_authenticated_replacement_before_destructive_deletion() -> None:
     purge = (DEPLOY / "purge-legacy.sh").read_text(encoding="utf-8")
     preflight = purge.index("replacement_preflight")
@@ -135,3 +153,75 @@ def test_docker_sandbox_gc_is_hourly_bounded_and_not_part_of_policy_runtime() ->
     assert "python -m openswe_ext.docker_gc" in service
     assert "OnUnitActiveSec=1h" in timer
     assert "Persistent=true" in timer
+
+
+def _run_state_migration(tmp_path: Path, *, previous: bool = False):
+    import subprocess
+    import sys
+
+    root = tmp_path / "new-root"
+    root.mkdir()
+    state = tmp_path / "state"
+    args = [
+        sys.executable,
+        str(DEPLOY / "migrate_langgraph_state.py"),
+        "--root",
+        str(root),
+        "--state-dir",
+        str(state),
+    ]
+    old = None
+    if previous:
+        old = tmp_path / "old-root"
+        old.mkdir()
+        args.extend(["--previous-root", str(old)])
+    return root, old, state, args, subprocess
+
+
+def test_langgraph_state_migration_creates_stable_link_for_fresh_install(tmp_path: Path) -> None:
+    root, _old, state, args, subprocess = _run_state_migration(tmp_path)
+    result = subprocess.run(args, text=True, capture_output=True, check=True)
+    stable = state / "langgraph"
+    assert stable.is_dir()
+    assert (root / ".langgraph_api").is_symlink()
+    assert (root / ".langgraph_api").resolve() == stable
+    assert f"langgraph_state_dir={stable}" in result.stdout
+
+
+def test_langgraph_state_migration_preserves_previous_worktree_state(tmp_path: Path) -> None:
+    root, old, state, args, subprocess = _run_state_migration(tmp_path, previous=True)
+    assert old is not None
+    local = old / ".langgraph_api"
+    local.mkdir()
+    (local / ".langgraph_ops.pckl").write_bytes(b"authoritative-state")
+    subprocess.run(args, text=True, capture_output=True, check=True)
+    stable = state / "langgraph"
+    assert (stable / ".langgraph_ops.pckl").read_bytes() == b"authoritative-state"
+    assert local.is_symlink() and local.resolve() == stable
+    assert (root / ".langgraph_api").is_symlink()
+    assert (root / ".langgraph_api").resolve() == stable
+
+
+def test_langgraph_state_migration_is_idempotent_with_existing_stable_link(tmp_path: Path) -> None:
+    root, _old, state, args, subprocess = _run_state_migration(tmp_path)
+    subprocess.run(args, text=True, capture_output=True, check=True)
+    stable = state / "langgraph"
+    (stable / "checkpoint").write_text("keep", encoding="utf-8")
+    subprocess.run(args, text=True, capture_output=True, check=True)
+    assert (stable / "checkpoint").read_text(encoding="utf-8") == "keep"
+    assert (root / ".langgraph_api").resolve() == stable
+
+
+def test_langgraph_state_migration_rejects_divergent_state(tmp_path: Path) -> None:
+    root, _old, state, args, subprocess = _run_state_migration(tmp_path)
+    stable = state / "langgraph"
+    stable.mkdir(parents=True)
+    (stable / "state").write_text("stable", encoding="utf-8")
+    local = root / ".langgraph_api"
+    local.mkdir()
+    (local / "state").write_text("different", encoding="utf-8")
+    result = subprocess.run(args, text=True, capture_output=True, check=False)
+    assert result.returncode != 0
+    assert "conflicts with worktree-local state" in result.stderr
+    assert not local.is_symlink()
+    assert (local / "state").read_text(encoding="utf-8") == "different"
