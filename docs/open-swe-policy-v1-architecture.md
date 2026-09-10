@@ -54,7 +54,7 @@ It owns only one question:
 
 > Given an engineering objective handled by Open SWE, is there enough independent, exact-revision evidence to declare the work ready, or must it be repaired/retried/escalated?
 
-The new ownership boundary is:
+The current ownership boundary is:
 
 ```text
 User / Hermes
@@ -173,8 +173,8 @@ ForgeFlow Policy V1 does not implement:
 - custom event store;
 - custom Supervisor model;
 - custom release/self-promotion engine;
-- autonomous self-improvement in the first release;
-- automatic merge in the first release;
+- autonomous self-improvement in v2.0.0;
+- automatic merge in v2.0.0;
 - compatibility adapters for old ForgeFlow state.
 
 If implementation begins recreating any of these, the architecture has drifted and must stop for review.
@@ -362,7 +362,7 @@ Default V1 role policy:
 
 ForgeFlow sets Open SWE's existing per-run configurable model fields. It does not add another provider client or model router.
 
-Fallback should use Open SWE's existing model-fallback middleware. The current deployment keeps fallback inside the available OpenAI/Codex path rather than silently requiring Anthropic credentials.
+Fallback uses Open SWE's existing model-fallback middleware. The current deployment keeps fallback inside the available OpenAI/Codex path rather than silently requiring Anthropic credentials.
 
 ## 11. Evidence-owned completion
 
@@ -618,7 +618,7 @@ Static architecture checks forbid:
 - direct modification of Open SWE reviewer findings metadata outside the upstream reviewer APIs;
 - a second FastAPI/Fastify control plane unless explicitly approved later.
 
-A rough size budget should also be tracked. Policy production code should stay in the low-thousands of lines; crossing that is an architectural review trigger, not a target.
+Policy production code is expected to stay in the low-thousands of lines; crossing that range is an architectural-review trigger rather than a growth target.
 
 ## 22. Release/version semantics
 

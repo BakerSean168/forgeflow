@@ -12,7 +12,7 @@ Node/SQLite/OpenHands/Antigravity execution plane was retired during the v2 rebu
 `OpenHands` references are migration history, guarded legacy-purge code, or tests that prevent the
 old runtime from returning.
 
-The target lifecycle is:
+The current lifecycle is:
 
 ```text
 Objective
