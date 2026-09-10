@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 root="${FORGEFLOW_POLICY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 config_dir="${FORGEFLOW_POLICY_CONFIG_DIR:-$HOME/.config/forgeflow-policy}"
@@ -12,6 +12,11 @@ projects_source="${FORGEFLOW_POLICY_PROJECTS_SOURCE:-}"
 for tool in git openssl systemctl curl python3 docker sudo; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }
 done
+previous_root="$(systemctl --user show forgeflow-policy.service -p WorkingDirectory --value 2>/dev/null || true)"
+policy_was_active=false
+if systemctl --user is-active --quiet forgeflow-policy.service; then
+  policy_was_active=true
+fi
 [[ -x "$HOME/.local/bin/uv" ]] || { echo "uv is required at $HOME/.local/bin/uv" >&2; exit 2; }
 [[ -r "$HOME/.codex/auth.json" ]] || { echo "Codex auth is required at ~/.codex/auth.json" >&2; exit 2; }
 linger="$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)"
@@ -51,6 +56,42 @@ cd "$root"
 "$HOME/.local/bin/uv" run ruff check forgeflow openswe_ext tests
 "$root/deploy/gcp-dev/setup-docker-sandbox.sh"
 
+# LangGraph local-dev persists to .langgraph_api relative to its working directory.
+# Stop the writer before migrating/linking that state so changing code roots does
+# not create a second checkpoint universe. Any failure until the replacement
+# policy process is started again restores a previously-active service.
+policy_restore_pending=false
+restore_policy_on_error() {
+  local status=$?
+  trap - ERR
+  if [[ "$policy_restore_pending" == true && "$policy_was_active" == true ]]; then
+    systemctl --user start forgeflow-policy.service || true
+  fi
+  exit "$status"
+}
+trap restore_policy_on_error ERR
+if [[ "$policy_was_active" == true ]]; then
+  policy_restore_pending=true
+  systemctl --user stop forgeflow-policy.service
+  if systemctl --user is-active --quiet forgeflow-policy.service; then
+    echo "forgeflow-policy.service is still active; refusing LangGraph state migration" >&2
+    systemctl --user start forgeflow-policy.service || true
+    policy_restore_pending=false
+    trap - ERR
+    exit 1
+  fi
+fi
+migration_args=(--root "$root" --state-dir "$state_dir")
+if [[ -n "$previous_root" && -d "$previous_root" ]]; then
+  migration_args+=(--previous-root "$previous_root")
+fi
+if ! python3 "$root/deploy/gcp-dev/migrate_langgraph_state.py" "${migration_args[@]}"; then
+  if [[ "$policy_was_active" == true ]]; then
+    systemctl --user start forgeflow-policy.service || true
+  fi
+  exit 1
+fi
+
 render_unit() {
   local source="$1" target="$2"
   sed \
@@ -69,10 +110,13 @@ render_unit "$root/deploy/gcp-dev/forgeflow-openswe-sandbox-gc.service.in" "$uni
 render_unit "$root/deploy/gcp-dev/forgeflow-openswe-sandbox-gc.timer.in" "$unit_dir/forgeflow-openswe-sandbox-gc.timer"
 
 systemctl --user daemon-reload
-systemctl --user enable --now open-swe-codex-broker.service
+systemctl --user enable open-swe-codex-broker.service
+systemctl --user restart open-swe-codex-broker.service
 systemctl --user enable --now forgeflow-openswe-sandbox-gc.timer
 systemctl --user enable forgeflow-policy.service
 systemctl --user restart forgeflow-policy.service
+policy_restore_pending=false
+trap - ERR
 
 auth="$(<"$config_dir/local-auth.secret")"
 ready=false

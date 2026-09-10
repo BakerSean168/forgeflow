@@ -11,10 +11,18 @@ auth_file="$config_dir/local-auth.secret"
 broker_secret="$state_dir/codex-broker.secret"
 projects_file="$config_dir/projects.json"
 github_env="$config_dir/github-app.env"
+langgraph_state_dir="$state_dir/langgraph"
+langgraph_root_link="$root/.langgraph_api"
 
 for required in "$auth_file" "$broker_secret" "$projects_file"; do
   [[ -r "$required" ]] || { echo "missing required ForgeFlow Policy file: $required" >&2; exit 2; }
 done
+expected_langgraph_state="$(readlink -f "$langgraph_state_dir" 2>/dev/null || true)"
+resolved_langgraph_state="$(readlink -f "$langgraph_root_link" 2>/dev/null || true)"
+[[ -n "$expected_langgraph_state" && -d "$expected_langgraph_state" && "$resolved_langgraph_state" == "$expected_langgraph_state" ]] || {
+  echo "LangGraph state link must resolve to $expected_langgraph_state" >&2
+  exit 2
+}
 
 export OPEN_SWE_LOCAL_AUTH_TOKEN="$(<"$auth_file")"
 export OPEN_SWE_LOCAL_PROJECTS_FILE="$projects_file"
