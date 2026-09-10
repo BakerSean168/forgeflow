@@ -143,11 +143,7 @@ sudo -n rm -f "${legacy_libexec[@]}"
 
 apparmor_profile=/etc/apparmor.d/forgeflow-openhands-codex
 if [[ -f "$apparmor_profile" ]]; then
-  if grep -q '^forgeflow-openhands-codex ' /sys/kernel/security/apparmor/profiles 2>/dev/null; then
-    command -v apparmor_parser >/dev/null || {
-      echo 'apparmor_parser is required to unload the legacy ForgeFlow profile' >&2
-      exit 1
-    }
+  if sudo -n grep -q '^forgeflow-openhands-codex ' /sys/kernel/security/apparmor/profiles 2>/dev/null; then
     sudo -n apparmor_parser -R "$apparmor_profile"
   fi
   sudo -n rm -f "$apparmor_profile"

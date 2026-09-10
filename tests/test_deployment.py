@@ -119,6 +119,9 @@ def test_purge_uses_exact_legacy_file_list_and_removes_apparmor_but_preserves_li
     ):
         assert name in purge
     assert "/etc/apparmor.d/forgeflow-openhands-codex" in purge
+    assert "sudo -n grep -q '^forgeflow-openhands-codex '" in purge
+    assert 'sudo -n apparmor_parser -R "$apparmor_profile"' in purge
+    assert "command -v apparmor_parser" not in purge
     assert "/etc/forgeflow/openhands-literal-worktrees.override.yml" in purge
     assert "litellm.env" in purge and "preserved" in purge
 
