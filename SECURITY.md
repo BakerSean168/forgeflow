@@ -12,6 +12,8 @@ Security-sensitive invariants:
 - do not expose an unauthenticated LangGraph API to public networks;
 - use the upstream Open SWE GitHub authentication path rather than implementing a second token
   store;
+- keep model-controlled execution inside the self-hosted Open SWE Docker sandbox boundary; never
+  reintroduce the retired OpenHands/Antigravity execution plane;
 - bounded retries must escalate rather than loop forever.
 
 Report suspected vulnerabilities privately to the repository owner rather than opening a public

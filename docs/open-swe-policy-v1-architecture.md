@@ -1,9 +1,40 @@
 # ForgeFlow Policy V1 — Open SWE Quality Governance Architecture
 
+> **Status: implemented current architecture for the v2.0.0 release candidate.**
+> ForgeFlow is a thin deterministic quality-policy layer on pinned Open SWE/LangGraph. It is not a
+> standalone coding-agent runtime. The previous Node/SQLite/OpenHands/Antigravity runtime has been
+> removed from the repository and GCP Dev deployment.
 
-## Authoritative destructive cutover order
+## Current system at a glance
 
-This section is the authoritative cutover contract and overrides any earlier shorthand that could be read as deleting the legacy runtime first. ForgeFlow Policy V1 has **no migration compatibility path**, but destructive deletion still occurs only after the replacement proves it is healthy.
+```text
+Hermes / operator
+      |
+      v
+ForgeFlow policy graph -------------------- deterministic quality decisions
+      |
+      +----> GitHub ------------------------ authoritative PR head + CI
+      |
+      +----> Open SWE agent ---------------- implementation / same-thread repair
+      |          |
+      |          +--> Deep Agents / tools
+      |          +--> openswe_ext Docker sandbox provider
+      |
+      +----> Open SWE official reviewer ---- independent exact-head review
+      |
+      +----> LangGraph --------------------- thread/run/checkpoint + cron/replay
+```
+
+Current GCP Dev runtime components are `forgeflow-policy.service`,
+`open-swe-codex-broker.service`, the Open SWE Docker sandbox network helper, and the hourly sandbox
+GC timer. **There is no OpenHands Agent Server, OpenHands container, Antigravity worker, Node
+control plane, or ForgeFlow SQLite workflow database in the current runtime.**
+
+## Historical destructive cutover contract
+
+The following sequence is retained as the v2 migration record. It is not a list of currently
+running components. The cutover is complete and the legacy resources named here were removed only
+after replacement health was proven.
 
 1. Build and validate the exact candidate checkout.
 2. Install/start `open-swe-codex-broker.service` and `forgeflow-policy.service` side-by-side with the legacy runtime.
@@ -12,11 +43,8 @@ This section is the authoritative cutover contract and overrides any earlier sho
 5. Only after quiescence proof, remove legacy container/image, `/var/lib/forgeflow`, old unit/drop-in files, exact known libexec helpers, the legacy AppArmor profile, and the old OpenHands literal-worktree override. Preserve independently owned `/etc/forgeflow/litellm.env`.
 6. Re-run replacement health after cleanup. There is no legacy database/schema migration or compatibility adapter.
 
-The implementation of this contract lives in `deploy/gcp-dev/purge-legacy.sh`; the script refuses destructive work unless the replacement preflight passes.
-
-> Status: proposed north-star architecture for the destructive ForgeFlow rebuild.
-> Decision: ForgeFlow no longer owns an autonomous coding runtime. ForgeFlow becomes a thin, deterministic software-engineering quality policy layered on Open SWE.
-> Compatibility: intentionally none with the current Node/SQLite control plane, HTTP API, database schema, execution/worktree state, provider registry, or deployment units.
+The repeatable cleanup guard remains in `deploy/gcp-dev/purge-legacy.sh` so a stale legacy resource
+cannot silently reappear.
 
 ## 1. Executive decision
 
@@ -50,7 +78,7 @@ ForgeFlow does **not** duplicate any of those owners.
 
 ## 2. Evidence for the reset
 
-The existing ForgeFlow implementation currently owns the entire lifecycle itself:
+The pre-v2 ForgeFlow implementation owned the entire lifecycle itself:
 
 - ~37.6k lines under `src/`;
 - ~25.0k lines under `test/`;
@@ -61,7 +89,7 @@ The existing ForgeFlow implementation currently owns the entire lifecycle itself
 - a custom SQLite schema for plans, graph versions, executions, reviews, supervisor state, leases, resource state, runtime admission, project queues, worktrees, delivery, maintenance, and release evidence;
 - custom OpenHands, Antigravity, worktree ACL/provenance, resource routing, recovery, release and self-promotion infrastructure.
 
-The deployed old runtime currently also owns ~3.0 GB under `/var/lib/forgeflow`, including ~2.5 GB of old OpenHands/tooling state and hundreds of MB of historical SQLite backups.
+At migration planning time, the deployed legacy runtime also owned ~3.0 GB under `/var/lib/forgeflow`, including ~2.5 GB of OpenHands/tooling state and hundreds of MB of SQLite backups. That state has since been removed from GCP Dev.
 
 That architecture was rational when ForgeFlow had to supply its own durable software-engineering runtime. It is now redundant with Open SWE + Deep Agents + LangGraph.
 
@@ -130,10 +158,10 @@ The bakeoff also established the policy requirement ForgeFlow must retain: **a r
 
 ## 4. Non-goals
 
-ForgeFlow Policy V1 will not implement:
+ForgeFlow Policy V1 does not implement:
 
 - its own SQLite/PostgreSQL workflow database;
-- schema migrations from the current ForgeFlow DB;
+- schema migrations from the retired ForgeFlow DB;
 - old `/api/v1/*` compatibility;
 - old generated `@forgeflow/client` compatibility;
 - custom Plan/WorkItem/Execution/Review entities mirroring Open SWE;
@@ -163,17 +191,18 @@ Conceptual dependency:
 open-swe-agent = { git = "https://github.com/langchain-ai/open-swe.git", rev = "<PINNED_SHA>" }
 ```
 
-ForgeFlow's `langgraph.json` exposes both upstream graphs and the policy graph:
+The current `langgraph.json` exposes Open SWE through the narrow `openswe_ext.graphs` wrapper so
+self-hosted compatibility hooks are installed before upstream graph construction:
 
 ```json
 {
   "graphs": {
-    "agent": "agent.graphs.agent:traced_agent",
-    "reviewer": "agent.graphs.reviewer:traced_reviewer_agent",
-    "analyzer": "agent.graphs.analyzer:traced_analyzer",
-    "chat": "agent.graphs.chat:traced_chat_agent",
-    "scheduler": "agent.graphs.scheduler:get_scheduler",
-    "forgeflow": "forgeflow.graph:get_policy_graph"
+    "agent": "openswe_ext.graphs:agent_graph",
+    "reviewer": "openswe_ext.graphs:reviewer_graph",
+    "analyzer": "openswe_ext.graphs:analyzer_graph",
+    "chat": "openswe_ext.graphs:chat_graph",
+    "scheduler": "openswe_ext.graphs:scheduler_graph",
+    "forgeflow": "forgeflow.graph:get_forgeflow_graph"
   },
   "http": {
     "app": "agent.webapp:app"
@@ -181,7 +210,10 @@ ForgeFlow's `langgraph.json` exposes both upstream graphs and the policy graph:
 }
 ```
 
-This keeps upstream Open SWE code unmodified by default. A ForgeFlow change should live under `forgeflow/`, not under `agent/`.
+`openswe_ext.graphs` then delegates to the pinned upstream Open SWE graphs. This keeps upstream
+source unmodified while making the self-hosted Docker provider and workflow-push guard explicit.
+Policy logic belongs under `forgeflow/`; narrowly scoped runtime compatibility code belongs under
+`openswe_ext/`. ForgeFlow does not vendor or edit an `agent/` package.
 
 ### Why not an external controller service?
 
@@ -205,7 +237,7 @@ Rules:
 2. Record the SHA in `README.md` and `docs/upstream.md`.
 3. Every upstream bump is a separate PR.
 4. Every bump must pass ForgeFlow's upstream-conformance suite before product tests.
-5. The initial rebuild will freeze the Open SWE revision selected at implementation start, then run the real Thin-Policy acceptance scenario before promotion.
+5. The v2 rebuild pinned `0ff86e22a94cc84e32883fcb1beee568560d4140` and completed the real Thin-Policy acceptance scenario before release-candidate promotion.
 
 There is no compatibility promise across arbitrary Open SWE revisions.
 
@@ -213,7 +245,7 @@ There is no compatibility promise across arbitrary Open SWE revisions.
 
 ForgeFlow state is intentionally a **reference ledger**, not a second execution database.
 
-Proposed shape:
+Implemented shape (abridged from `forgeflow/state.py`):
 
 ```python
 class ForgeFlowState(TypedDict, total=False):
@@ -238,9 +270,11 @@ class ForgeFlowState(TypedDict, total=False):
     reviewer_run_id: str
     reviewed_head_sha: str
 
-    # bounded policy counters
+    # bounded policy counters / scheduling
     run_retry_count: int
+    reviewer_retry_count: int
     repair_round: int
+    reconcile_cron_id: str | None
 
     # summarized policy evidence only
     blocking_finding_ids: list[str]
@@ -275,7 +309,7 @@ VERIFYING
  |  require PR + exact head evidence
  v
 WAITING_FOR_CI
- |  exact head checks terminal + accepted
+ |  exact-head required checks accepted
  v
 REVIEWING
  |  official Open SWE reviewer on exact head
@@ -287,12 +321,15 @@ REVIEWING
 v                             v
 REPAIRING                    READY
  |                             |
- | same implementation thread |
- | exact findings + exact SHA  |
- +------------> VERIFYING <----+
+ | same implementation thread | monitor authoritative PR head
+ | repair -> new head          | head drift
+ +------> WAITING_FOR_CI <------+
 ```
 
-Any new push invalidates prior CI and review evidence because the head SHA changed.
+Any new push invalidates prior CI and review evidence because the head SHA changed. `READY` is a
+**monitored ready state**, not a terminal state: its reconcile cron stays live so external head
+drift can return the objective to `WAITING_FOR_CI`. Only `ESCALATED` and `CANCELLED` are terminal
+and remove the cron.
 
 ## 9. Reconcile model
 
@@ -308,7 +345,7 @@ Each policy run:
 6. persists the new policy state;
 7. exits.
 
-An active policy thread is re-invoked by a LangGraph cron/wakeup until terminal.
+A non-terminal policy thread is re-invoked by a LangGraph cron/wakeup. This includes `READY`, which remains monitored for PR head drift. `ESCALATED` and `CANCELLED` are the only terminal statuses and remove the reconcile cron.
 
 This keeps crash recovery simple: the next reconciliation re-observes authoritative external state before taking another action.
 
@@ -325,7 +362,7 @@ Default V1 role policy:
 
 ForgeFlow sets Open SWE's existing per-run configurable model fields. It does not add another provider client or model router.
 
-Fallback should use Open SWE's existing model-fallback middleware. For the initial deployment, the environment fallback must stay inside the available OpenAI/Codex path rather than silently requiring Anthropic credentials.
+Fallback should use Open SWE's existing model-fallback middleware. The current deployment keeps fallback inside the available OpenAI/Codex path rather than silently requiring Anthropic credentials.
 
 ## 11. Evidence-owned completion
 
@@ -368,7 +405,7 @@ Rules:
 6. Repository policy may explicitly declare `ci_required=false` for repositories with no CI.
 7. Optional required-check names may narrow the gate; otherwise the policy uses the repository's observed required check set / branch-protection-compatible interpretation.
 
-V1 should reuse Open SWE/GitHub helpers where possible and must not create a second GitHub authentication stack.
+V1 reuses Open SWE/GitHub helpers and does not create a second GitHub authentication stack.
 
 ## 13. Review gate
 
@@ -468,91 +505,99 @@ Because compatibility is intentionally broken, only these contracts survive the 
 3. **Quality philosophy:** model claims never outrank deterministic evidence.
 4. **Independent review:** implementation and acceptance remain distinct roles.
 5. **Exact-revision acceptance:** CI and review must apply to the exact current head.
-6. **Bounded autonomy:** retries/repairs terminate in `READY`, `ESCALATED`, or `CANCELLED`.
+6. **Bounded autonomy:** retries/repairs settle into monitored `READY` or terminal `ESCALATED`/`CANCELLED`; budgets prevent unbounded loops.
 7. **No secret persistence in repo/policy state.**
 
 Explicitly retired contracts:
 
-- current SQLite schema and all stored rows;
-- current `/api/v1/*` routes;
-- current OpenAPI file and generated TypeScript client;
-- current Plan/Execution/Review/Supervisor IDs;
-- current worktree/resource/provider/release APIs;
-- current deployment ports and systemd topology;
-- current database backup compatibility.
+- retired SQLite schema and all stored rows;
+- retired `/api/v1/*` routes;
+- retired OpenAPI file and generated TypeScript client;
+- retired Plan/Execution/Review/Supervisor IDs;
+- retired worktree/resource/provider/release APIs;
+- retired deployment ports and systemd topology;
+- retired database backup compatibility.
 
-## 18. Target repository layout
+## 18. Current repository layout
 
 ```text
 forgeflow/
-  forgeflow/
-    __init__.py
-    graph.py                 # LangGraph policy graph
-    state.py                 # minimal typed checkpoint state
-    policy.py                # deterministic transition/gate rules
-    models.py                # role/model defaults only
-    evidence.py              # normalized evidence decisions
-    adapters/
-      openswe.py             # narrow Open SWE thread/run/reviewer adapter
-      github.py              # thin wrapper around upstream GitHub evidence helpers
-    prompts/
-      repair.py              # bounded repair prompt builder
+  graph.py / state.py / policy.py / reconcile.py
+  evidence.py / models.py / projects.py / preflight.py / deployment.py
+  adapters/
+    openswe.py
+    github.py
+  prompts/
+    implementation.py
+    repair.py
 
-  tests/
-    test_policy.py
-    test_evidence.py
-    test_false_success.py
-    test_ci_gate.py
-    test_review_gate.py
-    test_repair_loop.py
-    test_upstream_contract.py
+openswe_ext/
+  graphs.py                  # narrow wrappers around pinned upstream graphs
+  docker_sandbox.py          # self-hosted SandboxBackendProtocol provider
+  docker_gc.py               # provider-owned idle sandbox GC
+  github_auth.py             # short-lived installation-token bridge
+  workflow_push_guard.py     # pinned-upstream compatibility guard
 
-  docs/
-    architecture.md
-    deployment.md
-    upstream.md
-    development.md
+deploy/gcp-dev/
+  start-forgeflow-policy.sh
+  forgeflow-policy.service.in
+  open-swe-codex-broker.service.in
+  setup-docker-sandbox.sh
+  forgeflow-openswe-sandbox-network.service.in
+  forgeflow-openswe-sandbox-gc.{service,timer}.in
+  run_policy_acceptance.py
+  purge-legacy.sh            # historical cleanup guard, not an execution plane
 
-  langgraph.json
-  pyproject.toml
-  uv.lock
-  .env.example
-  README.md
-  LICENSE
-  CREDITS.md
-  THIRD_PARTY_NOTICES.md
+docs/
+tests/
+langgraph.json
+pyproject.toml
+uv.lock
+UPSTREAM_OPEN_SWE_SHA
 ```
 
-No `src/core/persistence`, `reconcilers`, provider registry, generated client, or custom worktree runtime survives.
+No `src/`, legacy TypeScript control plane, generated client, custom worktree runtime, OpenHands
+Agent Server integration, Antigravity execution adapter, or ForgeFlow workflow database survives.
 
 ## 19. Deployment shape
 
-ForgeFlow Policy V1 runs as one Open SWE/LangGraph deployment:
+GCP Dev runs one loopback-only LangGraph/Open SWE/ForgeFlow control service and isolated per-thread
+Docker execution sandboxes:
 
 ```text
-systemd / container
-      |
-      v
-LangGraph API Server
-  +-- agent          (Open SWE)
-  +-- reviewer       (Open SWE)
-  +-- analyzer       (Open SWE)
-  +-- chat           (Open SWE)
-  +-- scheduler      (Open SWE)
-  +-- forgeflow      (thin policy)
-  |
-  +-- agent.webapp   (Open SWE GitHub/webhook/dashboard API)
+systemd --user
+  +-- open-swe-codex-broker.service
+  +-- forgeflow-policy.service
+        |
+        v
+      LangGraph API Server (127.0.0.1)
+        +-- agent       -> openswe_ext wrapper -> Open SWE agent
+        +-- reviewer    -> openswe_ext wrapper -> Open SWE official reviewer
+        +-- analyzer    -> Open SWE
+        +-- chat        -> Open SWE
+        +-- scheduler   -> Open SWE
+        +-- forgeflow   -> ForgeFlow policy graph
+        +-- agent.webapp -> Open SWE GitHub/webhook/dashboard API
+
+Docker
+  +-- openswe-sandbox bridge with private/link-local/Tailscale egress blocks
+  +-- one persistent sandbox + workspace volume per Open SWE sandbox id
+
+systemd timer
+  +-- forgeflow-openswe-sandbox-gc.timer -> conservative idle sandbox cleanup
 ```
 
-The desktop-only configuration is not the production acceptance target because it exposes only the `agent` graph. ForgeFlow acceptance must use the full `langgraph.json` path where the official reviewer exists.
+The tested default is `SANDBOX_TYPE=docker`; model-controlled commands do not run via the upstream
+`local` backend on the host principal. The desktop-only Open SWE configuration is not the
+production acceptance path because the policy requires the official reviewer graph.
 
 ## 20. Upstream-change containment
 
-Because ForgeFlow will consume some Open SWE internal Python contracts, all such imports must be isolated behind `forgeflow/adapters/openswe.py`.
+ForgeFlow has two bounded upstream-facing surfaces: policy orchestration imports are isolated behind `forgeflow/adapters/openswe.py`, while self-hosted runtime hooks live under `openswe_ext/`. Both are covered by upstream-contract/characterization tests.
 
 Rules:
 
-- no scattered `from agent...` imports throughout policy logic;
+- no scattered `from agent...` imports throughout policy logic; upstream runtime imports belong only in the bounded adapter/extension surfaces;
 - adapter tests assert the expected upstream signatures/metadata shape;
 - an upstream bump that breaks the adapter fails before policy tests;
 - policy types never subclass large upstream runtime classes;
@@ -564,7 +609,7 @@ This makes an upstream upgrade a bounded adapter change instead of a repository-
 
 CI must fail if ForgeFlow reintroduces forbidden ownership.
 
-Add static architecture checks forbidding:
+Static architecture checks forbid:
 
 - `sqlite3`, `node:sqlite`, SQL schema files;
 - custom Git worktree creation commands inside ForgeFlow package;
@@ -579,11 +624,11 @@ A rough size budget should also be tracked. Policy production code should stay i
 
 The architectural generation is called **ForgeFlow Policy V1**.
 
-Because the public repository already has incompatible `v1.x` releases, the first release of the rebuilt implementation should use the next major SemVer (`v2.0.0`) rather than reusing an existing tag. This communicates the intentional compatibility break while keeping the product architecture name simple.
+The rebuilt package is versioned `2.0.0` because the public repository already has incompatible `v1.x` releases. The v2.0.0 release candidate communicates the intentional compatibility break while keeping the architecture name simple.
 
 ## 23. Acceptance definition
 
-ForgeFlow Policy V1 is complete only after a real repository scenario proves:
+The v2 acceptance gate is defined by the following real-repository path, and PR #28 has completed it:
 
 ```text
 objective
@@ -609,4 +654,4 @@ child run reports success
 => retry or escalate
 ```
 
-That is the minimum credible proof that ForgeFlow still adds value on top of Open SWE.
+That path was completed with a controlled blocking finding and same-thread repair on PR #28. Subsequent candidate-only changes continue to pass the same exact-head CI/reviewer gate before `READY`.

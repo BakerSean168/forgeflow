@@ -1,7 +1,7 @@
-# Self-hosted Open SWE sandbox
+# Self-hosted Open SWE Docker sandbox
 
-ForgeFlow Policy V1 keeps both the control plane and the default execution
-plane on GCP Dev. Model-controlled commands never run through Open SWE's
+ForgeFlow Policy V1 keeps both the control plane and the default Open SWE execution
+sandbox plane on GCP Dev. This is the current v2 path; it does not use OpenHands. Model-controlled commands never run through Open SWE's
 `SANDBOX_TYPE=local` backend because that shares the service Unix principal and
 host filesystem. The default is the thin Open SWE runtime extension
 `SANDBOX_TYPE=docker`.

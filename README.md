@@ -3,10 +3,14 @@
 > **A thin software-engineering quality policy for Open SWE.**
 
 ForgeFlow Policy V1 does **not** implement its own autonomous coding runtime. Open SWE and
-LangGraph own agent execution, reviewer execution, sandboxes, durable threads/runs, scheduling,
-Git operations, pull requests, and reviewer findings. ForgeFlow owns only the deterministic
-quality policy that decides whether observed evidence is sufficient to continue, repair, escalate,
-or declare a revision ready.
+LangGraph own agent execution, reviewer execution, durable threads/runs, scheduling, Git/PR
+behavior, and reviewer findings. ForgeFlow adds a small deterministic policy layer plus narrow
+self-hosted Open SWE compatibility extensions for Docker sandboxing and GitHub credentials.
+
+**OpenHands is not part of the current ForgeFlow runtime.** The previous
+Node/SQLite/OpenHands/Antigravity execution plane was retired during the v2 rebuild. Remaining
+`OpenHands` references are migration history, guarded legacy-purge code, or tests that prevent the
+old runtime from returning.
 
 The target lifecycle is:
 
@@ -30,7 +34,9 @@ release candidate is [PR #28](https://github.com/BakerSean168/forgeflow/pull/28)
 underlying Policy V1 implementation [PR #27](https://github.com/BakerSean168/forgeflow/pull/27).
 Both remain unmerged; the published release and tag are intentionally still pending.
 
-The legacy Node/SQLite/OpenHands control plane is intentionally retired rather than migrated.
+The legacy Node/SQLite/OpenHands/Antigravity control plane was removed rather than migrated.
+The current GCP Dev deployment is Python 3.14 + LangGraph + pinned Open SWE, with per-thread Docker
+sandboxes supplied through `openswe_ext`.
 
 The real ForgeFlow policy acceptance on PR #28 reached `READY` after a controlled read-only-rootfs
 regression at `7115c08` passed CI, the Official Reviewer raised a blocking high finding, and the
@@ -38,11 +44,17 @@ same implementation thread performed Luna xhigh repair `94ddd70`. Exact-head CI 
 resolved the blocker with `repair_round=1`. Digital Biome PR #59 remains separate corroborating
 evidence for the underlying Open SWE review → repair → re-review loop.
 
-See:
+## Documentation
 
-- [`docs/open-swe-policy-v1-architecture.md`](./docs/open-swe-policy-v1-architecture.md)
-- [`docs/open-swe-policy-v1-refactor-plan.md`](./docs/open-swe-policy-v1-refactor-plan.md)
-- [`docs/upstream.md`](./docs/upstream.md)
+- [`docs/README.md`](./docs/README.md) — documentation map and current-vs-historical boundary.
+- [`docs/open-swe-policy-v1-architecture.md`](./docs/open-swe-policy-v1-architecture.md) — current
+  architecture, ownership, state machine, and deployment shape.
+- [`docs/reviewer-sandbox.md`](./docs/reviewer-sandbox.md) — current self-hosted Docker sandbox
+  isolation and lifecycle.
+- [`docs/github-app.md`](./docs/github-app.md) — current GitHub App and required-check setup.
+- [`docs/upstream.md`](./docs/upstream.md) — pinned Open SWE contract and upgrade procedure.
+- [`docs/open-swe-policy-v1-refactor-plan.md`](./docs/open-swe-policy-v1-refactor-plan.md) — completed
+  v2 migration/acceptance record; retained as history, not as the current architecture guide.
 
 ## Development
 
