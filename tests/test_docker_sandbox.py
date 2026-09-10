@@ -32,6 +32,56 @@ def test_transfer_paths_never_escape_container_workspace() -> None:
         raise AssertionError("parent traversal was accepted")
 
 
+def test_cached_backend_reports_deleted_container_as_sandbox_gone(tmp_path, monkeypatch) -> None:
+    import subprocess
+
+    from agent.sandboxes.providers.registry import SandboxGoneError
+
+    from openswe_ext import docker_sandbox
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+
+    def missing_container(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            ["docker"],
+            1,
+            stdout=b"",
+            stderr=b"Error response from daemon: No such container: openswe-sbx-gone",
+        )
+
+    monkeypatch.setattr(docker_sandbox, "_docker", missing_container)
+    backend = docker_sandbox.DockerSandbox("openswe-sbx-gone")
+    with pytest.raises(SandboxGoneError, match="no longer exists"):
+        backend.execute("true")
+
+
+def test_cached_backend_does_not_misclassify_docker_daemon_failure_as_gone(
+    tmp_path, monkeypatch
+) -> None:
+    import subprocess
+
+    from agent.sandboxes.providers.registry import SandboxGoneError
+
+    from openswe_ext import docker_sandbox
+    from openswe_ext.docker_sandbox import DockerSandboxError
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+
+    def daemon_unavailable(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            ["docker"],
+            1,
+            stdout=b"",
+            stderr=b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+        )
+
+    monkeypatch.setattr(docker_sandbox, "_docker", daemon_unavailable)
+    backend = docker_sandbox.DockerSandbox("openswe-sbx-test")
+    with pytest.raises(DockerSandboxError, match="failed to inspect sandbox container") as exc:
+        backend.execute("true")
+    assert not isinstance(exc.value, SandboxGoneError)
+
+
 def test_container_template_has_required_isolation_flags() -> None:
     source = Path(__file__).resolve().parents[1] / "openswe_ext/docker_sandbox.py"
     text = source.read_text(encoding="utf-8")

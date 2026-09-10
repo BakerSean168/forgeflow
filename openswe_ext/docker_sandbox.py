@@ -137,7 +137,14 @@ def _assert_owned_container(container_id: str) -> None:
         check=False,
     )
     if result.returncode != 0:
-        raise DockerSandboxError(f"sandbox container does not exist: {container_id}")
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        if "No such container" in stderr or "No such object" in stderr:
+            from agent.sandboxes.providers.registry import SandboxGoneError
+
+            raise SandboxGoneError(f"Docker sandbox no longer exists: {container_id}")
+        raise DockerSandboxError(
+            f"failed to inspect sandbox container {container_id}: {stderr[:500]}"
+        )
     if result.stdout.strip() != b"true":
         raise DockerSandboxError(f"refusing non-Open-SWE container: {container_id}")
 
