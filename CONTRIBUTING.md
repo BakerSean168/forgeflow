@@ -8,7 +8,7 @@ Before submitting changes:
 ```bash
 uv sync --locked --python 3.14
 uv run pytest
-uv run ruff check forgeflow tests
+uv run ruff check forgeflow openswe_ext tests
 ```
 
 Do not add ForgeFlow-owned databases, worktree managers, provider/session runtimes, reviewer

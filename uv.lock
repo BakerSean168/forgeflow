@@ -719,7 +719,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/e6/79/d4f20e91327c98096
 
 [[package]]
 name = "forgeflow-policy"
-version = "2.0.0.dev0"
+version = "2.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "open-swe-agent" },

@@ -7,5 +7,6 @@ ForgeFlow Policy V1 depends on Open SWE at the exact revision recorded in
 third-party packages with their respective licenses; the lockfile is the authoritative dependency
 inventory for this repository.
 
-This repository does not vendor or redistribute the retired OpenHands execution-plane source from
-the previous ForgeFlow architecture.
+OpenHands is not a runtime, package dependency, or vendored component of ForgeFlow v2. References
+to it are limited to historical migration notes and guarded cleanup/tests for the retired execution
+plane.

@@ -12,17 +12,16 @@ ForgeFlow Policy V1 is an overlay on Open SWE, not an autonomous coding runtime.
 The same SHA is stored in `UPSTREAM_OPEN_SWE_SHA` and in the direct Git dependency in
 `pyproject.toml`. ForgeFlow never tracks Open SWE `main` at runtime.
 
-## Rewrite baseline
+## v2 migration baseline
 
 - Legacy ForgeFlow main baseline: `6c29586d699e...` (`6c29586`, `fix(plans): audit finalization scope corrections (#26)`).
 - Planning baseline commit: `9b64347` (`docs: define Open SWE policy architecture`).
 - The separate legacy worktree `fix/active-finalization-correction` carried 7 modified files / 582 insertions / 13 deletions in the old Plan/worktree orchestration. Those changes are intentionally **not** ported into Policy V1.
-- Production legacy services/state remain untouched until the Phase 9 cutover; repository-runtime deletion is not a production data migration.
+- The production cutover is complete. Legacy Node/SQLite/OpenHands/Antigravity services and state were removed only after the replacement passed authenticated health checks; `/etc/forgeflow/litellm.env` remained independently owned and was preserved.
 
 ## Contracts ForgeFlow consumes
 
-Normal upstream-internal imports must eventually be centralized in
-`forgeflow/adapters/openswe.py`. The frozen baseline currently requires:
+Upstream-internal imports are centralized behind the ForgeFlow adapter/extension boundary and guarded by `tests/test_upstream_contract.py`. The pinned baseline requires:
 
 - `agent.graphs.agent:traced_agent`
 - `agent.graphs.reviewer:traced_reviewer_agent`
@@ -49,8 +48,10 @@ compatibility adapters, not forks of Open SWE graphs:
   diffs are evaluated against that tracked base rather than unconditionally against `origin/HEAD`.
   Real task-authored `.github/workflows/*` changes remain approval-gated.
 
-The extension installer runs before upstream graph imports in `openswe_ext/graphs.py` and fails
-closed if another implementation has already replaced the same pinned upstream hook. The
+`langgraph.json` points `agent`, `reviewer`, `analyzer`, `chat`, and `scheduler` at
+`openswe_ext.graphs:*`. Those wrappers install the compatibility hooks and then delegate to the
+pinned upstream graphs. The extension installer fails closed if another implementation has already
+replaced the same pinned upstream hook. The
 characterization tests in `tests/test_workflow_push_guard.py` cover both the false-positive case
 and the retained human-approval case.
 

@@ -1,9 +1,13 @@
-# ForgeFlow Policy V1 — Destructive Refactor Implementation Plan
+# ForgeFlow Policy V1 — v2 Rebuild Migration and Acceptance Record
 
 
-## Authoritative destructive cutover order
+> **Status: completed migration record.** This document preserves the implementation plan, destructive
+> cutover contract, acceptance criteria, and closure evidence for the v2 rebuild. It is not the
+> current architecture guide; use `open-swe-policy-v1-architecture.md` for the running system.
 
-This section is the authoritative cutover contract and overrides any earlier shorthand that could be read as deleting the legacy runtime first. ForgeFlow Policy V1 has **no migration compatibility path**, but destructive deletion still occurs only after the replacement proves it is healthy.
+## Historical destructive cutover order
+
+This section records the authoritative cutover contract that was executed and overrides any earlier shorthand that could be read as deleting the legacy runtime first. ForgeFlow Policy V1 has **no migration compatibility path**, but destructive deletion still occurs only after the replacement proves it is healthy.
 
 1. Build and validate the exact candidate checkout.
 2. Install/start `open-swe-codex-broker.service` and `forgeflow-policy.service` side-by-side with the legacy runtime.
@@ -14,8 +18,8 @@ This section is the authoritative cutover contract and overrides any earlier sho
 
 The implementation of this contract lives in `deploy/gcp-dev/purge-legacy.sh`; the script refuses destructive work unless the replacement preflight passes.
 
-> Scope: execution-ready plan for replacing the current Node/SQLite autonomous coding control plane with a thin Open SWE quality-policy graph.
-> Mode: destructive rebuild. No database migration, API compatibility layer, historical execution import, or old-runtime coexistence is required.
+> Scope: historical execution plan that replaced the former Node/SQLite autonomous coding control plane with the thin Open SWE quality-policy graph.
+> Mode: destructive rebuild, completed. No database migration, API compatibility layer, or historical execution import was performed.
 
 ## 1. Outcome
 
@@ -31,7 +35,7 @@ At the end of this refactor:
 - a real end-to-end Thin-Policy acceptance run reaches `READY` only after exact-head CI and official Open SWE re-review have no open P0/P1/P2;
 - a deliberately simulated false-success child run is rejected.
 
-## 2. Current baseline and destructive assumptions
+## 2. Planning baseline and destructive assumptions
 
 ### Repository baseline
 
@@ -47,9 +51,9 @@ The working repository has unrelated uncommitted WIP on `fix/active-finalization
 
 **Decision:** do not port this WIP. It is obsolete under the new ownership model. Preserve it only in Git/worktree history until the destructive implementation branch starts, then discard it rather than adapting it.
 
-### Old deployed state
+### Former deployed state
 
-Observed at planning time:
+Observed at planning time (now removed):
 
 - `forgeflow.service`: active + enabled;
 - `/var/lib/forgeflow`: ~3.0 GB;
@@ -79,7 +83,7 @@ Credentials/secrets are not treated as application data. Required GitHub/OpenAI/
 
 ## 3. Target dependency boundary
 
-### New stack
+### Implemented stack
 
 - Python 3.14 to match current Open SWE deployment contract;
 - `uv` + `pyproject.toml`;
@@ -90,7 +94,7 @@ Credentials/secrets are not treated as application data. Required GitHub/OpenAI/
 - Open SWE `agent.webapp:app` for GitHub/webhook/dashboard API;
 - official Open SWE GitHub App path for reviewer automation.
 
-### Removed stack
+### Retired stack
 
 - Node.js production runtime;
 - Fastify control plane;
@@ -234,7 +238,7 @@ REPAIRING
   -> VERIFYING         new child run dispatched
   -> ESCALATED         repair budget exhausted
 
-any non-terminal
+any non-terminal (including READY)
   -> CANCELLED         operator/user stop
 ```
 
@@ -266,7 +270,7 @@ When PR head changes:
 - review pass/findings for old head are stale;
 - policy returns to CI/review for the new head.
 
-### INV-05 — No blocking findings at READY
+### INV-05 — No blocking findings at monitored READY
 
 Map Open SWE severities:
 
@@ -498,9 +502,9 @@ ForgeFlow does not create custom worktrees, DB rows, provider sessions, resource
 
 1. Create one LangGraph policy thread per ForgeFlow objective.
 2. Make every invocation idempotently reconcile current state and external evidence.
-3. Schedule active policy threads through LangGraph cron/wakeup primitives.
+3. Schedule non-terminal policy threads through LangGraph cron/wakeup primitives, including `READY` so external PR head drift is detected.
 4. Ensure a reconciliation performs at most one externally visible dispatch/mutation.
-5. Disable/delete the wake/cron when terminal.
+5. Keep the cron while `READY`; delete it only for `ESCALATED` or `CANCELLED`.
 6. Add restart test: process stops after side effect but before next policy state write, then replay re-observes external state and does not duplicate the side effect.
 7. Add cancellation test.
 
@@ -508,7 +512,8 @@ ForgeFlow does not create custom worktrees, DB rows, provider sessions, resource
 
 - service restart does not lose the objective;
 - no duplicate PR/reviewer/repair dispatch after replay;
-- terminal policy has no live reconcile schedule;
+- `READY` keeps exactly one monitoring cron and head drift re-enters `WAITING_FOR_CI`;
+- `ESCALATED`/`CANCELLED` remove the reconcile cron;
 - no custom lease or heartbeat table exists.
 
 ### Phase 9 — Deployment replacement and state purge
@@ -684,7 +689,7 @@ A new reader should not be able to mistake ForgeFlow for an independent coding r
 ### FFP-010 — Add durable reconcile scheduling
 
 **Goal:** autonomous progression/restart recovery using LangGraph primitives only.
-**Acceptance:** crash/replay test produces no duplicate external mutation; terminal schedule is removed.
+**Acceptance:** crash/replay produces no duplicate external mutation; `READY` keeps one monitoring cron, while `ESCALATED`/`CANCELLED` remove it.
 **Dependencies:** FFP-009.
 
 ### FFP-011 — Replace production deployment and purge legacy state
@@ -815,22 +820,40 @@ Containment: intentional product decision. Git/GitHub/Open SWE are the only reta
 
 The refactor is complete when all are true:
 
-- [ ] old TypeScript/SQLite autonomous control plane deleted;
-- [ ] old API/client compatibility deleted;
-- [ ] old OpenHands/Antigravity execution plane deleted;
-- [ ] old DB/backups/workspaces/tooling deleted from the host;
-- [ ] old ForgeFlow systemd topology removed;
-- [ ] Open SWE exact SHA pinned;
-- [ ] upstream contract suite green;
-- [ ] ForgeFlow policy graph runs in the same LangGraph deployment as Open SWE;
-- [ ] implementation uses Luna xhigh by policy;
-- [ ] review uses official Open SWE reviewer with Sol medium;
-- [ ] false-success/no-progress test proves run success cannot bypass evidence;
-- [ ] exact-head CI gate implemented;
-- [ ] exact-head reviewer gate implemented;
-- [ ] P0/P1/P2 repair loop bounded and same-thread;
-- [ ] restart/replay produces no duplicate dispatch;
-- [ ] real repository acceptance reaches READY after at least one repair/re-review path;
-- [ ] final exact head has CI PASS and zero open P0/P1/P2;
-- [ ] README/docs clearly describe ForgeFlow as Open SWE quality governance, not an autonomous coding runtime;
-- [ ] release published as a new major version after real acceptance.
+- [x] old TypeScript/SQLite autonomous control plane deleted;
+- [x] old API/client compatibility deleted;
+- [x] old OpenHands/Antigravity execution plane deleted;
+- [x] old DB/backups/workspaces/tooling deleted from the host;
+- [x] old ForgeFlow systemd topology removed;
+- [x] Open SWE exact SHA pinned;
+- [x] upstream contract suite green;
+- [x] ForgeFlow policy graph runs in the same LangGraph deployment as Open SWE;
+- [x] implementation uses Luna xhigh by policy;
+- [x] review uses official Open SWE reviewer with Sol medium;
+- [x] false-success/no-progress test proves run success cannot bypass evidence;
+- [x] exact-head CI gate implemented;
+- [x] exact-head reviewer gate implemented;
+- [x] P0/P1/P2 repair loop bounded and same-thread;
+- [x] restart/replay produces no duplicate dispatch;
+- [x] real repository acceptance reaches READY after at least one repair/re-review path;
+- [x] final exact head has CI PASS and zero open P0/P1/P2;
+- [x] README/docs clearly describe ForgeFlow as Open SWE quality governance, not an autonomous coding runtime;
+- [x] new-major release publication gate satisfied after real acceptance; publication is cut from merged `main`.
+
+GitHub Releases is the external source of truth for whether `v2.0.0` has actually been published;
+this migration record captures readiness and acceptance rather than mutating history after tagging.
+
+The real ForgeFlow policy acceptance is recorded on PR #28. A controlled regression at `7115c08`
+removed the Docker `--read-only` boundary and its matching assertion while deterministic CI still
+passed. The Official Reviewer raised high finding `f_e4e59426d8`; ForgeFlow entered `REPAIRING`,
+incremented to `repair_round=1`, and dispatched Luna xhigh on the same implementation thread. Repair
+`94ddd70` restored both lines with the exact policy operation trailer, passed the full 145-test gate
+and GitHub CI, and an exact-head re-review resolved the high finding. That SHA is the stable
+repair-loop acceptance anchor. Later release-candidate-only changes are intentionally not hard-coded
+here: PR #28 is the source of truth for the current head, and every new head must independently
+satisfy exact-head CI + Official Reviewer evidence before the policy returns to `READY`.
+
+The destructive host-cleanup items were also re-audited on GCP Dev: every legacy path named by the
+purge contract is absent, the old OpenHands container/image are absent, and the final loaded legacy
+AppArmor profile was unloaded and removed. Digital Biome PR #59 remains separate corroborating
+evidence for the underlying Open SWE review → repair → re-review behavior.
