@@ -9,7 +9,7 @@ port="${FORGEFLOW_POLICY_PORT:-58810}"
 broker_port="${OPEN_SWE_CODEX_BROKER_PORT:-58811}"
 projects_source="${FORGEFLOW_POLICY_PROJECTS_SOURCE:-}"
 
-for tool in git openssl systemctl curl python3; do
+for tool in git openssl systemctl curl python3 docker sudo; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }
 done
 [[ -x "$HOME/.local/bin/uv" ]] || { echo "uv is required at $HOME/.local/bin/uv" >&2; exit 2; }
@@ -48,7 +48,8 @@ python3 -m json.tool "$config_dir/projects.json" >/dev/null
 cd "$root"
 "$HOME/.local/bin/uv" sync --locked --python 3.14
 "$HOME/.local/bin/uv" run pytest -q
-"$HOME/.local/bin/uv" run ruff check forgeflow tests
+"$HOME/.local/bin/uv" run ruff check forgeflow openswe_ext tests
+"$root/deploy/gcp-dev/setup-docker-sandbox.sh"
 
 render_unit() {
   local source="$1" target="$2"

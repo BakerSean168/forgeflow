@@ -61,10 +61,25 @@ def test_github_app_preflight_is_secret_free_and_fail_closed() -> None:
     assert "GITHUB_APP_REPO_OR_PERMISSION_UNAVAILABLE" in docs
 
 
-def test_reviewer_sandbox_defaults_to_isolated_provider_not_local() -> None:
+def test_reviewer_sandbox_defaults_to_self_hosted_docker_not_local() -> None:
     start = (DEPLOY / "start-forgeflow-policy.sh").read_text(encoding="utf-8")
-    assert 'SANDBOX_TYPE="${SANDBOX_TYPE:-langsmith}"' in start
+    installer = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    assert 'SANDBOX_TYPE="${SANDBOX_TYPE:-docker}"' in start
     assert 'SANDBOX_TYPE="${SANDBOX_TYPE:-local}"' not in start
+    assert 'setup-docker-sandbox.sh' in installer
+
+
+def test_docker_sandbox_firewall_is_reapplied_with_docker_daemon() -> None:
+    unit = (DEPLOY / "forgeflow-openswe-sandbox-network.service.in").read_text(encoding="utf-8")
+    ensure = (DEPLOY / "ensure-docker-sandbox-network.sh").read_text(encoding="utf-8")
+    assert "PartOf=docker.service" in unit
+    assert "After=docker.service" in unit
+    assert "DOCKER-USER" in ensure
+    assert "169.254.0.0/16" in ensure
+    assert "169.254.169.254/32" in ensure
+    assert "obsolete_destinations" in ensure
+    assert ' -D DOCKER-USER ' in ensure
+    assert "100.64.0.0/10" in ensure
 
 
 def test_broker_unit_has_no_writable_state_directory() -> None:

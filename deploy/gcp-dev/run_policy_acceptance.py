@@ -131,7 +131,6 @@ async def run_acceptance(args: argparse.Namespace) -> int:
     config_dir = Path.home() / ".config/forgeflow-policy"
     state_dir = Path.home() / ".local/share/forgeflow-policy"
     _load_external_env(config_dir / "github-app.env")
-    _load_external_env(config_dir / "sandbox.env")
 
     # Import after external env load: pinned Open SWE snapshots App env at import time.
     from langgraph_sdk import get_client

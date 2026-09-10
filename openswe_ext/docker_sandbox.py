@@ -7,12 +7,13 @@ not create containers, mount workspaces, or manage container lifecycle.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shlex
 import subprocess
 import uuid
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse
 from deepagents.backends.sandbox import BaseSandbox
@@ -114,6 +115,123 @@ def _normalize_path(path: str) -> str:
         return str(raw)
     return str(PurePosixPath("/workspace") / raw)
 
+_CACHE_ROOT = "/workspace/.open-swe-cache"
+
+
+def _runtime_env_prelude() -> str:
+    """Keep language/package caches on the persistent workspace volume.
+
+    The sandbox HOME is intentionally a small tmpfs for isolation. Package
+    managers can easily exceed it, so high-volume caches belong to the
+    thread-scoped workspace volume instead.
+    """
+    dirs = {
+        "XDG_DATA_HOME": f"{_CACHE_ROOT}/xdg-data",
+        "XDG_CACHE_HOME": f"{_CACHE_ROOT}/xdg-cache",
+        "COREPACK_HOME": f"{_CACHE_ROOT}/corepack",
+        "npm_config_cache": f"{_CACHE_ROOT}/npm",
+        "UV_CACHE_DIR": f"{_CACHE_ROOT}/uv",
+        "GOCACHE": f"{_CACHE_ROOT}/go-build",
+        "GOMODCACHE": f"{_CACHE_ROOT}/go-mod",
+        "CARGO_HOME": f"{_CACHE_ROOT}/cargo",
+        "PIP_CACHE_DIR": f"{_CACHE_ROOT}/pip",
+    }
+    paths = " ".join(shlex.quote(value) for value in dirs.values())
+    exports = " ".join(f"{name}={shlex.quote(value)}" for name, value in dirs.items())
+    return f"mkdir -p -- {paths} && export {exports}; "
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubSandboxCredentials:
+    read_token: str
+    write_token: str | None
+    write_repository: str | None
+
+
+def _git_credential_script(
+    *,
+    read_token_path: str,
+    write_token_path: str,
+    write_repository: str | None,
+) -> str:
+    """Return a token-free Git credential helper selecting least-privilege tokens."""
+    read_path = shlex.quote(read_token_path)
+    write_path = shlex.quote(write_token_path)
+    lines = [
+        "#!/bin/sh",
+        '[ "$1" = "get" ] || exit 0',
+        'host=""',
+        'path=""',
+        "while IFS='=' read -r key value; do",
+        '  case "$key" in',
+        '    host) host="$value" ;;',
+        '    path) path="$value" ;;',
+        '  esac',
+        'done',
+        '[ "$host" = "github.com" ] || exit 0',
+        f"token_path={read_path}",
+    ]
+    if write_repository:
+        repo = shlex.quote(write_repository)
+        repo_git = shlex.quote(f"{write_repository}.git")
+        lines.extend(
+            [
+                f'if [ -r {write_path} ] && {{ [ "$path" = {repo} ] || [ "$path" = {repo_git} ]; }}; then',
+                f"  token_path={write_path}",
+                "fi",
+            ]
+        )
+    lines.extend(
+        [
+            "printf 'username=x-access-token\npassword='",
+            'cat -- "$token_path"',
+            "printf '\n'",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _sandbox_read_repositories(cfg: object) -> tuple[str, ...]:
+    """Resolve extra read-only repos from the existing Open SWE local project manifest."""
+    repo = getattr(cfg, "repo", None)
+    owner = getattr(repo, "owner", None)
+    name = getattr(repo, "name", None)
+    if not isinstance(owner, str) or not isinstance(name, str) or not owner or not name:
+        return ()
+    manifest_path = os.environ.get("OPEN_SWE_LOCAL_PROJECTS_FILE", "").strip()
+    if not manifest_path:
+        return ()
+    try:
+        payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DockerSandboxError("failed to read Open SWE local project manifest") from exc
+    if not isinstance(payload, list):
+        raise DockerSandboxError("Open SWE local project manifest must be a list")
+    target = f"{owner}/{name}"
+    for item in payload:
+        if not isinstance(item, dict) or item.get("repo") != target:
+            continue
+        raw = item.get("sandbox_read_repositories", [])
+        if not isinstance(raw, list) or not all(isinstance(value, str) for value in raw):
+            raise DockerSandboxError("sandbox_read_repositories must be a list of OWNER/REPO strings")
+        result: list[str] = []
+        for slug in raw:
+            dep_owner, sep, dep_name = slug.strip().partition("/")
+            if not sep or not dep_owner or not dep_name or "/" in dep_name:
+                raise DockerSandboxError(f"invalid sandbox dependency repository: {slug!r}")
+            if dep_owner != owner:
+                raise DockerSandboxError("sandbox dependency repositories must share the primary owner")
+            if dep_name != name and dep_name not in result:
+                result.append(dep_name)
+        return tuple(result)
+    return ()
+
+
+def _is_forgeflow_implementation(cfg: object) -> bool:
+    return getattr(cfg, "source", None) == "forgeflow" and not getattr(
+        cfg, "reviewer_thread_id", None
+    )
+
 
 class DockerSandbox(BaseSandbox):
     """Persistent Docker container implementing the Deep Agents sandbox contract."""
@@ -130,7 +248,9 @@ class DockerSandbox(BaseSandbox):
         self._container_id = container_id
         self._default_timeout = default_timeout
         self._max_output_bytes = max_output_bytes
-        self._github_token_path = "/tmp/openswe-github-token"
+        self._github_read_token_path = "/tmp/openswe-github-read-token"
+        self._github_write_token_path = "/tmp/openswe-github-write-token"
+        self._git_credential_path = "/workspace/.open-swe-runtime/git-credential"
 
     @property
     def id(self) -> str:
@@ -150,9 +270,16 @@ class DockerSandbox(BaseSandbox):
         # so descendants receive the timeout signal as well instead of leaking into
         # the persistent container after an agent command times out.
         wrapped_command = (
-            f'if [ -r {shlex.quote(self._github_token_path)} ]; then '
-            f'export GH_TOKEN="$(cat {shlex.quote(self._github_token_path)})"; '
-            'export GITHUB_TOKEN="$GH_TOKEN"; fi; '
+            _runtime_env_prelude()
+            + f'if [ -r {shlex.quote(self._github_read_token_path)} ]; then '
+            + f'export GH_TOKEN="$(cat {shlex.quote(self._github_read_token_path)})"; '
+            + 'export GITHUB_TOKEN="$GH_TOKEN"; '
+            + 'export GIT_TERMINAL_PROMPT=0; '
+            + 'export GIT_CONFIG_COUNT=2; '
+            + 'export GIT_CONFIG_KEY_0=credential.helper; '
+            + f'export GIT_CONFIG_VALUE_0={shlex.quote(self._git_credential_path)}; '
+            + 'export GIT_CONFIG_KEY_1=credential.useHttpPath; '
+            + 'export GIT_CONFIG_VALUE_1=true; fi; '
             + command
         )
         result = _docker(
@@ -188,26 +315,64 @@ class DockerSandbox(BaseSandbox):
             output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
         return ExecuteResponse(output=output, exit_code=result.returncode, truncated=truncated)
 
-    def configure_github_token(self, token: str) -> None:
-        """Store one short-lived repo-scoped token only in container tmpfs."""
-        if not token.strip():
-            return
+    def configure_github_credentials(self, credentials: GitHubSandboxCredentials) -> None:
+        """Install short-lived tokens in tmpfs and a token-free credential helper on workspace."""
+        if not credentials.read_token.strip():
+            raise DockerSandboxError("GitHub read token is empty")
         _assert_owned_container(self._container_id)
         if not _container_running(self._container_id):
             _docker("container", "start", self._container_id)
+
+        for path, token in (
+            (self._github_read_token_path, credentials.read_token),
+            (self._github_write_token_path, credentials.write_token),
+        ):
+            if token:
+                result = _docker(
+                    "exec",
+                    "-i",
+                    self._container_id,
+                    "bash",
+                    "-lc",
+                    f"umask 077; cat > {shlex.quote(path)}",
+                    input_bytes=token.encode(),
+                    timeout=15,
+                    check=False,
+                )
+            else:
+                result = _docker(
+                    "exec",
+                    self._container_id,
+                    "rm",
+                    "-f",
+                    path,
+                    timeout=15,
+                    check=False,
+                )
+            if result.returncode != 0:
+                raise DockerSandboxError("failed to install ephemeral GitHub credentials")
+
+        helper = _git_credential_script(
+            read_token_path=self._github_read_token_path,
+            write_token_path=self._github_write_token_path,
+            write_repository=credentials.write_repository,
+        )
+        helper_parent = str(PurePosixPath(self._git_credential_path).parent)
         result = _docker(
             "exec",
             "-i",
             self._container_id,
             "bash",
             "-lc",
-            f"umask 077; cat > {shlex.quote(self._github_token_path)}",
-            input_bytes=token.encode(),
+            f"mkdir -p -- {shlex.quote(helper_parent)}; chmod 700 {shlex.quote(helper_parent)}; "
+            f"umask 077; cat > {shlex.quote(self._git_credential_path)}; "
+            f"chmod 700 {shlex.quote(self._git_credential_path)}",
+            input_bytes=helper.encode(),
             timeout=15,
             check=False,
         )
         if result.returncode != 0:
-            raise DockerSandboxError("failed to install ephemeral GitHub read token")
+            raise DockerSandboxError("failed to install Git credential bridge")
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         responses: list[FileUploadResponse] = []
@@ -345,22 +510,8 @@ def create_docker_sandbox_sync(sandbox_id: str | None = None) -> DockerSandbox:
     return DockerSandbox(container_id)
 
 
-def _github_permissions_for_run(cfg: object) -> dict[str, str]:
-    """Return the least GitHub permissions needed by this sandbox role.
-
-    Only ForgeFlow implementation/repair agent runs receive repository write
-    access for git push. Reviewer and every other graph stay read-only.
-    Workflow write is intentionally never delegated into the sandbox.
-    """
-    source = getattr(cfg, "source", None)
-    reviewer_thread_id = getattr(cfg, "reviewer_thread_id", None)
-    if source == "forgeflow" and not reviewer_thread_id:
-        return {"contents": "write", "pull_requests": "read"}
-    return {"contents": "read", "pull_requests": "read"}
-
-
-async def _github_token_from_run_context() -> str | None:
-    """Mint a repo-scoped role-minimal token for the current Open SWE run."""
+async def _github_credentials_from_run_context() -> GitHubSandboxCredentials | None:
+    """Mint separate read-dependency and primary-repo write tokens for this Open SWE run."""
     from agent.github.app import get_github_app_installation_token_with_expiry
     from agent.run_config import RunConfig
     from langgraph.config import get_config
@@ -373,22 +524,44 @@ async def _github_token_from_run_context() -> str | None:
         cfg = RunConfig.from_config(raw_config)
     except (AttributeError, TypeError, ValueError):
         return None
-    if cfg.repo is None or not cfg.repo.name:
+    if cfg.repo is None or not cfg.repo.name or not cfg.repo.owner:
         return None
-    token, _expires_at = await get_github_app_installation_token_with_expiry(
-        repositories=[cfg.repo.name],
-        permissions=_github_permissions_for_run(cfg),
+
+    dependencies = _sandbox_read_repositories(cfg)
+    read_repositories = list(dict.fromkeys([cfg.repo.name, *dependencies]))
+    read_token, _read_expiry = await get_github_app_installation_token_with_expiry(
+        repositories=read_repositories,
+        permissions={"contents": "read", "pull_requests": "read"},
         log_errors=False,
     )
-    return token
+    if not read_token:
+        raise DockerSandboxError("failed to mint sandbox GitHub read token")
+
+    write_token: str | None = None
+    write_repository: str | None = None
+    if _is_forgeflow_implementation(cfg):
+        write_token, _write_expiry = await get_github_app_installation_token_with_expiry(
+            repositories=[cfg.repo.name],
+            permissions={"contents": "write", "pull_requests": "read"},
+            log_errors=False,
+        )
+        if not write_token:
+            raise DockerSandboxError("failed to mint sandbox GitHub write token")
+        write_repository = f"{cfg.repo.owner}/{cfg.repo.name}"
+
+    return GitHubSandboxCredentials(
+        read_token=read_token,
+        write_token=write_token,
+        write_repository=write_repository,
+    )
 
 
 async def create_docker_sandbox(sandbox_id: str | None = None) -> DockerSandbox:
-    """Open SWE factory: create/reconnect and inject only ephemeral role-minimal credentials."""
-    token = await _github_token_from_run_context()
+    """Open SWE factory: create/reconnect and install only ephemeral least-privilege credentials."""
+    credentials = await _github_credentials_from_run_context()
     backend = await asyncio.to_thread(create_docker_sandbox_sync, sandbox_id)
-    if token:
-        await asyncio.to_thread(backend.configure_github_token, token)
+    if credentials:
+        await asyncio.to_thread(backend.configure_github_credentials, credentials)
     return backend
 
 

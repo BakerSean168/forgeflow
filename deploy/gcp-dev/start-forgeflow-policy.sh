@@ -11,7 +11,6 @@ auth_file="$config_dir/local-auth.secret"
 broker_secret="$state_dir/codex-broker.secret"
 projects_file="$config_dir/projects.json"
 github_env="$config_dir/github-app.env"
-sandbox_env="$config_dir/sandbox.env"
 
 for required in "$auth_file" "$broker_secret" "$projects_file"; do
   [[ -r "$required" ]] || { echo "missing required ForgeFlow Policy file: $required" >&2; exit 2; }
@@ -24,16 +23,12 @@ export OPEN_SWE_LOCAL_ARTIFACTS_DIR="$state_dir/artifacts"
 export OPEN_SWE_OPENAI_OAUTH_BROKER_URL="http://127.0.0.1:${broker_port}/token"
 export OPEN_SWE_OPENAI_OAUTH_BROKER_TOKEN="$(<"$broker_secret")"
 
-# Reviewer sandbox credentials stay outside the repository.
-if [[ -r "$sandbox_env" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "$sandbox_env"
-  set +a
-fi
+# GCP Dev keeps both control and execution self-hosted. The default execution
+# boundary is the Open SWE Docker provider; upstream remote providers remain
+# available only when explicitly configured in the service environment.
 export LANGSMITH_TRACING="${LANGSMITH_TRACING:-false}"
 export LLM_FALLBACK_MODEL_ID="${LLM_FALLBACK_MODEL_ID:-openai:gpt-5.6-sol}"
-export SANDBOX_TYPE="${SANDBOX_TYPE:-langsmith}"
+export SANDBOX_TYPE="${SANDBOX_TYPE:-docker}"
 
 # Full official Reviewer requires a separate Open SWE GitHub App. Loading this
 # file is optional for graph health but mandatory for real reviewer acceptance.

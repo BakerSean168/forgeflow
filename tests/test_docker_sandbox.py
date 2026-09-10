@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from openswe_ext.docker_sandbox import DockerSandboxConfig, _normalize_path
 
 
@@ -52,10 +54,10 @@ def test_container_template_has_required_isolation_flags() -> None:
 
 def test_network_setup_blocks_metadata_private_and_tailscale_ranges() -> None:
     setup = (
-        Path(__file__).resolve().parents[1] / "deploy/gcp-dev/setup-docker-sandbox.sh"
+        Path(__file__).resolve().parents[1] / "deploy/gcp-dev/ensure-docker-sandbox-network.sh"
     ).read_text(encoding="utf-8")
     for destination in (
-        "169.254.169.254/32",
+        "169.254.0.0/16",
         "10.0.0.0/8",
         "172.16.0.0/12",
         "192.168.0.0/16",
@@ -85,31 +87,209 @@ def test_package_includes_runtime_extension_without_putting_it_under_policy_pack
     assert (root / "openswe_ext/docker_sandbox.py").exists()
 
 
-def test_github_token_scope_is_read_only_by_default() -> None:
+
+def test_only_forgeflow_implementation_is_write_capable() -> None:
     from types import SimpleNamespace
 
-    from openswe_ext.docker_sandbox import _github_permissions_for_run
+    from openswe_ext.docker_sandbox import _is_forgeflow_implementation
 
-    reviewer = SimpleNamespace(source="github", reviewer_thread_id="review-thread")
-    other = SimpleNamespace(source="slack", reviewer_thread_id=None)
-    assert _github_permissions_for_run(reviewer) == {
-        "contents": "read",
-        "pull_requests": "read",
-    }
-    assert _github_permissions_for_run(other) == {
-        "contents": "read",
-        "pull_requests": "read",
-    }
+    assert _is_forgeflow_implementation(
+        SimpleNamespace(source="forgeflow", reviewer_thread_id=None)
+    )
+    assert not _is_forgeflow_implementation(
+        SimpleNamespace(source="github", reviewer_thread_id=None)
+    )
+    assert not _is_forgeflow_implementation(
+        SimpleNamespace(source="forgeflow", reviewer_thread_id="review-thread")
+    )
 
 
-def test_only_forgeflow_implementation_gets_repo_write_without_workflow_write() -> None:
+def test_project_manifest_declares_same_owner_read_only_sandbox_dependencies(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
     from types import SimpleNamespace
 
-    from openswe_ext.docker_sandbox import _github_permissions_for_run
+    from openswe_ext.docker_sandbox import _sandbox_read_repositories
 
-    implementation = SimpleNamespace(source="forgeflow", reviewer_thread_id=None)
-    permissions = _github_permissions_for_run(implementation)
-    assert permissions == {"contents": "write", "pull_requests": "read"}
-    assert "workflows" not in permissions
-    assert "issues" not in permissions
-    assert "checks" not in permissions
+    manifest = tmp_path / "projects.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "repo": "BakerSean168/digital-biome",
+                    "sandbox_read_repositories": [
+                        "BakerSean168/thought-forest",
+                        "BakerSean168/thought-forest",
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPEN_SWE_LOCAL_PROJECTS_FILE", str(manifest))
+    cfg = SimpleNamespace(
+        repo=SimpleNamespace(owner="BakerSean168", name="digital-biome")
+    )
+    assert _sandbox_read_repositories(cfg) == ("thought-forest",)
+
+
+def test_project_manifest_rejects_cross_owner_dependency(tmp_path: Path, monkeypatch) -> None:
+    import json
+    from types import SimpleNamespace
+
+    import pytest
+
+    from openswe_ext.docker_sandbox import DockerSandboxError, _sandbox_read_repositories
+
+    manifest = tmp_path / "projects.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "repo": "BakerSean168/digital-biome",
+                    "sandbox_read_repositories": ["other-owner/private-vault"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPEN_SWE_LOCAL_PROJECTS_FILE", str(manifest))
+    cfg = SimpleNamespace(
+        repo=SimpleNamespace(owner="BakerSean168", name="digital-biome")
+    )
+    with pytest.raises(DockerSandboxError, match="share the primary owner"):
+        _sandbox_read_repositories(cfg)
+
+
+def test_high_volume_package_caches_use_persistent_workspace_volume() -> None:
+    from openswe_ext.docker_sandbox import _runtime_env_prelude
+
+    prelude = _runtime_env_prelude()
+    assert "/workspace/.open-swe-cache/xdg-data" in prelude
+    assert "/workspace/.open-swe-cache/corepack" in prelude
+    assert "/workspace/.open-swe-cache/npm" in prelude
+    assert "/workspace/.open-swe-cache/uv" in prelude
+    assert "/workspace/.open-swe-cache/go-mod" in prelude
+    assert "/home/sandbox/.local" not in prelude
+
+
+def test_git_https_auth_uses_token_free_path_aware_credential_helper() -> None:
+    from openswe_ext.docker_sandbox import _git_credential_script
+
+    script = _git_credential_script(
+        read_token_path="/tmp/openswe-github-read-token",
+        write_token_path="/tmp/openswe-github-write-token",
+        write_repository="BakerSean168/digital-biome",
+    )
+    assert "credential" not in script.lower()  # helper itself contains no GitHub credential value
+    assert "/tmp/openswe-github-read-token" in script
+    assert "/tmp/openswe-github-write-token" in script
+    assert "BakerSean168/digital-biome" in script
+    assert "x-access-token" in script
+    assert "https://x-access-token:" not in script
+
+    source = (
+        Path(__file__).resolve().parents[1] / "openswe_ext/docker_sandbox.py"
+    ).read_text(encoding="utf-8")
+    assert 'self._git_credential_path = "/workspace/.open-swe-runtime/git-credential"' in source
+    assert 'self._github_read_token_path = "/tmp/openswe-github-read-token"' in source
+    assert 'self._github_write_token_path = "/tmp/openswe-github-write-token"' in source
+    assert "credential.useHttpPath" in source
+    assert "GIT_TERMINAL_PROMPT=0" in source
+    assert "GIT_ASKPASS" not in source
+
+
+def test_git_credential_helper_selects_write_only_for_primary_repo(tmp_path: Path) -> None:
+    import os
+    import subprocess
+
+    from openswe_ext.docker_sandbox import _git_credential_script
+
+    read = tmp_path / "read-token"
+    write = tmp_path / "write-token"
+    helper = tmp_path / "git-credential"
+    read.write_text("READ_ONLY", encoding="utf-8")
+    write.write_text("PRIMARY_WRITE", encoding="utf-8")
+    helper.write_text(
+        _git_credential_script(
+            read_token_path=str(read),
+            write_token_path=str(write),
+            write_repository="BakerSean168/digital-biome",
+        ),
+        encoding="utf-8",
+    )
+    helper.chmod(0o700)
+
+    def lookup(path: str) -> str:
+        result = subprocess.run(
+            [os.fspath(helper), "get"],
+            input=f"protocol=https\nhost=github.com\npath={path}\n\n",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout
+
+    assert "password=PRIMARY_WRITE" in lookup("BakerSean168/digital-biome.git")
+    assert "password=READ_ONLY" in lookup("BakerSean168/thought-forest.git")
+
+
+@pytest.mark.asyncio
+async def test_runtime_mints_dependency_read_token_and_primary_write_token(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+
+    import agent.github.app as app_module
+    import langgraph.config as langgraph_config
+
+    from openswe_ext.docker_sandbox import _github_credentials_from_run_context
+
+    manifest = tmp_path / "projects.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "repo": "BakerSean168/digital-biome",
+                    "sandbox_read_repositories": ["BakerSean168/thought-forest"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPEN_SWE_LOCAL_PROJECTS_FILE", str(manifest))
+    monkeypatch.setattr(
+        langgraph_config,
+        "get_config",
+        lambda: {
+            "configurable": {
+                "source": "forgeflow",
+                "repo": {"owner": "BakerSean168", "name": "digital-biome"},
+            }
+        },
+    )
+    calls: list[dict[str, object]] = []
+
+    async def mint(**kwargs):
+        calls.append(kwargs)
+        return ("READ_TOKEN" if len(calls) == 1 else "WRITE_TOKEN"), "2099-01-01"
+
+    monkeypatch.setattr(app_module, "get_github_app_installation_token_with_expiry", mint)
+    credentials = await _github_credentials_from_run_context()
+    assert credentials is not None
+    assert credentials.read_token == "READ_TOKEN"
+    assert credentials.write_token == "WRITE_TOKEN"
+    assert credentials.write_repository == "BakerSean168/digital-biome"
+    assert calls == [
+        {
+            "repositories": ["digital-biome", "thought-forest"],
+            "permissions": {"contents": "read", "pull_requests": "read"},
+            "log_errors": False,
+        },
+        {
+            "repositories": ["digital-biome"],
+            "permissions": {"contents": "write", "pull_requests": "read"},
+            "log_errors": False,
+        },
+    ]
