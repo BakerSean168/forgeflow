@@ -55,6 +55,22 @@ replaced the same pinned upstream hook. The
 characterization tests in `tests/test_workflow_push_guard.py` cover both the false-positive case
 and the retained human-approval case.
 
+## Runtime compatibility notes
+
+- The pinned Open SWE package declares `Python >=3.14`; Python 3.14 is therefore part of the
+  current runtime contract, not an incidental ForgeFlow preference.
+- ForgeFlow constrains the local Agent Server line to `langgraph-api>=0.14,<0.15`. The lockfile is
+  reviewed with each minor-line change and the existing durable thread state must survive a real
+  restart before promotion.
+- The GCP Dev deployment is loopback-only. Open SWE intentionally refuses relative/loopback
+  completion webhooks, so `RUN_COMPLETE_WEBHOOK_SECRET` and `COMPLETION_WEBHOOK_URL` remain unset
+  unless an explicitly approved public HTTPS callback endpoint is introduced. The corresponding
+  startup warning means run-completion replies are unavailable on this local-only surface; it is
+  not a readiness failure.
+- Import-time warnings from LangChain's Pydantic v1 compatibility shim are upstream compatibility
+  noise on Python 3.14. ForgeFlow/Open SWE runtime code does not directly depend on `pydantic.v1`;
+  treat a future direct dependency or runtime failure as a new compatibility gate.
+
 ## Ownership rule
 
 Open SWE/LangGraph own agent execution, reviewer execution, scheduling, thread/run durability,

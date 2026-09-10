@@ -597,6 +597,10 @@ The tested default is `SANDBOX_TYPE=docker`; model-controlled commands do not ru
 `local` backend on the host principal. The desktop-only Open SWE configuration is not the
 production acceptance path because the policy requires the official reviewer graph.
 
+The systemd unit treats the server's normal SIGTERM exit (`143`) as successful shutdown. This keeps
+planned deploy/restart operations from being recorded as service failures while retaining
+`Restart=on-failure` for genuine abnormal exits.
+
 ## 20. Upstream-change containment
 
 ForgeFlow has two bounded upstream-facing surfaces: policy orchestration imports are isolated behind `forgeflow/adapters/openswe.py`, while self-hosted runtime hooks live under `openswe_ext/`. Both are covered by upstream-contract/characterization tests.
