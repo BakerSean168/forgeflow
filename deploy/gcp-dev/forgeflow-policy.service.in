@@ -14,6 +14,7 @@ Environment=FORGEFLOW_POLICY_PORT=@PORT@
 Environment=OPEN_SWE_CODEX_BROKER_PORT=@BROKER_PORT@
 ExecStart=@ROOT@/deploy/gcp-dev/start-forgeflow-policy.sh
 Restart=on-failure
+SuccessExitStatus=143
 RestartSec=3
 TimeoutStartSec=90
 TimeoutStopSec=30

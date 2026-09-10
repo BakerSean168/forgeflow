@@ -12,6 +12,7 @@ def test_new_service_runs_full_langgraph_overlay_not_legacy_runtime() -> None:
     assert "open-swe-codex-broker.service" in service
     assert "node dist/main.js" not in service + start
     assert "OpenHands" not in service + start
+    assert "SuccessExitStatus=143" in service
 
 
 def test_deployment_uses_loopback_and_external_secret_files() -> None:

@@ -55,3 +55,9 @@ def test_upstream_run_config_still_accepts_policy_model_and_desktop_fields() -> 
     assert parsed.local_project_path == "/tmp/worktree"
     assert parsed.agent_model_id == "openai:gpt-5.6-luna"
     assert parsed.reviewer_model_id == "openai:gpt-5.6-sol"
+
+
+def test_runtime_dependency_line_matches_supported_agent_server() -> None:
+    pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'requires-python = ">=3.14,<3.15"' in pyproject
+    assert 'constraint-dependencies = ["langgraph-api>=0.14,<0.15"]' in pyproject
