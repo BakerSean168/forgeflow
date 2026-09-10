@@ -293,3 +293,21 @@ async def test_runtime_mints_dependency_read_token_and_primary_write_token(
             "log_errors": False,
         },
     ]
+
+
+def test_execute_preserves_empty_stdout_for_structured_backend_parsers(monkeypatch) -> None:
+    import subprocess
+
+    from openswe_ext import docker_sandbox
+
+    monkeypatch.setattr(docker_sandbox, "_assert_owned_container", lambda _sid: None)
+    monkeypatch.setattr(docker_sandbox, "_container_running", lambda _sid: True)
+    monkeypatch.setattr(
+        docker_sandbox,
+        "_docker",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=args, returncode=0, stdout=b"", stderr=b""),
+    )
+    result = docker_sandbox.DockerSandbox("openswe-sbx-test").execute("true")
+    assert result.exit_code == 0
+    assert result.output == ""
+    assert result.truncated is False

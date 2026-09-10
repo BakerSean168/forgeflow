@@ -304,7 +304,7 @@ class DockerSandbox(BaseSandbox):
             parts.append(stdout)
         if stderr:
             parts.extend(f"[stderr] {line}" for line in stderr.rstrip().splitlines())
-        output = "\n".join(parts) if parts else "<no output>"
+        output = "\n".join(parts)
         truncated = len(output.encode("utf-8")) > self._max_output_bytes
         if truncated:
             output = output.encode("utf-8")[: self._max_output_bytes].decode(
@@ -312,7 +312,12 @@ class DockerSandbox(BaseSandbox):
             )
             output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
         if result.returncode != 0:
-            output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
+            detail = output.rstrip()
+            output = (
+                f"{detail}\n\nExit code: {result.returncode}"
+                if detail
+                else f"Exit code: {result.returncode}"
+            )
         return ExecuteResponse(output=output, exit_code=result.returncode, truncated=truncated)
 
     def configure_github_credentials(self, credentials: GitHubSandboxCredentials) -> None:
