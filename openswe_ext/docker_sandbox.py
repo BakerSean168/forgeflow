@@ -153,6 +153,8 @@ def _normalize_path(path: str) -> str:
     return str(PurePosixPath("/workspace") / raw)
 
 _CACHE_ROOT = "/workspace/.open-swe-cache"
+_EXECUTABLE_TMPDIR = f"{_RUNTIME_ROOT}/tmp"
+_XDG_RUNTIME_DIR = "/tmp/.runtime"
 
 
 def _runtime_env_prelude() -> str:
@@ -172,6 +174,8 @@ def _runtime_env_prelude() -> str:
         "GOMODCACHE": f"{_CACHE_ROOT}/go-mod",
         "CARGO_HOME": f"{_CACHE_ROOT}/cargo",
         "PIP_CACHE_DIR": f"{_CACHE_ROOT}/pip",
+        "TMPDIR": _EXECUTABLE_TMPDIR,
+        "XDG_RUNTIME_DIR": _XDG_RUNTIME_DIR,
     }
     paths = " ".join(shlex.quote(value) for value in [*dirs.values(), _RUNTIME_ROOT])
     exports = " ".join(f"{name}={shlex.quote(value)}" for name, value in dirs.items())

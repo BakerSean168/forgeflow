@@ -31,10 +31,13 @@ AppArmor profiles, all Linux capabilities dropped, and `no-new-privileges`.
 The Docker socket, host home, Codex credentials, SSH keys, and GitHub App
 private key are never mounted.
 
-`/tmp` and `/home/sandbox` are tmpfs. High-volume language/package caches live
+`/tmp` and `/home/sandbox` are `noexec` tmpfs. High-volume language/package caches live
 under the thread-scoped workspace volume at `/workspace/.open-swe-cache`, so
 pnpm/npm/uv/Go/Cargo caches survive reconnects without filling the small HOME
-tmpfs.
+tmpfs. Commands also export `TMPDIR=/workspace/.open-swe-runtime/tmp` for tools
+that legitimately execute compiler/test temporaries, while `XDG_RUNTIME_DIR` stays
+on ephemeral `/tmp/.runtime` for locks and runtime state. This preserves the
+`noexec` tmpfs boundary without breaking project-local verification.
 
 Deep Agents also expects writable virtual artifact roots at
 `/large_tool_results` and `/conversation_history`. The provider does not make
