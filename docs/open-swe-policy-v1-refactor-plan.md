@@ -820,17 +820,21 @@ The refactor is complete when all are true:
 - [ ] old OpenHands/Antigravity execution plane deleted;
 - [ ] old DB/backups/workspaces/tooling deleted from the host;
 - [ ] old ForgeFlow systemd topology removed;
-- [ ] Open SWE exact SHA pinned;
-- [ ] upstream contract suite green;
-- [ ] ForgeFlow policy graph runs in the same LangGraph deployment as Open SWE;
-- [ ] implementation uses Luna xhigh by policy;
-- [ ] review uses official Open SWE reviewer with Sol medium;
-- [ ] false-success/no-progress test proves run success cannot bypass evidence;
-- [ ] exact-head CI gate implemented;
-- [ ] exact-head reviewer gate implemented;
-- [ ] P0/P1/P2 repair loop bounded and same-thread;
-- [ ] restart/replay produces no duplicate dispatch;
+- [x] Open SWE exact SHA pinned;
+- [x] upstream contract suite green;
+- [x] ForgeFlow policy graph runs in the same LangGraph deployment as Open SWE;
+- [x] implementation uses Luna xhigh by policy;
+- [x] review uses official Open SWE reviewer with Sol medium;
+- [x] false-success/no-progress test proves run success cannot bypass evidence;
+- [x] exact-head CI gate implemented;
+- [x] exact-head reviewer gate implemented;
+- [x] P0/P1/P2 repair loop bounded and same-thread;
+- [x] restart/replay produces no duplicate dispatch;
 - [ ] real repository acceptance reaches READY after at least one repair/re-review path;
 - [ ] final exact head has CI PASS and zero open P0/P1/P2;
-- [ ] README/docs clearly describe ForgeFlow as Open SWE quality governance, not an autonomous coding runtime;
+- [x] README/docs clearly describe ForgeFlow as Open SWE quality governance, not an autonomous coding runtime;
 - [ ] release published as a new major version after real acceptance.
+
+The Digital Biome PR #59 evidence independently demonstrates the Open SWE review → repair →
+re-review loop and exact-head CI closure. It is not evidence that the ForgeFlow policy graph
+itself reached `READY`, so the real-repository `READY` item remains unchecked.

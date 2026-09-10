@@ -25,8 +25,15 @@ CI, and exact-head reviewer evidence before `READY`.
 
 ## Status
 
-The repository is undergoing the destructive Policy V1 / repository v2.0.0 rebuild. The legacy
-Node/SQLite/OpenHands control plane is intentionally retired rather than migrated.
+ForgeFlow Policy V1 / v2.0.0 is implementation-complete and acceptance-backed. The release
+candidate is tracked in [PR #27](https://github.com/BakerSean168/forgeflow/pull/27), which remains
+open and unmerged; the published release and tag are intentionally still pending.
+
+The legacy Node/SQLite/OpenHands control plane is intentionally retired rather than migrated.
+
+Acceptance evidence includes deterministic policy tests, exact-head CI and reviewer gates, and the
+Digital Biome PR #59 review → repair → re-review cycle. PR #59 is separate repository evidence for
+the implementation/reviewer loop, not a ForgeFlow policy-graph `READY` run.
 
 See:
 
@@ -41,7 +48,7 @@ Requires `uv` and Python 3.14.
 ```bash
 uv sync --locked --python 3.14
 uv run pytest
-uv run ruff check forgeflow tests
+uv run ruff check forgeflow openswe_ext tests
 ```
 
 ## License
