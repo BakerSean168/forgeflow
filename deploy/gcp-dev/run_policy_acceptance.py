@@ -20,6 +20,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from httpx import HTTPStatusError
+
 TERMINAL_FOR_ACCEPTANCE = frozenset({"READY", "ESCALATED", "CANCELLED"})
 EVIDENCE_KEYS = (
     "status",
@@ -116,15 +118,37 @@ async def _assistant_id(client: Any) -> str:
     return value
 
 
-async def _reconcile(client: Any, thread_id: str, assistant_id: str, payload: dict[str, Any]) -> None:
-    await client.runs.wait(
-        thread_id,
-        assistant_id,
-        input=payload,
-        config={"configurable": {"thread_id": thread_id}},
-        multitask_strategy="reject",
-        raise_error=True,
-    )
+_THREAD_BUSY_DETAIL = "Thread is already running a task."
+
+
+def _is_thread_busy_conflict(exc: HTTPStatusError) -> bool:
+    if exc.response.status_code != 409:
+        return False
+    try:
+        detail = exc.response.json().get("detail")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(detail, str) and detail.startswith(_THREAD_BUSY_DETAIL)
+
+
+async def _reconcile(
+    client: Any, thread_id: str, assistant_id: str, payload: dict[str, Any]
+) -> bool:
+    """Run one reconcile step, yielding cleanly when the cron owns the thread slot."""
+    try:
+        await client.runs.wait(
+            thread_id,
+            assistant_id,
+            input=payload,
+            config={"configurable": {"thread_id": thread_id}},
+            multitask_strategy="reject",
+            raise_error=True,
+        )
+    except HTTPStatusError as exc:
+        if _is_thread_busy_conflict(exc):
+            return False
+        raise
+    return True
 
 
 async def run_acceptance(args: argparse.Namespace) -> int:
@@ -187,8 +211,8 @@ async def run_acceptance(args: argparse.Namespace) -> int:
     last_status: tuple[Any, ...] | None = None
     first = True
     while True:
-        await _reconcile(client, thread_id, assistant_id, initial if first else {})
-        first = False
+        if await _reconcile(client, thread_id, assistant_id, initial if first else {}):
+            first = False
         state = await client.threads.get_state(thread_id)
         values = dict(state.get("values") or {})
         marker = (
@@ -215,8 +239,12 @@ async def run_acceptance(args: argparse.Namespace) -> int:
             write_evidence(evidence_path, evidence)
             print(f"evidence_file={evidence_path}", flush=True)
             if status == "READY" and not args.leave_monitoring:
-                await _reconcile(client, thread_id, assistant_id, {"cancel_requested": True})
-                await _reconcile(client, thread_id, assistant_id, {})
+                while not await _reconcile(
+                    client, thread_id, assistant_id, {"cancel_requested": True}
+                ):
+                    await asyncio.sleep(args.poll_seconds)
+                while not await _reconcile(client, thread_id, assistant_id, {}):
+                    await asyncio.sleep(args.poll_seconds)
                 cleanup = cleanup_worktree(repo_path, worktree, branch_name)
                 print(f"post_ready_policy=CANCELLED worktree_cleanup={cleanup}", flush=True)
             elif status != "READY":
