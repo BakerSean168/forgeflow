@@ -18,10 +18,12 @@ from langgraph_sdk.errors import NotFoundError
 from forgeflow.adapters.github import (
     CiSignals,
     CommitEvidence,
+    GitHubEvidenceError,
     PullRequestEvidence,
     fetch_ci_signals,
     fetch_head_commit,
     fetch_pull_request,
+    find_pull_request_for_operation,
     preflight_github_repository,
 )
 from forgeflow.adapters.openswe import (
@@ -50,6 +52,7 @@ from forgeflow.policy import (
     apply_implementation_evidence,
     apply_review_decision,
     cancel,
+    clear_wait,
     escalate,
     mark_repair_dispatched,
     mark_repair_run_terminal,
@@ -168,6 +171,10 @@ class PolicyServices(Protocol):
     ) -> ThreadSnapshot: ...
 
     async def fetch_pr(self, pr_url: str) -> PullRequestEvidence | None: ...
+
+    async def find_pr_for_operation(
+        self, *, owner: str, repo: str, base_ref: str, operation_key: str
+    ) -> PullRequestEvidence | None: ...
 
     async def fetch_ci(self, pr: PullRequestEvidence) -> CiSignals | None: ...
 
@@ -492,6 +499,16 @@ class DefaultPolicyServices:
 
     async def fetch_pr(self, pr_url: str) -> PullRequestEvidence | None:
         return await fetch_pull_request(pr_url)
+
+    async def find_pr_for_operation(
+        self, *, owner: str, repo: str, base_ref: str, operation_key: str
+    ) -> PullRequestEvidence | None:
+        return await find_pull_request_for_operation(
+            owner=owner,
+            repo=repo,
+            base_ref=base_ref,
+            operation_trailer=operation_trailer(operation_key),
+        )
 
     async def fetch_ci(self, pr: PullRequestEvidence) -> CiSignals | None:
         return await fetch_ci_signals(pr)
@@ -821,14 +838,31 @@ async def _reconcile_implementation_evidence(
         runtime=_required(state, "implementation_runtime"),
     )
     tracked = tracked_pull_request(thread.metadata)
+    authoritative: PullRequestEvidence | None = None
     if tracked is None:
-        evidence = implementation_evidence(
-            state,
-            run_status="success",
-            tracked_pr=None,
-            authoritative_pr=None,
-        )
-        return await _apply_implementation_evidence_with_attempt(state, services, evidence)
+        operation_key = _completed_implementation_operation_key(state)
+        try:
+            authoritative = await services.find_pr_for_operation(
+                owner=_required(state, "repo_owner"),
+                repo=_required(state, "repo_name"),
+                base_ref=_required(state, "base_ref"),
+                operation_key=operation_key,
+            )
+        except GitHubEvidenceError as exc:
+            failure_code = str(exc) or "PR_OPERATION_LOOKUP_INVALID"
+            if failure_code == "PR_OPERATION_EVIDENCE_UNAVAILABLE":
+                return await _wait_for_operation_pr_lookup(state, services)
+            await _finish_openswe_attempt_for_state(
+                state,
+                services,
+                outcome="BLOCKED",
+                failure_code=failure_code,
+                failure_class="POLICY_DENIED",
+            )
+            return escalate(state, failure_code)
+        if authoritative is None:
+            return await _wait_for_implementation_pr_evidence(state, services)
+        tracked = _tracked_from_authoritative(authoritative)
 
     tracked_failure = tracked_pr_target_failure(state, tracked)
     if tracked_failure:
@@ -854,7 +888,8 @@ async def _reconcile_implementation_evidence(
         )
         return await _apply_implementation_evidence_with_attempt(state, services, evidence)
 
-    authoritative = await services.fetch_pr(tracked.url)
+    if authoritative is None:
+        authoritative = await services.fetch_pr(tracked.url)
     if authoritative is None:
         result = deepcopy(state)
         result["last_failure_code"] = "PR_EVIDENCE_UNAVAILABLE"
@@ -880,13 +915,73 @@ async def _reconcile_implementation_evidence(
             failure_code="HEAD_OPERATION_PROVENANCE_MISSING"
         )
         return await _apply_implementation_evidence_with_attempt(state, services, missing)
+    settled_state = clear_wait(state)
     evidence = implementation_evidence(
-        state,
+        settled_state,
         run_status="success",
         tracked_pr=tracked,
         authoritative_pr=authoritative,
     )
-    return await _apply_implementation_evidence_with_attempt(state, services, evidence)
+    return await _apply_implementation_evidence_with_attempt(settled_state, services, evidence)
+
+
+async def _wait_for_operation_pr_lookup(
+    state: ForgeFlowState, services: PolicyServices
+) -> ForgeFlowState:
+    stage = "implementation_pr_lookup"
+    count = state.get("wait_count", 0) if state.get("wait_stage") == stage else 0
+    if count < DEFAULT_BUDGET.external_evidence_reconciles:
+        return note_wait(
+            state,
+            stage,
+            "PR_OPERATION_EVIDENCE_UNAVAILABLE",
+            limit=DEFAULT_BUDGET.external_evidence_reconciles,
+        )
+    failure_code = "PR_OPERATION_EVIDENCE_UNAVAILABLE_WAIT_EXHAUSTED"
+    await _finish_openswe_attempt_for_state(
+        state,
+        services,
+        outcome="BLOCKED",
+        failure_code=failure_code,
+        failure_class="UNCLASSIFIED",
+    )
+    return escalate(clear_wait(state), failure_code)
+
+
+async def _wait_for_implementation_pr_evidence(
+    state: ForgeFlowState, services: PolicyServices
+) -> ForgeFlowState:
+    stage = "implementation_pr_evidence"
+    count = state.get("wait_count", 0) if state.get("wait_stage") == stage else 0
+    if count < DEFAULT_BUDGET.external_evidence_reconciles:
+        return note_wait(
+            state,
+            stage,
+            "PR_EVIDENCE_SETTLING",
+            limit=DEFAULT_BUDGET.external_evidence_reconciles,
+        )
+    settled_state = clear_wait(state)
+    evidence = implementation_evidence(
+        settled_state,
+        run_status="success",
+        tracked_pr=None,
+        authoritative_pr=None,
+    )
+    return await _apply_implementation_evidence_with_attempt(settled_state, services, evidence)
+
+
+def _tracked_from_authoritative(pr: PullRequestEvidence):
+    from forgeflow.evidence import TrackedPullRequest
+
+    return TrackedPullRequest(
+        owner=pr.owner,
+        repo=pr.repo,
+        url=pr.url,
+        number=pr.number,
+        state=pr.state,
+        head_ref=pr.head_ref,
+        base_ref=pr.base_ref,
+    )
 
 
 async def _reconcile_ci(state: ForgeFlowState, services: PolicyServices) -> ForgeFlowState:
