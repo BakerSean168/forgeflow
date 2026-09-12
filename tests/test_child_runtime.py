@@ -73,8 +73,8 @@ async def test_implementation_and_repair_dispatch_reuse_same_thread() -> None:
     )
     assert (first, second) == ("run-1", "run-2")
     assert {call[0] for call in calls} == {thread_id}
-    assert all(call[2]["agent_model_id"] == "openai:gpt-5.6-luna" for call in calls)
-    assert all(call[2]["agent_effort"] == "xhigh" for call in calls)
+    assert all(call[2]["agent_model_id"] == "fireworks:accounts/fireworks/models/glm-5p3" for call in calls)
+    assert all(call[2]["agent_effort"] == "max" for call in calls)
     assert all(call[2]["source"] == "desktop" for call in calls)
     assert all(call[2]["local_project_path"] == "/tmp/worktree" for call in calls)
     assert all(call[3]["multitask_strategy"] == "enqueue" for call in calls)

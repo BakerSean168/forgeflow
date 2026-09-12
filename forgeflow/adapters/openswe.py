@@ -9,6 +9,14 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from openswe_ext.model_policy import (
+    IMPLEMENTATION_EFFORT,
+    IMPLEMENTATION_MODEL_ID,
+    install_forgeflow_model_policy,
+)
+
+install_forgeflow_model_policy()
+
 from agent.dashboard.team_settings import get_team_default_model_pair
 from agent.dispatch import dispatch_agent_run
 from agent.github.app import (
@@ -102,8 +110,8 @@ def implementation_config(
     repo_owner: str,
     repo_name: str,
     workspace_path: str | None = None,
-    model_id: str = "openai:gpt-5.6-luna",
-    effort: str = "xhigh",
+    model_id: str = IMPLEMENTATION_MODEL_ID,
+    effort: str = IMPLEMENTATION_EFFORT,
     draft_prs: bool = True,
 ) -> dict[str, Any]:
     """Build the minimal Open SWE configurable contract for implementation/repair."""

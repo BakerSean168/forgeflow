@@ -355,8 +355,8 @@ Default V1 role policy:
 
 | Phase | Graph | Model | Effort |
 | --- | --- | --- | --- |
-| Implementation | Open SWE `agent` | `openai:gpt-5.6-luna` | `xhigh` |
-| Repair | same Open SWE `agent` thread | `openai:gpt-5.6-luna` | `xhigh` |
+| Implementation | Open SWE `agent` | `fireworks:accounts/fireworks/models/glm-5p3` via private LiteLLM | `max` |
+| Repair | same Open SWE `agent` thread | `fireworks:accounts/fireworks/models/glm-5p3` via private LiteLLM | `max` |
 | Review | Open SWE `reviewer` | `openai:gpt-5.6-sol` | `medium` |
 | Reviewer subagent | reviewer subagent | `openai:gpt-5.6-sol` | `medium` |
 
@@ -642,12 +642,12 @@ The v2 acceptance gate is defined by the following real-repository path, and PR 
 
 ```text
 objective
- -> Open SWE Luna implementation
+ -> Open SWE GLM 5.3 implementation (Luna fallback)
  -> real commit/push/PR
  -> exact-head CI
  -> official Open SWE Sol review
  -> blocking finding
- -> same-thread Luna repair
+ -> same-thread GLM 5.3 repair (Luna fallback)
  -> new exact head
  -> exact-head CI
  -> official re-review
