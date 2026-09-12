@@ -136,7 +136,7 @@ async def find_pull_request_for_operation(
     after GitHub delivery. ForgeFlow therefore cannot treat that metadata as the
     sole source of delivery truth. GitHub remains authoritative, and a candidate
     is accepted only when its current head commit contains ``operation_trailer``
-    as a complete line.
+    as a complete line and the PR head is unchanged when revalidated.
     """
     if not all(value.strip() for value in (owner, repo, base_ref, operation_trailer)):
         raise ValueError("operation PR lookup fields are required")
@@ -169,7 +169,7 @@ async def find_pull_request_for_operation(
                 )
                 if response.status_code != 200:
                     raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
-                payload = response.json()
+                payload = _github_json(response)
                 if not isinstance(payload, list):
                     raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
                 for row in payload:
@@ -182,7 +182,7 @@ async def find_pull_request_for_operation(
                     )
                     if commit_response.status_code != 200:
                         raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
-                    commit_payload = commit_response.json()
+                    commit_payload = _github_json(commit_response)
                     commit = (
                         commit_payload.get("commit")
                         if isinstance(commit_payload, dict)
@@ -191,8 +191,30 @@ async def find_pull_request_for_operation(
                     message = commit.get("message") if isinstance(commit, dict) else None
                     if not isinstance(message, str):
                         raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
-                    if operation_trailer in {line.strip() for line in message.splitlines()}:
-                        matches.append(candidate)
+                    if operation_trailer not in {line.strip() for line in message.splitlines()}:
+                        continue
+
+                    # The list row is only a snapshot. Re-read the PR after
+                    # validating the commit so a force-push during lookup cannot
+                    # promote a trailer from a head that is already stale.
+                    current_response = await client.get(
+                        f"https://api.github.com/repos/{owner}/{repo}/pulls/{candidate.number}",
+                        headers=headers,
+                    )
+                    if current_response.status_code != 200:
+                        raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
+                    current = _pull_request_from_payload(
+                        owner, repo, _github_json(current_response)
+                    )
+                    if current is None:
+                        raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
+                    if (
+                        current.state != "open"
+                        or current.base_ref != base_ref
+                        or current.head_sha != candidate.head_sha
+                    ):
+                        continue
+                    matches.append(current)
                 if len(payload) < 100:
                     break
             else:
@@ -203,6 +225,13 @@ async def find_pull_request_for_operation(
     if len(unique) > 1:
         raise GitHubEvidenceError("PR_OPERATION_AMBIGUOUS")
     return next(iter(unique.values()), None)
+
+
+def _github_json(response: object) -> object:
+    try:
+        return response.json()  # type: ignore[attr-defined]
+    except (ValueError, TypeError) as exc:
+        raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE") from exc
 
 
 def _pull_request_from_payload(
