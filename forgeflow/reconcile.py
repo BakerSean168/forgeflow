@@ -6,8 +6,10 @@ dispatch, or terminal schedule cleanup). LangGraph remains the durable runtime.
 """
 
 import asyncio
+import os
 from collections.abc import Mapping
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Protocol
 
 from langgraph_sdk import get_client
@@ -60,12 +62,15 @@ from forgeflow.policy import (
 from forgeflow.projects import load_repository_policy
 from forgeflow.prompts.implementation import build_implementation_prompt, operation_trailer
 from forgeflow.prompts.repair import build_ci_repair_prompt, build_review_repair_prompt
+from forgeflow.routing import RouteDefinition, load_route_registry
 from forgeflow.state import DEFAULT_BUDGET, TERMINAL_STATUSES, ForgeFlowState
+from openswe_ext.external_agent_runtime import ExternalAgentChildRuntime
 
 _RECONCILE_CRON_KIND = "forgeflow_reconcile"
 _RECONCILE_SCHEDULE = "* * * * *"
 _PENDING_RUN_STATUSES = frozenset({"pending", "running"})
 _FAILED_RUN_STATUSES = frozenset({"error", "timeout", "interrupted"})
+_LEGACY_IMPLEMENTATION_ROUTE_ID = "openswe-current"
 
 
 class ReconcileError(RuntimeError):
@@ -79,19 +84,33 @@ class PolicyServices(Protocol):
 
     async def preflight_repository(self, state: ForgeFlowState) -> RepositoryPreflight: ...
 
+    def select_implementation_route(self) -> RouteDefinition | None: ...
+
     async def ensure_implementation_thread(
-        self, *, policy_thread_id: str, repo_owner: str, repo_name: str, objective: str
+        self,
+        *,
+        policy_thread_id: str,
+        route_id: str,
+        runtime: str,
+        repo_owner: str,
+        repo_name: str,
+        objective: str,
     ) -> str: ...
 
-    async def find_child_run(self, *, thread_id: str, operation_key: str) -> str | None: ...
+    async def find_child_run(
+        self, *, thread_id: str, operation_key: str, route_id: str, runtime: str
+    ) -> str | None: ...
 
     async def dispatch_implementation(
         self,
         *,
         thread_id: str,
+        route_id: str,
+        runtime: str,
         objective: str,
         repo_owner: str,
         repo_name: str,
+        base_ref: str,
         operation_key: str,
         workspace_path: str | None,
     ) -> str: ...
@@ -100,6 +119,8 @@ class PolicyServices(Protocol):
         self,
         *,
         thread_id: str,
+        route_id: str,
+        runtime: str,
         prompt: str,
         repo_owner: str,
         repo_name: str,
@@ -107,9 +128,13 @@ class PolicyServices(Protocol):
         workspace_path: str | None,
     ) -> str: ...
 
-    async def read_child_run(self, *, thread_id: str, run_id: str) -> ChildRunSnapshot: ...
+    async def read_child_run(
+        self, *, thread_id: str, run_id: str, route_id: str, runtime: str
+    ) -> ChildRunSnapshot: ...
 
-    async def read_implementation_thread(self, thread_id: str) -> ThreadSnapshot: ...
+    async def read_implementation_thread(
+        self, thread_id: str, *, route_id: str, runtime: str
+    ) -> ThreadSnapshot: ...
 
     async def fetch_pr(self, pr_url: str) -> PullRequestEvidence | None: ...
 
@@ -136,6 +161,7 @@ class DefaultPolicyServices:
     def __init__(self, client: Any | None = None) -> None:
         self.client = client or get_client()
         self.child = OpenSweChildRuntime(self.client)
+        self.external = ExternalAgentChildRuntime(self.client)
         self.reviewer = OpenSweReviewerRuntime(self.client)
 
     async def ensure_reconcile_cron(self, policy_thread_id: str) -> str:
@@ -191,50 +217,102 @@ class DefaultPolicyServices:
             )
         return github
 
-    async def ensure_implementation_thread(
-        self, *, policy_thread_id: str, repo_owner: str, repo_name: str, objective: str
-    ) -> str:
-        return await self.child.ensure_implementation_thread(
-            policy_thread_id=policy_thread_id,
-            repo_owner=repo_owner,
-            repo_name=repo_name,
-            objective=objective,
-        )
+    def select_implementation_route(self) -> RouteDefinition | None:
+        path = os.environ.get("FORGEFLOW_ROUTE_CONFIG_FILE", "").strip()
+        if not path:
+            raise ReconcileError("FORGEFLOW_ROUTE_CONFIG_FILE is required")
+        return load_route_registry(Path(path)).select("IMPLEMENT")
 
-    async def find_child_run(self, *, thread_id: str, operation_key: str) -> str | None:
-        return await self.child.find_run_by_operation(
-            thread_id=thread_id, operation_key=operation_key
-        )
+    async def ensure_implementation_thread(
+        self,
+        *,
+        policy_thread_id: str,
+        route_id: str,
+        runtime: str,
+        repo_owner: str,
+        repo_name: str,
+        objective: str,
+    ) -> str:
+        if runtime == "OPEN_SWE":
+            return await self.child.ensure_implementation_thread(
+                policy_thread_id=policy_thread_id,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                objective=objective,
+            )
+        if runtime == "EXTERNAL_ACP":
+            return await self.external.ensure_thread(
+                policy_thread_id=policy_thread_id,
+                route_id=route_id,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                objective=objective,
+            )
+        raise ReconcileError(f"unsupported implementation runtime: {runtime}")
+
+    async def find_child_run(
+        self, *, thread_id: str, operation_key: str, route_id: str, runtime: str
+    ) -> str | None:
+        if runtime == "OPEN_SWE":
+            return await self.child.find_run_by_operation(
+                thread_id=thread_id, operation_key=operation_key
+            )
+        if runtime == "EXTERNAL_ACP":
+            return await self.external.find_run_by_operation(
+                thread_id=thread_id, operation_key=operation_key
+            )
+        raise ReconcileError(f"unsupported implementation runtime: {runtime}")
 
     async def dispatch_implementation(
         self,
         *,
         thread_id: str,
+        route_id: str,
+        runtime: str,
         objective: str,
         repo_owner: str,
         repo_name: str,
+        base_ref: str,
         operation_key: str,
         workspace_path: str | None,
     ) -> str:
-        return await self.child.dispatch_implementation(
-            thread_id=thread_id,
-            objective=objective,
-            repo_owner=repo_owner,
-            repo_name=repo_name,
-            operation_key=operation_key,
-            workspace_path=workspace_path,
-        )
+        if runtime == "OPEN_SWE":
+            return await self.child.dispatch_implementation(
+                thread_id=thread_id,
+                objective=objective,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                operation_key=operation_key,
+                workspace_path=workspace_path,
+            )
+        if runtime == "EXTERNAL_ACP":
+            return await self.external.dispatch(
+                thread_id=thread_id,
+                route_id=route_id,
+                objective=objective,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                base_ref=base_ref,
+                operation_key=operation_key,
+                phase="IMPLEMENT",
+            )
+        raise ReconcileError(f"unsupported implementation runtime: {runtime}")
 
     async def dispatch_repair(
         self,
         *,
         thread_id: str,
+        route_id: str,
+        runtime: str,
         prompt: str,
         repo_owner: str,
         repo_name: str,
         operation_key: str,
         workspace_path: str | None,
     ) -> str:
+        del route_id
+        if runtime != "OPEN_SWE":
+            raise ReconcileError("external-agent repair routing is not enabled yet")
         return await self.child.dispatch_repair(
             thread_id=thread_id,
             prompt=prompt,
@@ -244,11 +322,25 @@ class DefaultPolicyServices:
             workspace_path=workspace_path,
         )
 
-    async def read_child_run(self, *, thread_id: str, run_id: str) -> ChildRunSnapshot:
-        return await self.child.read_run(thread_id=thread_id, run_id=run_id)
+    async def read_child_run(
+        self, *, thread_id: str, run_id: str, route_id: str, runtime: str
+    ) -> ChildRunSnapshot:
+        del route_id
+        if runtime == "OPEN_SWE":
+            return await self.child.read_run(thread_id=thread_id, run_id=run_id)
+        if runtime == "EXTERNAL_ACP":
+            return await self.external.read_run(thread_id=thread_id, run_id=run_id)
+        raise ReconcileError(f"unsupported implementation runtime: {runtime}")
 
-    async def read_implementation_thread(self, thread_id: str) -> ThreadSnapshot:
-        return await self.child.read_thread(thread_id)
+    async def read_implementation_thread(
+        self, thread_id: str, *, route_id: str, runtime: str
+    ) -> ThreadSnapshot:
+        del route_id
+        if runtime == "OPEN_SWE":
+            return await self.child.read_thread(thread_id)
+        if runtime == "EXTERNAL_ACP":
+            return await self.external.read_thread(thread_id)
+        raise ReconcileError(f"unsupported implementation runtime: {runtime}")
 
     async def fetch_pr(self, pr_url: str) -> PullRequestEvidence | None:
         return await fetch_pull_request(pr_url)
@@ -351,10 +443,23 @@ async def _reconcile_new(
     if repository_policy.ci_required and not repository_policy.required_checks:
         return escalate(state, "REQUIRED_CHECK_POLICY_MISSING")
 
+    route_id = state.get("implementation_route_id")
+    runtime = state.get("implementation_runtime")
+    if not route_id or not runtime:
+        route = services.select_implementation_route()
+        if route is None:
+            return escalate(state, "IMPLEMENTATION_ROUTE_UNAVAILABLE")
+        result = deepcopy(state)
+        result["implementation_route_id"] = route.id
+        result["implementation_runtime"] = route.runtime
+        return result
+
     thread_id = state.get("implementation_thread_id")
     if not thread_id:
         thread_id = await services.ensure_implementation_thread(
             policy_thread_id=policy_thread_id,
+            route_id=route_id,
+            runtime=runtime,
             repo_owner=_required(state, "repo_owner"),
             repo_name=_required(state, "repo_name"),
             objective=_required(state, "objective"),
@@ -372,12 +477,18 @@ async def _reconcile_implementation_run(
         return await _adopt_or_dispatch_initial(state, policy_thread_id, services)
     thread_id = _required(state, "implementation_thread_id")
     run_id = _required(state, "implementation_run_id")
-    snapshot = await services.read_child_run(thread_id=thread_id, run_id=run_id)
+    snapshot = await services.read_child_run(
+        thread_id=thread_id,
+        run_id=run_id,
+        route_id=_required(state, "implementation_route_id"),
+        runtime=_required(state, "implementation_runtime"),
+    )
     if snapshot.status in _PENDING_RUN_STATUSES:
         return state
     if snapshot.status == "success":
         return mark_run_terminal(state)
-    return note_child_run_failure(state, f"CHILD_RUN_{snapshot.status.upper()}")
+    failure_code = snapshot.failure_code or f"CHILD_RUN_{snapshot.status.upper()}"
+    return note_child_run_failure(state, failure_code)
 
 
 async def _adopt_or_dispatch_initial(
@@ -385,10 +496,19 @@ async def _adopt_or_dispatch_initial(
 ) -> ForgeFlowState:
     thread_id = _required(state, "implementation_thread_id")
     operation_key = _implementation_operation_key(policy_thread_id, state)
-    run_id = await services.find_child_run(thread_id=thread_id, operation_key=operation_key)
+    route_id = _required(state, "implementation_route_id")
+    runtime = _required(state, "implementation_runtime")
+    run_id = await services.find_child_run(
+        thread_id=thread_id,
+        operation_key=operation_key,
+        route_id=route_id,
+        runtime=runtime,
+    )
     if run_id is None:
         run_id = await services.dispatch_implementation(
             thread_id=thread_id,
+            route_id=route_id,
+            runtime=runtime,
             objective=build_implementation_prompt(
                 objective=_required(state, "objective"),
                 operation_key=operation_key,
@@ -396,6 +516,7 @@ async def _adopt_or_dispatch_initial(
             ),
             repo_owner=_required(state, "repo_owner"),
             repo_name=_required(state, "repo_name"),
+            base_ref=_required(state, "base_ref"),
             operation_key=operation_key,
             workspace_path=state.get("workspace_path"),
         )
@@ -412,7 +533,11 @@ async def _reconcile_implementation_evidence(
     thread_id = state.get("implementation_thread_id")
     if not thread_id:
         return escalate(state, "IMPLEMENTATION_THREAD_MISSING")
-    thread = await services.read_implementation_thread(thread_id)
+    thread = await services.read_implementation_thread(
+        thread_id,
+        route_id=_required(state, "implementation_route_id"),
+        runtime=_required(state, "implementation_runtime"),
+    )
     tracked = tracked_pull_request(thread.metadata)
     if tracked is None:
         evidence = implementation_evidence(
@@ -597,6 +722,10 @@ async def _reconcile_repair(
     rejected_head = state.get("observed_head_sha")
     if not thread_id or not pr_url or not rejected_head:
         return escalate(state, "REPAIR_IDENTITY_MISSING")
+    route_id = _required(state, "implementation_route_id")
+    runtime = _required(state, "implementation_runtime")
+    if runtime != "OPEN_SWE":
+        return escalate(state, "EXTERNAL_AGENT_REPAIR_NOT_ENABLED")
 
     run_id = state.get("implementation_run_id")
     if not run_id:
@@ -613,11 +742,18 @@ async def _reconcile_repair(
 
         fresh_repair = state.get("run_retry_count", 0) == 0
         operation_key = _repair_operation_key(policy_thread_id, state, fresh=fresh_repair)
-        run_id = await services.find_child_run(thread_id=thread_id, operation_key=operation_key)
+        run_id = await services.find_child_run(
+            thread_id=thread_id,
+            operation_key=operation_key,
+            route_id=route_id,
+            runtime=runtime,
+        )
         if run_id is None:
             prompt = await _repair_prompt(state, services, operation_key=operation_key)
             run_id = await services.dispatch_repair(
                 thread_id=thread_id,
+                route_id=route_id,
+                runtime=runtime,
                 prompt=prompt,
                 repo_owner=_required(state, "repo_owner"),
                 repo_name=_required(state, "repo_name"),
@@ -630,14 +766,20 @@ async def _reconcile_repair(
         result["implementation_phase"] = "REPAIR"
         return result
 
-    snapshot = await services.read_child_run(thread_id=thread_id, run_id=run_id)
+    snapshot = await services.read_child_run(
+        thread_id=thread_id,
+        run_id=run_id,
+        route_id=route_id,
+        runtime=runtime,
+    )
     if snapshot.status in _PENDING_RUN_STATUSES:
         return state
     if snapshot.status == "success":
         result = mark_repair_run_terminal(state)
         result["last_failure_code"] = None
         return result
-    return note_child_run_failure(state, f"REPAIR_RUN_{snapshot.status.upper()}")
+    failure_code = snapshot.failure_code or f"REPAIR_RUN_{snapshot.status.upper()}"
+    return note_child_run_failure(state, failure_code)
 
 
 async def _repair_prompt(
@@ -706,6 +848,9 @@ def _normalize_state(raw: ForgeFlowState) -> ForgeFlowState:
     state.setdefault("blocking_finding_ids", [])
     state.setdefault("last_failure_code", None)
     state.setdefault("cancel_requested", False)
+    if state.get("implementation_thread_id") and not state.get("implementation_route_id"):
+        state["implementation_route_id"] = _LEGACY_IMPLEMENTATION_ROUTE_ID
+        state["implementation_runtime"] = "OPEN_SWE"
     return state
 
 

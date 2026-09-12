@@ -7,6 +7,7 @@ from forgeflow.adapters.openswe import ChildRunSnapshot, ReviewerSnapshot, Threa
 from forgeflow.graph import build_forgeflow_graph
 from forgeflow.models import RepositoryPolicy, RepositoryPreflight
 from forgeflow.reconcile import reconcile_once
+from forgeflow.routing import RouteDefinition
 from forgeflow.state import ForgeFlowState, initial_state
 
 PR = "https://github.com/o/r/pull/1"
@@ -43,6 +44,11 @@ class FakeServices:
     repo_policy: RepositoryPolicy = field(
         default_factory=lambda: RepositoryPolicy(required_checks=("tests",))
     )
+    selected_route: RouteDefinition = field(
+        default_factory=lambda: RouteDefinition(
+            "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+        )
+    )
 
     async def preflight_repository(self, state: ForgeFlowState) -> RepositoryPreflight:
         return RepositoryPreflight(status=self.preflight_status)  # type: ignore[arg-type]
@@ -58,39 +64,61 @@ class FakeServices:
             self.actions.append("delete_cron")
             self.cron_id = None
 
+    def select_implementation_route(self) -> RouteDefinition | None:
+        return self.selected_route
+
     async def ensure_implementation_thread(
-        self, *, policy_thread_id: str, repo_owner: str, repo_name: str, objective: str
+        self,
+        *,
+        policy_thread_id: str,
+        route_id: str,
+        runtime: str,
+        repo_owner: str,
+        repo_name: str,
+        objective: str,
     ) -> str:
+        assert route_id == self.selected_route.id or self.implementation_thread is not None
+        assert runtime in {"OPEN_SWE", "EXTERNAL_ACP"}
         if self.implementation_thread is None:
             self.actions.append("create_implementation_thread")
             self.implementation_thread = "implementation-thread"
         return self.implementation_thread
 
-    async def find_child_run(self, *, thread_id: str, operation_key: str) -> str | None:
+    async def find_child_run(
+        self, *, thread_id: str, operation_key: str, route_id: str, runtime: str
+    ) -> str | None:
+        del thread_id, route_id, runtime
         return self.child_operations.get(operation_key)
 
     async def dispatch_implementation(
         self,
         *,
         thread_id: str,
+        route_id: str,
+        runtime: str,
         objective: str,
         repo_owner: str,
         repo_name: str,
+        base_ref: str,
         operation_key: str,
         workspace_path: str | None,
     ) -> str:
+        del thread_id, route_id, runtime, objective, repo_owner, repo_name, base_ref, workspace_path
         return self._dispatch_child(operation_key, crash_attr="crash_child_once")
 
     async def dispatch_repair(
         self,
         *,
         thread_id: str,
+        route_id: str,
+        runtime: str,
         prompt: str,
         repo_owner: str,
         repo_name: str,
         operation_key: str,
         workspace_path: str | None,
     ) -> str:
+        del thread_id, route_id, runtime, prompt, repo_owner, repo_name, workspace_path
         return self._dispatch_child(operation_key, crash_attr="crash_repair_once")
 
     def _dispatch_child(self, operation_key: str, *, crash_attr: str) -> str:
@@ -105,10 +133,16 @@ class FakeServices:
             raise SimulatedCrash("crashed after child run was created")
         return run_id
 
-    async def read_child_run(self, *, thread_id: str, run_id: str) -> ChildRunSnapshot:
+    async def read_child_run(
+        self, *, thread_id: str, run_id: str, route_id: str, runtime: str
+    ) -> ChildRunSnapshot:
+        del route_id, runtime
         return ChildRunSnapshot(thread_id=thread_id, run_id=run_id, status=self.child_status[run_id])
 
-    async def read_implementation_thread(self, thread_id: str) -> ThreadSnapshot:
+    async def read_implementation_thread(
+        self, thread_id: str, *, route_id: str, runtime: str
+    ) -> ThreadSnapshot:
+        del route_id, runtime
         return ThreadSnapshot(thread_id=thread_id, status="idle", metadata=self.implementation_metadata)
 
     async def fetch_pr(self, pr_url: str) -> PullRequestEvidence | None:
@@ -192,6 +226,11 @@ async def test_reconcile_bootstrap_performs_only_one_external_mutation_per_invoc
     state = await reconcile_once(state, policy_thread_id="policy-1", services=services)
     assert services.actions == ["create_cron"]
     assert state["status"] == "NEW"
+
+    state = await reconcile_once(state, policy_thread_id="policy-1", services=services)
+    assert state["implementation_route_id"] == "openswe-current"
+    assert state["implementation_runtime"] == "OPEN_SWE"
+    assert services.actions == ["create_cron"]
 
     state = await reconcile_once(state, policy_thread_id="policy-1", services=services)
     assert services.actions[-1:] == ["create_implementation_thread"]
@@ -402,7 +441,10 @@ async def test_repo_permission_preflight_blocks_without_spending_model_and_can_r
     assert services.actions == []
     services.preflight_status = "READY"
     recovered = await reconcile_once(blocked, policy_thread_id="policy-1", services=services)
-    assert recovered["implementation_thread_id"] == "implementation-thread"
+    assert recovered["implementation_route_id"] == "openswe-current"
+    assert services.actions == []
+    threaded = await reconcile_once(recovered, policy_thread_id="policy-1", services=services)
+    assert threaded["implementation_thread_id"] == "implementation-thread"
     assert services.actions == ["create_implementation_thread"]
 
 
@@ -557,3 +599,61 @@ async def test_default_preflight_moves_blocking_sandbox_probe_off_event_loop(mon
     )
     assert result.status == "READY"
     assert sandbox_threads and sandbox_threads[0] != caller_thread
+
+
+@pytest.mark.asyncio
+async def test_new_policy_can_select_external_runtime_without_changing_default_path() -> None:
+    services = FakeServices(
+        cron_id="cron-1",
+        selected_route=RouteDefinition(
+            "antigravity-account-primary",
+            "IMPLEMENT",
+            5,
+            "EXTERNAL_ACP",
+            "google-account",
+            adapter="antigravity",
+        ),
+    )
+    state = _base_state("NEW")
+    selected = await reconcile_once(state, policy_thread_id="policy-external", services=services)
+    assert selected["implementation_route_id"] == "antigravity-account-primary"
+    assert selected["implementation_runtime"] == "EXTERNAL_ACP"
+    assert services.actions == []
+
+    threaded = await reconcile_once(selected, policy_thread_id="policy-external", services=services)
+    assert threaded["implementation_thread_id"] == "implementation-thread"
+    dispatched = await reconcile_once(threaded, policy_thread_id="policy-external", services=services)
+    assert dispatched["status"] == "IMPLEMENTING"
+    assert dispatched["implementation_route_id"] == "antigravity-account-primary"
+    assert services.actions[-1].startswith("dispatch_child:implementation:policy-external:retry:0")
+
+
+@pytest.mark.asyncio
+async def test_external_runtime_repair_fails_closed_until_same_pr_repair_is_implemented() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread", pr=_pr())
+    state = _base_state("REPAIRING")
+    state.update(
+        implementation_route_id="antigravity-account-primary",
+        implementation_runtime="EXTERNAL_ACP",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id=None,
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        last_failure_code="CHECK_FAILED:tests",
+    )
+    result = await reconcile_once(state, policy_thread_id="policy-external", services=services)
+    assert result["status"] == "ESCALATED"
+    assert result["last_failure_code"] == "EXTERNAL_AGENT_REPAIR_NOT_ENABLED"
+    assert not any(action.startswith("dispatch_child:repair:") for action in services.actions)
+
+
+@pytest.mark.asyncio
+async def test_legacy_active_implementation_state_is_migrated_to_openswe_route() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    state = _base_state("IMPLEMENTING")
+    state.update(implementation_thread_id="implementation-thread", implementation_run_id="run-legacy")
+    services.child_status["run-legacy"] = "running"
+    migrated = await reconcile_once(state, policy_thread_id="legacy-policy", services=services)
+    assert migrated["implementation_route_id"] == "openswe-current"
+    assert migrated["implementation_runtime"] == "OPEN_SWE"
+    assert migrated["status"] == "IMPLEMENTING"

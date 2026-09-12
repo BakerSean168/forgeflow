@@ -70,6 +70,8 @@ class ChildRunSnapshot:
     thread_id: str
     run_id: str
     status: str
+    failure_code: str | None = None
+    failure_class: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

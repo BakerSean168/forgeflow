@@ -205,6 +205,7 @@ self-hosted compatibility hooks are installed before upstream graph construction
     "analyzer": "openswe_ext.graphs:analyzer_graph",
     "chat": "openswe_ext.graphs:chat_graph",
     "scheduler": "openswe_ext.graphs:scheduler_graph",
+    "external_agent": "openswe_ext.external_agent_graph:get_external_agent_graph",
     "forgeflow": "forgeflow.graph:get_forgeflow_graph"
   },
   "http": {
@@ -213,10 +214,13 @@ self-hosted compatibility hooks are installed before upstream graph construction
 }
 ```
 
-`openswe_ext.graphs` then delegates to the pinned upstream Open SWE graphs. This keeps upstream
-source unmodified while making the self-hosted Docker provider and workflow-push guard explicit.
-Policy logic belongs under `forgeflow/`; narrowly scoped runtime compatibility code belongs under
-`openswe_ext/`. ForgeFlow does not vendor or edit an `agent/` package.
+`openswe_ext.graphs` then delegates to the pinned upstream Open SWE graphs. The separate
+`external_agent` graph is ForgeFlow-owned runtime compatibility code: it executes one already-selected
+external route as a durable LangGraph child run and publishes only normalized execution/PR evidence.
+This keeps upstream source unmodified while making the self-hosted Docker provider, external-agent
+runtime, and workflow-push guard explicit. Policy logic belongs under `forgeflow/`; narrowly scoped
+runtime compatibility code belongs under `openswe_ext/`. ForgeFlow does not vendor or edit an
+`agent/` package.
 
 ### Why not an external controller service?
 
@@ -579,8 +583,9 @@ systemd --user
         +-- reviewer    -> openswe_ext wrapper -> Open SWE official reviewer
         +-- analyzer    -> Open SWE
         +-- chat        -> Open SWE
-        +-- scheduler   -> Open SWE
-        +-- forgeflow   -> ForgeFlow policy graph
+        +-- scheduler      -> Open SWE
+        +-- external_agent -> ForgeFlow selected external runtime child graph
+        +-- forgeflow      -> ForgeFlow policy graph
         +-- agent.webapp -> Open SWE GitHub/webhook/dashboard API
 
 Docker

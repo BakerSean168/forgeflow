@@ -27,7 +27,7 @@ linger="$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)"
 }
 
 mkdir -p "$config_dir" "$state_dir" "$state_dir/worktrees" "$state_dir/artifacts" \
-  "$state_dir/reviewer-sandbox" "$unit_dir"
+  "$state_dir/reviewer-sandbox" "$state_dir/external-agent-workspaces" "$unit_dir"
 chmod 700 "$config_dir" "$state_dir"
 
 create_secret() {
@@ -147,7 +147,7 @@ payload="$(curl -fsS -X POST -H "Authorization: Bearer $auth" -H 'content-type: 
   "http://127.0.0.1:$port/assistants/search" -d '{"limit":20}')"
 ASSISTANTS_JSON="$payload" python3 - <<'PY'
 import json, os
-expected={"agent","reviewer","analyzer","chat","scheduler","forgeflow"}
+expected={"agent","reviewer","analyzer","chat","scheduler","external_agent","forgeflow"}
 items=json.loads(os.environ["ASSISTANTS_JSON"])
 actual={item.get("graph_id") for item in items}
 missing=sorted(expected-actual)
