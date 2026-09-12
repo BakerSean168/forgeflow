@@ -21,6 +21,7 @@ from forgeflow.projects import load_external_agent_project_config
 from forgeflow.routing import classify_failure_code, load_route_registry
 from openswe_ext.antigravity_execution import AntigravityExternalAgentExecution
 from openswe_ext.external_agent_workspace import (
+    ExternalAgentWorkspaceError,
     cleanup_external_workspace,
     prepare_external_workspace,
 )
@@ -79,6 +80,10 @@ def _failure_code(exc: BaseException) -> str:
         code = data.get("code") if isinstance(data, dict) else None
         if isinstance(code, str) and code.strip():
             return code.split(":", 1)[0].strip().upper()
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "EXTERNAL_AGENT_SUBPROCESS_TIMEOUT"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "EXTERNAL_AGENT_SUBPROCESS_FAILED"
     if isinstance(exc, OSError):
         return "EXTERNAL_AGENT_IO_FAILED"
     code = str(exc).split(":", 1)[0].strip()
@@ -110,7 +115,14 @@ class DefaultExternalAgentGraphServices:
         attempt_finished = False
         workspace: Path | None = None
         source_revision: str | None = None
+        evidence = None
+        delivery = None
+        result: ExternalAgentGraphResult | None = None
+        cancel_exc: asyncio.CancelledError | None = None
+        cleanup_failed = False
         ledger = AttemptLedger(Path(ledger_path))
+        route = None
+
         try:
             registry = await asyncio.to_thread(load_route_registry, Path(route_config))
             route = registry.get(request["route_id"])
@@ -138,6 +150,7 @@ class DefaultExternalAgentGraphServices:
             attempt_finished = attempt_status.finished
             if attempt_finished:
                 raise RuntimeError("EXTERNAL_AGENT_OPERATION_ALREADY_FINISHED")
+
             project = await asyncio.to_thread(
                 load_external_agent_project_config, request["owner"], request["repo"]
             )
@@ -178,18 +191,7 @@ class DefaultExternalAgentGraphServices:
                     f"Operation: `{request['operation_key']}`"
                 ),
             )
-            await _cancellation_safe_to_thread(
-                ledger.finish_operation,
-                route_id=route.id,
-                operation_key=request["operation_key"],
-                outcome="SUCCEEDED",
-                source_revision=evidence.source_revision,
-                result_revision=delivery.head_sha,
-                external_session_id=evidence.acp_session_id,
-                external_conversation_id=evidence.external_conversation_id,
-            )
-            attempt_finished = True
-            return ExternalAgentGraphResult(
+            result = ExternalAgentGraphResult(
                 external_status="SUCCESS",
                 attempt_id=attempt.attempt_id,
                 source_revision=evidence.source_revision,
@@ -200,19 +202,8 @@ class DefaultExternalAgentGraphServices:
                 external_session_id=evidence.acp_session_id,
                 external_conversation_id=evidence.external_conversation_id,
             )
-        except asyncio.CancelledError:
-            if attempt is not None and not attempt_finished:
-                await _cancellation_safe_to_thread(
-                    ledger.finish_operation,
-                    route_id=attempt.route_id,
-                    operation_key=attempt.operation_key,
-                    outcome="BLOCKED",
-                    failure_class="POLICY_DENIED",
-                    fallback_reason="EXTERNAL_AGENT_CANCELLED",
-                    source_revision=source_revision,
-                )
-                attempt_finished = True
-            raise
+        except asyncio.CancelledError as exc:
+            cancel_exc = exc
         except (
             RequestError,
             HttpxRequestError,
@@ -221,33 +212,106 @@ class DefaultExternalAgentGraphServices:
             subprocess.SubprocessError,
             ValueError,
             KeyError,
+            ExceptionGroup,
         ) as exc:
             code = _failure_code(exc)
-            failure_class = classify_failure_code(code)
-            if attempt is not None and not attempt_finished:
-                try:
-                    await _cancellation_safe_to_thread(
-                        ledger.finish_operation,
-                        route_id=attempt.route_id,
-                        operation_key=attempt.operation_key,
-                        outcome="BLOCKED",
-                        failure_class=failure_class,
-                        fallback_reason=code,
-                        source_revision=source_revision,
-                    )
-                except OSError:
-                    code = "ATTEMPT_LEDGER_WRITE_FAILED"
-                    failure_class = "POLICY_DENIED"
-            return ExternalAgentGraphResult(
+            result = ExternalAgentGraphResult(
                 external_status="BLOCKED",
                 failure_code=code,
-                failure_class=failure_class,
+                failure_class=classify_failure_code(code),
                 attempt_id=attempt.attempt_id if attempt is not None else None,
                 source_revision=source_revision,
             )
         finally:
             if workspace is not None:
-                await asyncio.to_thread(cleanup_external_workspace, workspace)
+                try:
+                    await _cancellation_safe_to_thread(cleanup_external_workspace, workspace)
+                except asyncio.CancelledError as exc:
+                    cancel_exc = cancel_exc or exc
+                except (ExternalAgentWorkspaceError, OSError):
+                    cleanup_failed = True
+
+        if cleanup_failed:
+            result = ExternalAgentGraphResult(
+                external_status="BLOCKED",
+                failure_code="EXTERNAL_AGENT_WORKSPACE_CLEANUP_FAILED",
+                failure_class="POLICY_DENIED",
+                attempt_id=attempt.attempt_id if attempt is not None else None,
+                source_revision=source_revision,
+            )
+
+        if attempt is not None and not attempt_finished:
+            if result is not None and result.external_status == "SUCCESS" and not cleanup_failed:
+                outcome = "SUCCEEDED"
+                failure_class = None
+                fallback_reason = None
+                result_revision = delivery.head_sha if delivery is not None else None
+                session_id = evidence.acp_session_id if evidence is not None else None
+                conversation_id = (
+                    evidence.external_conversation_id if evidence is not None else None
+                )
+            elif cancel_exc is not None:
+                outcome = "BLOCKED"
+                failure_class = "POLICY_DENIED"
+                fallback_reason = (
+                    "EXTERNAL_AGENT_WORKSPACE_CLEANUP_FAILED"
+                    if cleanup_failed
+                    else "EXTERNAL_AGENT_CANCELLED"
+                )
+                result_revision = None
+                session_id = None
+                conversation_id = None
+            else:
+                outcome = "BLOCKED"
+                failure_class = (
+                    result.failure_class if result is not None else "UNCLASSIFIED"
+                )
+                fallback_reason = (
+                    result.failure_code
+                    if result is not None
+                    else "EXTERNAL_AGENT_UNEXPECTED_FAILURE"
+                )
+                result_revision = None
+                session_id = None
+                conversation_id = None
+            try:
+                await _cancellation_safe_to_thread(
+                    ledger.finish_operation,
+                    route_id=attempt.route_id,
+                    operation_key=attempt.operation_key,
+                    outcome=outcome,
+                    failure_class=failure_class,
+                    fallback_reason=fallback_reason,
+                    source_revision=(
+                        evidence.source_revision if evidence is not None else source_revision
+                    ),
+                    result_revision=result_revision,
+                    external_session_id=session_id,
+                    external_conversation_id=conversation_id,
+                )
+                attempt_finished = True
+            except asyncio.CancelledError as exc:
+                cancel_exc = cancel_exc or exc
+            except (OSError, RuntimeError, ValueError):
+                result = ExternalAgentGraphResult(
+                    external_status="BLOCKED",
+                    failure_code="ATTEMPT_LEDGER_WRITE_FAILED",
+                    failure_class="POLICY_DENIED",
+                    attempt_id=attempt.attempt_id,
+                    source_revision=source_revision,
+                )
+
+        if cancel_exc is not None:
+            raise cancel_exc
+        if result is None:
+            return ExternalAgentGraphResult(
+                "BLOCKED",
+                "EXTERNAL_AGENT_UNEXPECTED_FAILURE",
+                "UNCLASSIFIED",
+                attempt_id=attempt.attempt_id if attempt is not None else None,
+                source_revision=source_revision,
+            )
+        return result
 
 
 async def _cancellation_safe_to_thread(

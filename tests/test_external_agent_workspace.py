@@ -75,3 +75,44 @@ def test_prepare_workspace_includes_remote_commit_when_source_local_branch_is_be
         assert (prepared.path / "a.txt").read_text(encoding="utf-8") == "remote-new\n"
     finally:
         cleanup_external_workspace(prepared.path)
+
+
+def test_cleanup_retries_transient_directory_race(tmp_path: Path, monkeypatch) -> None:
+    import shutil
+
+    import openswe_ext.external_agent_workspace as module
+
+    workspace = tmp_path / "workspace"
+    (workspace / ".git").mkdir(parents=True)
+    (workspace / ".git" / "late.lock").write_text("x", encoding="utf-8")
+    original = shutil.rmtree
+    calls = 0
+
+    def flaky(path, *, ignore_errors=False):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise OSError(39, "Directory not empty")
+        return original(path, ignore_errors=ignore_errors)
+
+    monkeypatch.setattr(module.shutil, "rmtree", flaky)
+    module.cleanup_external_workspace(workspace, attempts=4, retry_delay_seconds=0)
+    assert calls == 3
+    assert not workspace.exists()
+
+
+def test_cleanup_persistent_failure_is_named(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+
+    import openswe_ext.external_agent_workspace as module
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def always_fails(path, *, ignore_errors=False):
+        del path, ignore_errors
+        raise OSError(39, "Directory not empty")
+
+    monkeypatch.setattr(module.shutil, "rmtree", always_fails)
+    with pytest.raises(module.ExternalAgentWorkspaceError, match="WORKSPACE_CLEANUP_FAILED"):
+        module.cleanup_external_workspace(workspace, attempts=2, retry_delay_seconds=0)

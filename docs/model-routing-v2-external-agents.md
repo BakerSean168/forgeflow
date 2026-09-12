@@ -391,9 +391,10 @@ fail-closed path, and route exhaustion escalates instead of looping back.
 Open SWE implementation and repair operations now use the same private append-only attempt ledger as
 external-agent routes. STARTED is keyed by stable route + operation provenance and is recovered
 idempotently after a crash; FAILED/BLOCKED closes at terminal failure, while SUCCEEDED is not recorded
-until authoritative PR evidence and the operation trailer prove the resulting head. The global fallback
-gate remains off until a real deployed Open SWE acceptance run proves this STARTED -> FINISHED
-accounting against an authoritative PR head.
+until authoritative PR evidence and the operation trailer prove the resulting head. A fresh deployed
+Open SWE acceptance on policy thread `49271665-cce6-4464-b64d-38b4626fb307` proved the full
+`STARTED -> FINISHED/SUCCEEDED` path on exactly `retry:0`, then passed repository CI and exact-head
+Sol review before reaching `READY`. The disposable PR/worktree was closed and removed without merge.
 
 Open SWE thread PR metadata is treated as a fast path, not the sole delivery authority. A successful
 child run without thread PR metadata enters a bounded evidence-settle window. ForgeFlow queries
@@ -407,6 +408,17 @@ delivery from racing best-effort Open SWE telemetry and spawning a duplicate wri
 External-agent same-PR repair is also **not** enabled yet. If an explicitly selected external
 implementation reaches a repair state, policy fails closed instead of silently switching execution
 ownership.
+
+A subsequent controlled cross-runtime fallback canary deliberately promoted Antigravity ahead of Open
+SWE and injected an unavailable external runtime. That canary correctly exposed two external-runtime
+boundary defects before fallback was allowed into production: synchronous Git/evidence subprocesses
+were still running on the LangGraph event loop, and a short-lived checkout cleanup race could raise raw
+`OSError` after the primary runtime failure. The hardening now moves Git/hash/test evidence work to
+cancellation-safe worker threads, retries checkout cleanup within a bounded window, and converts a
+persistent cleanup failure into `EXTERNAL_AGENT_WORKSPACE_CLEANUP_FAILED / POLICY_DENIED`. Attempt
+terminalization happens after cleanup, so an availability failure can only trigger fallback after its
+workspace is gone and its append-only ledger attempt has a terminal record. The production route and
+fallback gates remain off until this controlled fallback canary is rerun successfully after merge.
 
 The first safe production shape is conservative:
 
