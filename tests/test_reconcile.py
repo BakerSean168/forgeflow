@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
@@ -6,7 +7,7 @@ from forgeflow.adapters.github import CiSignals, CommitEvidence, PullRequestEvid
 from forgeflow.adapters.openswe import ChildRunSnapshot, ReviewerSnapshot, ThreadSnapshot
 from forgeflow.graph import build_forgeflow_graph
 from forgeflow.models import RepositoryPolicy, RepositoryPreflight
-from forgeflow.reconcile import reconcile_once
+from forgeflow.reconcile import DefaultPolicyServices, reconcile_once
 from forgeflow.routing import RouteDefinition
 from forgeflow.state import ForgeFlowState, initial_state
 
@@ -54,6 +55,9 @@ class FakeServices:
     child_failure_code: dict[str, str] = field(default_factory=dict)
     child_failure_class: dict[str, str] = field(default_factory=dict)
     fallback_threads: dict[str, str] = field(default_factory=dict)
+    attempt_started: dict[tuple[str, str], bool] = field(default_factory=dict)
+    attempt_start_calls: list[tuple[str, str, str | None]] = field(default_factory=list)
+    attempt_finish_calls: list[dict[str, object]] = field(default_factory=list)
 
     async def preflight_repository(self, state: ForgeFlowState) -> RepositoryPreflight:
         return RepositoryPreflight(status=self.preflight_status)  # type: ignore[arg-type]
@@ -80,6 +84,56 @@ class FakeServices:
 
     def automatic_route_fallback_enabled(self) -> bool:
         return self.route_fallback_enabled
+
+    def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str:
+        value = self.attempt_started.get((route_id, operation_key))
+        if value is None:
+            return "MISSING"
+        return "FINISHED" if value else "OPEN"
+
+    def ensure_openswe_attempt_started(
+        self,
+        *,
+        route_id: str,
+        operation_key: str,
+        source_revision: str | None = None,
+    ) -> bool:
+        key = (route_id, operation_key)
+        if key not in self.attempt_started:
+            self.attempt_started[key] = False
+            self.attempt_start_calls.append((route_id, operation_key, source_revision))
+        return self.attempt_started[key]
+
+    def finish_openswe_attempt(
+        self,
+        *,
+        route_id: str,
+        operation_key: str,
+        outcome: str,
+        failure_class: str | None = None,
+        failure_code: str | None = None,
+        source_revision: str | None = None,
+        result_revision: str | None = None,
+    ) -> None:
+        key = (route_id, operation_key)
+        if key not in self.attempt_started:
+            # Mirror production migration of pre-ledger in-flight operations.
+            self.attempt_started[key] = False
+            self.attempt_start_calls.append((route_id, operation_key, source_revision))
+        if self.attempt_started.get(key) is True:
+            return
+        self.attempt_started[key] = True
+        self.attempt_finish_calls.append(
+            {
+                "route_id": route_id,
+                "operation_key": operation_key,
+                "outcome": outcome,
+                "failure_class": failure_class,
+                "failure_code": failure_code,
+                "source_revision": source_revision,
+                "result_revision": result_revision,
+            }
+        )
 
     async def ensure_implementation_thread(
         self,
@@ -164,6 +218,13 @@ class FakeServices:
             failure_code=self.child_failure_code.get(run_id),
             failure_class=self.child_failure_class.get(run_id),
         )
+
+    async def cancel_child_run(
+        self, *, thread_id: str, run_id: str, route_id: str, runtime: str
+    ) -> None:
+        del thread_id, route_id, runtime
+        self.actions.append(f"cancel_child:{run_id}")
+        self.child_status[run_id] = "interrupted"
 
     async def read_implementation_thread(
         self, thread_id: str, *, route_id: str, runtime: str
@@ -878,3 +939,534 @@ async def test_route_availability_does_not_fall_through_while_global_gate_is_dis
     assert result["implementation_run_id"] is None
     assert result["run_retry_count"] == 1
     assert result.get("implementation_failed_route_ids", []) == []
+
+@pytest.mark.asyncio
+async def test_openswe_attempt_start_is_idempotent_across_dispatch_crash() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    services.crash_child_once = True
+    state = _base_state("NEW")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+    )
+
+    with pytest.raises(SimulatedCrash):
+        await reconcile_once(state, policy_thread_id="ledger-policy", services=services)
+    assert services.attempt_start_calls == [
+        ("openswe-current", "implementation:ledger-policy:retry:0", None)
+    ]
+
+    recovered = await reconcile_once(state, policy_thread_id="ledger-policy", services=services)
+    assert recovered["implementation_run_id"] == next(iter(services.child_operations.values()))
+    assert services.attempt_start_calls == [
+        ("openswe-current", "implementation:ledger-policy:retry:0", None)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openswe_child_failure_closes_current_attempt() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    state = _base_state("NEW")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+    )
+    running = await reconcile_once(state, policy_thread_id="ledger-failure", services=services)
+    run_id = running["implementation_run_id"]
+    assert run_id is not None
+    services.child_status[run_id] = "error"
+    services.child_failure_code[run_id] = "CHILD_RUN_ERROR"
+
+    retried = await reconcile_once(running, policy_thread_id="ledger-failure", services=services)
+
+    assert retried["implementation_run_id"] is None
+    assert retried["run_retry_count"] == 1
+    assert len(services.attempt_finish_calls) == 1
+    finished = services.attempt_finish_calls[0]
+    assert finished["operation_key"] == "implementation:ledger-failure:retry:0"
+    assert finished["outcome"] == "FAILED"
+    assert finished["failure_code"] == "CHILD_RUN_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_openswe_attempt_succeeds_only_after_authoritative_pr_evidence() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    state = _base_state("NEW")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+    )
+    running = await reconcile_once(state, policy_thread_id="ledger-success", services=services)
+    run_id = running["implementation_run_id"]
+    assert run_id is not None
+    operation_key = running["implementation_operation_key"]
+    assert operation_key is not None
+    services.child_status[run_id] = "success"
+
+    verifying = await reconcile_once(running, policy_thread_id="ledger-success", services=services)
+    assert verifying["status"] == "VERIFYING"
+    assert services.attempt_finish_calls == []
+
+    services.implementation_metadata = {
+        "pr_url": PR,
+        "pr_number": 1,
+        "pr_state": "open",
+        "branch_name": "open-swe/task",
+        "base_branch": "main",
+    }
+    services.pr = _pr(HEAD1)
+    services.commits[HEAD1] = CommitEvidence(
+        sha=HEAD1,
+        message=f"feat: implement\n\nForgeFlow-Operation: {operation_key}",
+    )
+    accepted = await reconcile_once(verifying, policy_thread_id="ledger-success", services=services)
+
+    assert accepted["status"] == "WAITING_FOR_CI"
+    assert len(services.attempt_finish_calls) == 1
+    finished = services.attempt_finish_calls[0]
+    assert finished["outcome"] == "SUCCEEDED"
+    assert finished["result_revision"] == HEAD1
+    assert finished["failure_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_openswe_repair_attempt_records_rejected_head_as_source_revision() -> None:
+    services = FakeServices(
+        cron_id="cron-1", implementation_thread="implementation-thread", pr=_pr(HEAD1)
+    )
+    state = _base_state("REPAIRING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id=None,
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        last_failure_code="CHECK_FAILED:tests",
+    )
+
+    running = await reconcile_once(state, policy_thread_id="ledger-repair", services=services)
+    assert running["implementation_run_id"] is not None
+    assert len(services.attempt_start_calls) == 1
+    assert services.attempt_start_calls[0][2] == HEAD1
+
+    services.child_status[running["implementation_run_id"]] = "error"
+    services.child_failure_code[running["implementation_run_id"]] = "REPAIR_RUN_ERROR"
+    failed = await reconcile_once(running, policy_thread_id="ledger-repair", services=services)
+    assert failed["implementation_run_id"] is None
+    assert services.attempt_finish_calls[-1]["source_revision"] == HEAD1
+    assert services.attempt_finish_calls[-1]["outcome"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_finished_openswe_attempt_without_child_run_fails_closed() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    operation_key = "implementation:ledger-invariant:retry:0"
+    services.attempt_started[("openswe-current", operation_key)] = True
+    state = _base_state("NEW")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+    )
+
+    result = await reconcile_once(state, policy_thread_id="ledger-invariant", services=services)
+
+    assert result["status"] == "ESCALATED"
+    assert result["last_failure_code"] == "ATTEMPT_LEDGER_COMPLETED_WITHOUT_CHILD_RUN"
+    assert services.child_operations == {}
+
+
+def test_default_services_persist_idempotent_openswe_attempts(tmp_path, monkeypatch) -> None:
+    import json
+
+    routes = tmp_path / "routes.json"
+    routes.write_text(
+        (Path(__file__).resolve().parents[1] / "deploy/gcp-dev/routes.default.json").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "attempt-ledger.jsonl"
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger))
+    services = DefaultPolicyServices(client=object())
+
+    assert (
+        services.ensure_openswe_attempt_started(
+            route_id="openswe-current",
+            operation_key="implementation:service-test:retry:0",
+        )
+        is False
+    )
+    assert (
+        services.ensure_openswe_attempt_started(
+            route_id="openswe-current",
+            operation_key="implementation:service-test:retry:0",
+        )
+        is False
+    )
+    services.finish_openswe_attempt(
+        route_id="openswe-current",
+        operation_key="implementation:service-test:retry:0",
+        outcome="SUCCEEDED",
+        result_revision=HEAD1,
+    )
+    services.finish_openswe_attempt(
+        route_id="openswe-current",
+        operation_key="implementation:service-test:retry:0",
+        outcome="SUCCEEDED",
+        result_revision=HEAD1,
+    )
+    assert (
+        services.ensure_openswe_attempt_started(
+            route_id="openswe-current",
+            operation_key="implementation:service-test:retry:0",
+        )
+        is True
+    )
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["STARTED", "FINISHED"]
+    assert rows[0]["attempt_id"] == rows[1]["attempt_id"]
+    assert rows[1]["result_revision"] == HEAD1
+
+@pytest.mark.asyncio
+async def test_successful_openswe_repair_finishes_with_rejected_head_source_revision() -> None:
+    services = FakeServices(
+        cron_id="cron-1", implementation_thread="implementation-thread", pr=_pr(HEAD1)
+    )
+    state = _base_state("REPAIRING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id=None,
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        last_failure_code="CHECK_FAILED:tests",
+    )
+
+    running = await reconcile_once(state, policy_thread_id="ledger-repair-success", services=services)
+    run_id = running["implementation_run_id"]
+    operation_key = running["implementation_operation_key"]
+    assert run_id is not None
+    assert operation_key is not None
+    services.child_status[run_id] = "success"
+    verifying = await reconcile_once(
+        running, policy_thread_id="ledger-repair-success", services=services
+    )
+    assert verifying["status"] == "VERIFYING"
+    assert verifying["implementation_phase"] == "REPAIR"
+    assert services.attempt_finish_calls == []
+
+    services.implementation_metadata = {
+        "pr_url": PR,
+        "pr_number": 1,
+        "pr_state": "open",
+        "branch_name": "open-swe/task",
+        "base_branch": "main",
+    }
+    services.pr = _pr(HEAD2)
+    services.commits[HEAD2] = CommitEvidence(
+        sha=HEAD2,
+        message=f"fix: repair\n\nForgeFlow-Operation: {operation_key}",
+    )
+    accepted = await reconcile_once(
+        verifying, policy_thread_id="ledger-repair-success", services=services
+    )
+
+    assert accepted["status"] == "WAITING_FOR_CI"
+    assert accepted["observed_head_sha"] == HEAD2
+    assert len(services.attempt_finish_calls) == 1
+    finished = services.attempt_finish_calls[0]
+    assert finished["outcome"] == "SUCCEEDED"
+    assert finished["source_revision"] == HEAD1
+    assert finished["result_revision"] == HEAD2
+
+@pytest.mark.asyncio
+async def test_preledger_inflight_openswe_run_is_adopted_before_terminal_evidence() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    operation_key = "implementation:legacy-accounting:retry:0"
+    state = _base_state("VERIFYING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id="legacy-run",
+        implementation_operation_key=operation_key,
+        implementation_phase="INITIAL",
+    )
+    services.implementation_metadata = {
+        "pr_url": PR,
+        "pr_number": 1,
+        "pr_state": "open",
+        "branch_name": "open-swe/task",
+        "base_branch": "main",
+    }
+    services.pr = _pr(HEAD1)
+    services.commits[HEAD1] = CommitEvidence(
+        sha=HEAD1,
+        message=f"feat: legacy run\n\nForgeFlow-Operation: {operation_key}",
+    )
+
+    result = await reconcile_once(
+        state, policy_thread_id="legacy-accounting", services=services
+    )
+
+    assert result["status"] == "WAITING_FOR_CI"
+    assert services.attempt_start_calls == [("openswe-current", operation_key, None)]
+    assert len(services.attempt_finish_calls) == 1
+    assert services.attempt_finish_calls[0]["outcome"] == "SUCCEEDED"
+    assert services.attempt_finish_calls[0]["result_revision"] == HEAD1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["IMPLEMENTING", "VERIFYING", "REPAIRING"])
+async def test_cancel_closes_active_openswe_attempt_before_terminal_state(status: str) -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    operation_key = f"active:{status.lower()}"
+    services.attempt_started[("openswe-current", operation_key)] = False
+    services.child_status["run-active"] = "success" if status == "VERIFYING" else "running"
+    state = _base_state(status)
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id="run-active",
+        implementation_operation_key=operation_key,
+        implementation_phase="REPAIR" if status == "REPAIRING" else "INITIAL",
+        observed_head_sha=HEAD1 if status == "REPAIRING" else None,
+        cancel_requested=True,
+    )
+
+    result = await reconcile_once(state, policy_thread_id="cancel-ledger", services=services)
+
+    assert result["status"] == "CANCELLED"
+    assert result["cancel_requested"] is False
+    assert len(services.attempt_finish_calls) == 1
+    finished = services.attempt_finish_calls[0]
+    assert finished["outcome"] == "BLOCKED"
+    assert finished["failure_code"] == "POLICY_CANCELLED"
+    assert finished["failure_class"] == "POLICY_DENIED"
+    assert finished["source_revision"] == (HEAD1 if status == "REPAIRING" else None)
+    if status == "VERIFYING":
+        assert "cancel_child:run-active" not in services.actions
+    else:
+        assert "cancel_child:run-active" in services.actions
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_attempt_success_does_not_rewrite_finished_accounting() -> None:
+    services = FakeServices(cron_id="cron-1")
+    operation_key = "implementation:done:retry:0"
+    services.attempt_started[("openswe-current", operation_key)] = True
+    state = _base_state("WAITING_FOR_CI")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_operation_key=operation_key,
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        cancel_requested=True,
+    )
+
+    result = await reconcile_once(state, policy_thread_id="cancel-done", services=services)
+
+    assert result["status"] == "CANCELLED"
+    assert services.attempt_finish_calls == []
+
+@pytest.mark.asyncio
+async def test_cancel_recovers_child_dispatched_before_new_state_checkpoint() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    services.crash_child_once = True
+    state = _base_state("NEW")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+    )
+
+    with pytest.raises(SimulatedCrash):
+        await reconcile_once(state, policy_thread_id="cancel-crash", services=services)
+    operation_key = "implementation:cancel-crash:retry:0"
+    run_id = services.child_operations[operation_key]
+    assert services.attempt_started[("openswe-current", operation_key)] is False
+    assert services.child_status[run_id] == "running"
+
+    cancelled_input = dict(state)
+    cancelled_input["cancel_requested"] = True
+    cancelled = await reconcile_once(
+        cancelled_input, policy_thread_id="cancel-crash", services=services
+    )
+
+    assert cancelled["status"] == "CANCELLED"
+    assert f"cancel_child:{run_id}" in services.actions
+    assert services.child_status[run_id] == "interrupted"
+    assert services.attempt_started[("openswe-current", operation_key)] is True
+    assert services.attempt_finish_calls[-1]["operation_key"] == operation_key
+    assert services.attempt_finish_calls[-1]["outcome"] == "BLOCKED"
+    assert services.attempt_finish_calls[-1]["failure_code"] == "POLICY_CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_cancel_closes_start_written_before_child_creation_without_inventing_child() -> None:
+    class CrashBeforeChildServices(FakeServices):
+        async def dispatch_implementation(self, **kwargs):
+            raise SimulatedCrash("crashed before child run creation")
+
+    services = CrashBeforeChildServices(
+        cron_id="cron-1", implementation_thread="implementation-thread"
+    )
+    state = _base_state("NEW")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+    )
+
+    with pytest.raises(SimulatedCrash):
+        await reconcile_once(state, policy_thread_id="cancel-prechild", services=services)
+    operation_key = "implementation:cancel-prechild:retry:0"
+    assert services.attempt_started[("openswe-current", operation_key)] is False
+    assert operation_key not in services.child_operations
+
+    cancelled_input = dict(state)
+    cancelled_input["cancel_requested"] = True
+    cancelled = await reconcile_once(
+        cancelled_input, policy_thread_id="cancel-prechild", services=services
+    )
+
+    assert cancelled["status"] == "CANCELLED"
+    assert not any(action.startswith("cancel_child:") for action in services.actions)
+    assert services.attempt_started[("openswe-current", operation_key)] is True
+    assert services.attempt_finish_calls[-1]["outcome"] == "BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_cancel_new_before_any_dispatch_does_not_create_attempt() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    state = _base_state("NEW")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        cancel_requested=True,
+    )
+
+    result = await reconcile_once(state, policy_thread_id="cancel-clean-new", services=services)
+
+    assert result["status"] == "CANCELLED"
+    assert services.attempt_start_calls == []
+    assert services.attempt_finish_calls == []
+    assert services.child_operations == {}
+
+@pytest.mark.asyncio
+async def test_default_services_cancel_openswe_child_uses_langgraph_interrupt() -> None:
+    calls = []
+
+    class Runs:
+        async def cancel(self, thread_id, run_id, *, wait, action):
+            calls.append((thread_id, run_id, wait, action))
+
+    class Client:
+        runs = Runs()
+
+    services = DefaultPolicyServices(client=Client())
+    await services.cancel_child_run(
+        thread_id="thread",
+        run_id="run",
+        route_id="openswe-current",
+        runtime="OPEN_SWE",
+    )
+    assert calls == [("thread", "run", False, "interrupt")]
+
+    with pytest.raises(Exception, match="external-agent cancellation is not enabled"):
+        await services.cancel_child_run(
+            thread_id="thread",
+            run_id="run",
+            route_id="external",
+            runtime="EXTERNAL_ACP",
+        )
+
+@pytest.mark.asyncio
+async def test_cancel_recovers_uncheckpointed_implementation_retry_dispatch() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    services.crash_child_once = True
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id=None,
+        implementation_operation_key=None,
+        run_retry_count=1,
+    )
+
+    with pytest.raises(SimulatedCrash):
+        await reconcile_once(state, policy_thread_id="cancel-impl-retry", services=services)
+    operation_key = "implementation:cancel-impl-retry:retry:1"
+    run_id = services.child_operations[operation_key]
+    assert services.attempt_started[("openswe-current", operation_key)] is False
+
+    cancelled_input = dict(state)
+    cancelled_input["cancel_requested"] = True
+    cancelled = await reconcile_once(
+        cancelled_input, policy_thread_id="cancel-impl-retry", services=services
+    )
+
+    assert cancelled["status"] == "CANCELLED"
+    assert f"cancel_child:{run_id}" in services.actions
+    assert services.attempt_finish_calls[-1]["operation_key"] == operation_key
+    assert services.attempt_finish_calls[-1]["outcome"] == "BLOCKED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("run_retry_count", "repair_round", "expected_round"),
+    [(0, 0, 1), (1, 1, 1)],
+)
+async def test_cancel_recovers_uncheckpointed_repair_dispatch_or_retry(
+    run_retry_count: int, repair_round: int, expected_round: int
+) -> None:
+    services = FakeServices(
+        cron_id="cron-1", implementation_thread="implementation-thread", pr=_pr(HEAD1)
+    )
+    services.crash_repair_once = True
+    state = _base_state("REPAIRING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id=None,
+        implementation_operation_key=None,
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        last_failure_code="CHECK_FAILED:tests",
+        run_retry_count=run_retry_count,
+        repair_round=repair_round,
+    )
+
+    with pytest.raises(SimulatedCrash):
+        await reconcile_once(state, policy_thread_id="cancel-repair-crash", services=services)
+    operation_key = (
+        f"repair:cancel-repair-crash:{HEAD1}:round:{expected_round}:retry:{run_retry_count}"
+    )
+    run_id = services.child_operations[operation_key]
+    assert services.attempt_started[("openswe-current", operation_key)] is False
+    assert services.attempt_start_calls[-1][2] == HEAD1
+
+    cancelled_input = dict(state)
+    cancelled_input["cancel_requested"] = True
+    cancelled = await reconcile_once(
+        cancelled_input, policy_thread_id="cancel-repair-crash", services=services
+    )
+
+    assert cancelled["status"] == "CANCELLED"
+    assert f"cancel_child:{run_id}" in services.actions
+    finished = services.attempt_finish_calls[-1]
+    assert finished["operation_key"] == operation_key
+    assert finished["outcome"] == "BLOCKED"
+    assert finished["source_revision"] == HEAD1

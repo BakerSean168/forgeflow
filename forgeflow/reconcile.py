@@ -32,6 +32,7 @@ from forgeflow.adapters.openswe import (
     ReviewerSupersededError,
     ThreadSnapshot,
 )
+from forgeflow.attempts import AttemptLedger, AttemptLedgerError
 from forgeflow.deployment import reviewer_sandbox_preflight
 from forgeflow.evidence import (
     EvidenceViolation,
@@ -90,6 +91,28 @@ class PolicyServices(Protocol):
 
     def automatic_route_fallback_enabled(self) -> bool: ...
 
+    def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str: ...
+
+    def ensure_openswe_attempt_started(
+        self,
+        *,
+        route_id: str,
+        operation_key: str,
+        source_revision: str | None = None,
+    ) -> bool: ...
+
+    def finish_openswe_attempt(
+        self,
+        *,
+        route_id: str,
+        operation_key: str,
+        outcome: str,
+        failure_class: str | None = None,
+        failure_code: str | None = None,
+        source_revision: str | None = None,
+        result_revision: str | None = None,
+    ) -> None: ...
+
     async def ensure_implementation_thread(
         self,
         *,
@@ -135,6 +158,10 @@ class PolicyServices(Protocol):
     async def read_child_run(
         self, *, thread_id: str, run_id: str, route_id: str, runtime: str
     ) -> ChildRunSnapshot: ...
+
+    async def cancel_child_run(
+        self, *, thread_id: str, run_id: str, route_id: str, runtime: str
+    ) -> None: ...
 
     async def read_implementation_thread(
         self, thread_id: str, *, route_id: str, runtime: str
@@ -234,6 +261,97 @@ class DefaultPolicyServices:
         if value not in {"true", "false"}:
             raise ReconcileError("FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED must be true or false")
         return value == "true"
+
+    def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str:
+        self._openswe_route(route_id)
+        try:
+            status = self._attempt_ledger().operation_status(
+                route_id=route_id, operation_key=operation_key
+            )
+        except AttemptLedgerError as exc:
+            raise ReconcileError(str(exc)) from exc
+        if status is None:
+            return "MISSING"
+        return "FINISHED" if status.finished else "OPEN"
+
+    def ensure_openswe_attempt_started(
+        self,
+        *,
+        route_id: str,
+        operation_key: str,
+        source_revision: str | None = None,
+    ) -> bool:
+        route = self._openswe_route(route_id)
+        try:
+            status = self._attempt_ledger().ensure_started(
+                role=route.role,
+                route_id=route.id,
+                priority=route.priority,
+                runtime=route.runtime,
+                target=route.target,
+                operation_key=operation_key,
+                source_revision=source_revision,
+            )
+        except AttemptLedgerError as exc:
+            raise ReconcileError(str(exc)) from exc
+        return status.finished
+
+    def finish_openswe_attempt(
+        self,
+        *,
+        route_id: str,
+        operation_key: str,
+        outcome: str,
+        failure_class: str | None = None,
+        failure_code: str | None = None,
+        source_revision: str | None = None,
+        result_revision: str | None = None,
+    ) -> None:
+        route = self._openswe_route(route_id)
+        if outcome not in {"SUCCEEDED", "FAILED", "BLOCKED"}:
+            raise ReconcileError(f"invalid attempt outcome: {outcome}")
+        try:
+            ledger = self._attempt_ledger()
+            # Adopt pre-ledger in-flight operations using their existing stable
+            # route + operation provenance before recording the terminal event.
+            ledger.ensure_started(
+                role=route.role,
+                route_id=route.id,
+                priority=route.priority,
+                runtime=route.runtime,
+                target=route.target,
+                operation_key=operation_key,
+                source_revision=source_revision,
+            )
+            ledger.finish_operation(
+                route_id=route_id,
+                operation_key=operation_key,
+                outcome=outcome,  # type: ignore[arg-type]
+                failure_class=failure_class,
+                fallback_reason=failure_code,
+                source_revision=source_revision,
+                result_revision=result_revision,
+            )
+        except AttemptLedgerError as exc:
+            raise ReconcileError(str(exc)) from exc
+
+    def _attempt_ledger(self) -> AttemptLedger:
+        path = os.environ.get("FORGEFLOW_ATTEMPT_LEDGER_FILE", "").strip()
+        if not path:
+            raise ReconcileError("FORGEFLOW_ATTEMPT_LEDGER_FILE is required")
+        return AttemptLedger(Path(path))
+
+    def _openswe_route(self, route_id: str) -> RouteDefinition:
+        path = os.environ.get("FORGEFLOW_ROUTE_CONFIG_FILE", "").strip()
+        if not path:
+            raise ReconcileError("FORGEFLOW_ROUTE_CONFIG_FILE is required")
+        try:
+            route = load_route_registry(Path(path)).get(route_id)
+        except KeyError as exc:
+            raise ReconcileError(f"unknown implementation route: {route_id}") from exc
+        if route.role != "IMPLEMENT" or route.runtime != "OPEN_SWE":
+            raise ReconcileError(f"route is not an Open SWE implementation route: {route_id}")
+        return route
 
     async def ensure_implementation_thread(
         self,
@@ -344,6 +462,14 @@ class DefaultPolicyServices:
             return await self.external.read_run(thread_id=thread_id, run_id=run_id)
         raise ReconcileError(f"unsupported implementation runtime: {runtime}")
 
+    async def cancel_child_run(
+        self, *, thread_id: str, run_id: str, route_id: str, runtime: str
+    ) -> None:
+        del route_id
+        if runtime != "OPEN_SWE":
+            raise ReconcileError("external-agent cancellation is not enabled yet")
+        await self.client.runs.cancel(thread_id, run_id, wait=False, action="interrupt")
+
     async def read_implementation_thread(
         self, thread_id: str, *, route_id: str, runtime: str
     ) -> ThreadSnapshot:
@@ -400,9 +526,9 @@ async def reconcile_once(
         raise ReconcileError("policy thread_id is required")
 
     if state.get("cancel_requested") and state["status"] not in TERMINAL_STATUSES:
-        result = cancel(state)
-        result["cancel_requested"] = False
-        return result
+        return await _reconcile_cancel_request(
+            state, policy_thread_id=policy_thread_id, services=services
+        )
 
     if state["status"] in TERMINAL_STATUSES:
         cron_id = state.get("reconcile_cron_id")
@@ -435,6 +561,84 @@ async def reconcile_once(
     if status == "READY":
         return await _reconcile_ready(state, services)
     raise ReconcileError(f"unsupported policy status: {status}")
+
+
+async def _reconcile_cancel_request(
+    state: ForgeFlowState, *, policy_thread_id: str, services: PolicyServices
+) -> ForgeFlowState:
+    accounting_state = state
+    runtime = state.get("implementation_runtime")
+    route_id = state.get("implementation_route_id")
+    thread_id = state.get("implementation_thread_id")
+    run_id = state.get("implementation_run_id")
+    operation_key = _cancel_recovery_operation_key(state, policy_thread_id=policy_thread_id)
+    attempt_status = "MISSING"
+
+    if runtime == "OPEN_SWE" and route_id and operation_key:
+        if thread_id and run_id is None:
+            run_id = await services.find_child_run(
+                thread_id=thread_id,
+                operation_key=operation_key,
+                route_id=route_id,
+                runtime=runtime,
+            )
+        attempt_status = services.openswe_attempt_status(
+            route_id=route_id, operation_key=operation_key
+        )
+        if run_id is not None or attempt_status != "MISSING":
+            accounting_state = deepcopy(state)
+            accounting_state["implementation_operation_key"] = operation_key
+            accounting_state["implementation_run_id"] = run_id
+            if state["status"] == "REPAIRING":
+                accounting_state["implementation_phase"] = "REPAIR"
+
+    if (
+        accounting_state.get("implementation_runtime") == "OPEN_SWE"
+        and accounting_state.get("implementation_operation_key")
+    ):
+        if thread_id and run_id:
+            snapshot = await services.read_child_run(
+                thread_id=thread_id,
+                run_id=run_id,
+                route_id=_required(accounting_state, "implementation_route_id"),
+                runtime="OPEN_SWE",
+            )
+            if snapshot.status in _PENDING_RUN_STATUSES:
+                await services.cancel_child_run(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    route_id=_required(accounting_state, "implementation_route_id"),
+                    runtime="OPEN_SWE",
+                )
+        if attempt_status != "FINISHED":
+            _finish_openswe_attempt_for_state(
+                accounting_state,
+                services,
+                outcome="BLOCKED",
+                failure_code="POLICY_CANCELLED",
+                failure_class="POLICY_DENIED",
+            )
+
+    result = cancel(state)
+    result["cancel_requested"] = False
+    return result
+
+
+def _cancel_recovery_operation_key(
+    state: ForgeFlowState, *, policy_thread_id: str
+) -> str | None:
+    existing = state.get("implementation_operation_key")
+    if existing:
+        return existing
+    if state["status"] in {"NEW", "IMPLEMENTING"}:
+        return _implementation_operation_key(policy_thread_id, state)
+    if state["status"] == "REPAIRING":
+        return _repair_operation_key(
+            policy_thread_id,
+            state,
+            fresh=state.get("run_retry_count", 0) == 0,
+        )
+    return None
 
 
 async def _reconcile_new(
@@ -517,6 +721,13 @@ async def _reconcile_implementation_run(
     # Routing policy owns this classification. A child result may report its
     # own class for diagnostics, but it cannot authorize an ownership switch.
     failure_class = classify_failure_code(failure_code)
+    _finish_openswe_attempt_for_state(
+        state,
+        services,
+        outcome="FAILED",
+        failure_code=failure_code,
+        failure_class=failure_class,
+    )
     if (
         failure_class == "ROUTE_AVAILABILITY"
         and services.automatic_route_fallback_enabled()
@@ -557,6 +768,14 @@ async def _adopt_or_dispatch_initial(
         route_id=route_id,
         runtime=runtime,
     )
+    attempt_finished = False
+    if runtime == "OPEN_SWE":
+        attempt_finished = services.ensure_openswe_attempt_started(
+            route_id=route_id,
+            operation_key=operation_key,
+        )
+    if run_id is None and attempt_finished:
+        return escalate(state, "ATTEMPT_LEDGER_COMPLETED_WITHOUT_CHILD_RUN")
     if run_id is None:
         run_id = await services.dispatch_implementation(
             thread_id=thread_id,
@@ -599,10 +818,13 @@ async def _reconcile_implementation_evidence(
             tracked_pr=None,
             authoritative_pr=None,
         )
-        return apply_implementation_evidence(state, evidence)
+        return _apply_implementation_evidence_with_attempt(state, services, evidence)
 
     tracked_failure = tracked_pr_target_failure(state, tracked)
     if tracked_failure:
+        _finish_openswe_attempt_for_state(
+            state, services, outcome="BLOCKED", failure_code=tracked_failure, failure_class="POLICY_DENIED"
+        )
         return escalate(state, tracked_failure)
 
     target_pr = state.get("pr_url")
@@ -620,7 +842,7 @@ async def _reconcile_implementation_evidence(
             progressed=False,
             failure_code="PR_TARGET_CHANGED",
         )
-        return apply_implementation_evidence(state, evidence)
+        return _apply_implementation_evidence_with_attempt(state, services, evidence)
 
     authoritative = await services.fetch_pr(tracked.url)
     if authoritative is None:
@@ -629,6 +851,9 @@ async def _reconcile_implementation_evidence(
         return result
     target_failure = pull_request_target_failure(state, authoritative)
     if target_failure:
+        _finish_openswe_attempt_for_state(
+            state, services, outcome="BLOCKED", failure_code=target_failure, failure_class="POLICY_DENIED"
+        )
         return escalate(state, target_failure)
     commit = await services.fetch_head_commit(authoritative)
     if commit is None:
@@ -644,14 +869,14 @@ async def _reconcile_implementation_evidence(
             pr_url="", pr_number=0, head_sha="", progressed=False,
             failure_code="HEAD_OPERATION_PROVENANCE_MISSING"
         )
-        return apply_implementation_evidence(state, missing)
+        return _apply_implementation_evidence_with_attempt(state, services, missing)
     evidence = implementation_evidence(
         state,
         run_status="success",
         tracked_pr=tracked,
         authoritative_pr=authoritative,
     )
-    return apply_implementation_evidence(state, evidence)
+    return _apply_implementation_evidence_with_attempt(state, services, evidence)
 
 
 async def _reconcile_ci(state: ForgeFlowState, services: PolicyServices) -> ForgeFlowState:
@@ -801,6 +1026,13 @@ async def _reconcile_repair(
             route_id=route_id,
             runtime=runtime,
         )
+        attempt_finished = services.ensure_openswe_attempt_started(
+            route_id=route_id,
+            operation_key=operation_key,
+            source_revision=rejected_head,
+        )
+        if run_id is None and attempt_finished:
+            return escalate(state, "ATTEMPT_LEDGER_COMPLETED_WITHOUT_CHILD_RUN")
         if run_id is None:
             prompt = await _repair_prompt(state, services, operation_key=operation_key)
             run_id = await services.dispatch_repair(
@@ -832,6 +1064,13 @@ async def _reconcile_repair(
         result["last_failure_code"] = None
         return result
     failure_code = snapshot.failure_code or f"REPAIR_RUN_{snapshot.status.upper()}"
+    _finish_openswe_attempt_for_state(
+        state,
+        services,
+        outcome="FAILED",
+        failure_code=failure_code,
+        source_revision=rejected_head,
+    )
     return note_child_run_failure(state, failure_code)
 
 
@@ -863,6 +1102,56 @@ async def _repair_prompt(
         rejected_head_sha=rejected_head,
         failure_code=str(state.get("last_failure_code") or "CI_FAILED"),
         operation_key=operation_key,
+    )
+
+
+def _apply_implementation_evidence_with_attempt(
+    state: ForgeFlowState, services: PolicyServices, evidence
+) -> ForgeFlowState:
+    if evidence.progressed:
+        _finish_openswe_attempt_for_state(
+            state, services, outcome="SUCCEEDED", result_revision=evidence.head_sha
+        )
+    else:
+        failure_code = evidence.failure_code or "NO_PROGRESS"
+        _finish_openswe_attempt_for_state(
+            state, services, outcome="FAILED", failure_code=failure_code
+        )
+    return apply_implementation_evidence(state, evidence)
+
+
+def _finish_openswe_attempt_for_state(
+    state: ForgeFlowState,
+    services: PolicyServices,
+    *,
+    outcome: str,
+    failure_code: str | None = None,
+    failure_class: str | None = None,
+    source_revision: str | None = None,
+    result_revision: str | None = None,
+) -> None:
+    if state.get("implementation_runtime") != "OPEN_SWE":
+        return
+    operation_key = state.get("implementation_operation_key")
+    route_id = state.get("implementation_route_id")
+    if not operation_key or not route_id:
+        # Pre-ledger legacy runs remain recoverable; all newly dispatched Open SWE
+        # operations have stable provenance and are accounted.
+        return
+    resolved_class = failure_class
+    if outcome != "SUCCEEDED" and resolved_class is None and failure_code:
+        resolved_class = classify_failure_code(failure_code)
+    resolved_source_revision = source_revision
+    if resolved_source_revision is None and state.get("implementation_phase") == "REPAIR":
+        resolved_source_revision = state.get("observed_head_sha")
+    services.finish_openswe_attempt(
+        route_id=route_id,
+        operation_key=operation_key,
+        outcome=outcome,
+        failure_class=resolved_class,
+        failure_code=failure_code,
+        source_revision=resolved_source_revision,
+        result_revision=result_revision,
     )
 
 
