@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,6 +80,10 @@ def _failure_code(exc: BaseException) -> str:
         code = data.get("code") if isinstance(data, dict) else None
         if isinstance(code, str) and code.strip():
             return code.split(":", 1)[0].strip().upper()
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "EXTERNAL_AGENT_SUBPROCESS_TIMEOUT"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "EXTERNAL_AGENT_SUBPROCESS_FAILED"
     if isinstance(exc, OSError):
         return "EXTERNAL_AGENT_IO_FAILED"
     code = str(exc).split(":", 1)[0].strip()
@@ -204,6 +209,7 @@ class DefaultExternalAgentGraphServices:
             HttpxRequestError,
             RuntimeError,
             OSError,
+            subprocess.SubprocessError,
             ValueError,
             KeyError,
             ExceptionGroup,
@@ -235,7 +241,16 @@ class DefaultExternalAgentGraphServices:
             )
 
         if attempt is not None and not attempt_finished:
-            if cancel_exc is not None:
+            if result is not None and result.external_status == "SUCCESS" and not cleanup_failed:
+                outcome = "SUCCEEDED"
+                failure_class = None
+                fallback_reason = None
+                result_revision = delivery.head_sha if delivery is not None else None
+                session_id = evidence.acp_session_id if evidence is not None else None
+                conversation_id = (
+                    evidence.external_conversation_id if evidence is not None else None
+                )
+            elif cancel_exc is not None:
                 outcome = "BLOCKED"
                 failure_class = "POLICY_DENIED"
                 fallback_reason = (
@@ -246,15 +261,6 @@ class DefaultExternalAgentGraphServices:
                 result_revision = None
                 session_id = None
                 conversation_id = None
-            elif result is not None and result.external_status == "SUCCESS":
-                outcome = "SUCCEEDED"
-                failure_class = None
-                fallback_reason = None
-                result_revision = delivery.head_sha if delivery is not None else None
-                session_id = evidence.acp_session_id if evidence is not None else None
-                conversation_id = (
-                    evidence.external_conversation_id if evidence is not None else None
-                )
             else:
                 outcome = "BLOCKED"
                 failure_class = (
