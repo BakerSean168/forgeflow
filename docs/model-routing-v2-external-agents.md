@@ -374,10 +374,12 @@ until Phase 4 adds auditable ordered routing and attempt accounting.
 
 ### Phase 4 — ordered role routing
 
-Introduce the minimal role/priority registry and attempt ledger. At this point Antigravity can be
-placed before or after the current Open SWE implementation route by configuration.
+The ordered-routing foundation is now implemented: a validated role/priority `RouteRegistry`, a
+private append-only `AttemptLedger`, and deployed defaults that still select the current Open SWE
+chain while Antigravity remains scheduler-disabled. Automatic fallback is not enabled yet; this
+canary validates attempt accounting.
 
-The first safe production shape should be conservative, for example:
+The first safe production shape is conservative:
 
 ```text
 IMPLEMENT
