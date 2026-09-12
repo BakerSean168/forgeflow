@@ -571,26 +571,26 @@ async def _reconcile_cancel_request(
     route_id = state.get("implementation_route_id")
     thread_id = state.get("implementation_thread_id")
     run_id = state.get("implementation_run_id")
-    operation_key = state.get("implementation_operation_key")
+    operation_key = _cancel_recovery_operation_key(state, policy_thread_id=policy_thread_id)
     attempt_status = "MISSING"
 
-    if runtime == "OPEN_SWE" and route_id:
-        if state["status"] == "NEW" and thread_id:
-            operation_key = operation_key or _implementation_operation_key(policy_thread_id, state)
+    if runtime == "OPEN_SWE" and route_id and operation_key:
+        if thread_id and run_id is None:
             run_id = await services.find_child_run(
                 thread_id=thread_id,
                 operation_key=operation_key,
                 route_id=route_id,
                 runtime=runtime,
             )
-        if operation_key:
-            attempt_status = services.openswe_attempt_status(
-                route_id=route_id, operation_key=operation_key
-            )
-        if operation_key and (run_id is not None or attempt_status != "MISSING"):
+        attempt_status = services.openswe_attempt_status(
+            route_id=route_id, operation_key=operation_key
+        )
+        if run_id is not None or attempt_status != "MISSING":
             accounting_state = deepcopy(state)
             accounting_state["implementation_operation_key"] = operation_key
             accounting_state["implementation_run_id"] = run_id
+            if state["status"] == "REPAIRING":
+                accounting_state["implementation_phase"] = "REPAIR"
 
     if (
         accounting_state.get("implementation_runtime") == "OPEN_SWE"
@@ -622,6 +622,23 @@ async def _reconcile_cancel_request(
     result = cancel(state)
     result["cancel_requested"] = False
     return result
+
+
+def _cancel_recovery_operation_key(
+    state: ForgeFlowState, *, policy_thread_id: str
+) -> str | None:
+    existing = state.get("implementation_operation_key")
+    if existing:
+        return existing
+    if state["status"] in {"NEW", "IMPLEMENTING"}:
+        return _implementation_operation_key(policy_thread_id, state)
+    if state["status"] == "REPAIRING":
+        return _repair_operation_key(
+            policy_thread_id,
+            state,
+            fresh=state.get("run_retry_count", 0) == 0,
+        )
+    return None
 
 
 async def _reconcile_new(

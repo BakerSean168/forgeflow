@@ -1390,3 +1390,83 @@ async def test_default_services_cancel_openswe_child_uses_langgraph_interrupt() 
             route_id="external",
             runtime="EXTERNAL_ACP",
         )
+
+@pytest.mark.asyncio
+async def test_cancel_recovers_uncheckpointed_implementation_retry_dispatch() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    services.crash_child_once = True
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id=None,
+        implementation_operation_key=None,
+        run_retry_count=1,
+    )
+
+    with pytest.raises(SimulatedCrash):
+        await reconcile_once(state, policy_thread_id="cancel-impl-retry", services=services)
+    operation_key = "implementation:cancel-impl-retry:retry:1"
+    run_id = services.child_operations[operation_key]
+    assert services.attempt_started[("openswe-current", operation_key)] is False
+
+    cancelled_input = dict(state)
+    cancelled_input["cancel_requested"] = True
+    cancelled = await reconcile_once(
+        cancelled_input, policy_thread_id="cancel-impl-retry", services=services
+    )
+
+    assert cancelled["status"] == "CANCELLED"
+    assert f"cancel_child:{run_id}" in services.actions
+    assert services.attempt_finish_calls[-1]["operation_key"] == operation_key
+    assert services.attempt_finish_calls[-1]["outcome"] == "BLOCKED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("run_retry_count", "repair_round", "expected_round"),
+    [(0, 0, 1), (1, 1, 1)],
+)
+async def test_cancel_recovers_uncheckpointed_repair_dispatch_or_retry(
+    run_retry_count: int, repair_round: int, expected_round: int
+) -> None:
+    services = FakeServices(
+        cron_id="cron-1", implementation_thread="implementation-thread", pr=_pr(HEAD1)
+    )
+    services.crash_repair_once = True
+    state = _base_state("REPAIRING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id=None,
+        implementation_operation_key=None,
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        last_failure_code="CHECK_FAILED:tests",
+        run_retry_count=run_retry_count,
+        repair_round=repair_round,
+    )
+
+    with pytest.raises(SimulatedCrash):
+        await reconcile_once(state, policy_thread_id="cancel-repair-crash", services=services)
+    operation_key = (
+        f"repair:cancel-repair-crash:{HEAD1}:round:{expected_round}:retry:{run_retry_count}"
+    )
+    run_id = services.child_operations[operation_key]
+    assert services.attempt_started[("openswe-current", operation_key)] is False
+    assert services.attempt_start_calls[-1][2] == HEAD1
+
+    cancelled_input = dict(state)
+    cancelled_input["cancel_requested"] = True
+    cancelled = await reconcile_once(
+        cancelled_input, policy_thread_id="cancel-repair-crash", services=services
+    )
+
+    assert cancelled["status"] == "CANCELLED"
+    assert f"cancel_child:{run_id}" in services.actions
+    finished = services.attempt_finish_calls[-1]
+    assert finished["operation_key"] == operation_key
+    assert finished["outcome"] == "BLOCKED"
+    assert finished["source_revision"] == HEAD1
