@@ -395,6 +395,15 @@ until authoritative PR evidence and the operation trailer prove the resulting he
 gate remains off until a real deployed Open SWE acceptance run proves this STARTED -> FINISHED
 accounting against an authoritative PR head.
 
+Open SWE thread PR metadata is treated as a fast path, not the sole delivery authority. A successful
+child run without thread PR metadata enters a bounded evidence-settle window. ForgeFlow queries
+GitHub for an open PR on the expected base whose **current head commit** contains the exact
+`ForgeFlow-Operation` trailer. A stale PR body or historical commit never satisfies this lookup. A
+complete lookup with no matching PR waits before consuming the existing no-progress retry budget;
+GitHub/token/transport unavailability waits and then fails closed without spending another model run;
+ambiguous matches or an unbounded lookup fail closed immediately. This barrier prevents a successful
+delivery from racing best-effort Open SWE telemetry and spawning a duplicate writer.
+
 External-agent same-PR repair is also **not** enabled yet. If an explicitly selected external
 implementation reaches a repair state, policy fails closed instead of silently switching execution
 ownership.

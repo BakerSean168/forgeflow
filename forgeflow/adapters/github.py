@@ -44,6 +44,10 @@ class CiSignals:
     statuses: tuple[dict[str, Any], ...]
 
 
+class GitHubEvidenceError(RuntimeError):
+    """Authoritative GitHub evidence is contradictory or cannot be bounded safely."""
+
+
 async def _repository_token(
     owner: str, repo: str, *, permissions: dict[str, str]
 ) -> tuple[int, str] | None:
@@ -112,6 +116,120 @@ async def fetch_pull_request(pr_url: str) -> PullRequestEvidence | None:
         number=pr_ref.number,
         url=html_url if isinstance(html_url, str) and html_url else pr_url,
         state=state if isinstance(state, str) else "unknown",
+        head_sha=head_sha,
+        head_ref=_string(head.get("ref")),
+        base_sha=base_sha,
+        base_ref=_string(base.get("ref")),
+    )
+
+
+async def find_pull_request_for_operation(
+    *,
+    owner: str,
+    repo: str,
+    base_ref: str,
+    operation_trailer: str,
+) -> PullRequestEvidence | None:
+    """Find one open PR whose *current head* proves the exact ForgeFlow operation.
+
+    Open SWE records PR telemetry on the child thread as a best-effort side effect
+    after GitHub delivery. ForgeFlow therefore cannot treat that metadata as the
+    sole source of delivery truth. GitHub remains authoritative, and a candidate
+    is accepted only when its current head commit contains ``operation_trailer``
+    as a complete line.
+    """
+    if not all(value.strip() for value in (owner, repo, base_ref, operation_trailer)):
+        raise ValueError("operation PR lookup fields are required")
+    scoped = await _repository_token(
+        owner, repo, permissions={"contents": "read", "pull_requests": "read"}
+    )
+    if scoped is None:
+        raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
+    _installation_id, token = scoped
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    matches: list[PullRequestEvidence] = []
+    try:
+        async with httpx2.AsyncClient(timeout=15) as client:
+            for page in range(1, 4):
+                response = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls",
+                    headers=headers,
+                    params={
+                        "state": "open",
+                        "base": base_ref,
+                        "sort": "updated",
+                        "direction": "desc",
+                        "per_page": 100,
+                        "page": page,
+                    },
+                )
+                if response.status_code != 200:
+                    raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
+                for row in payload:
+                    candidate = _pull_request_from_payload(owner, repo, row)
+                    if candidate is None or candidate.base_ref != base_ref:
+                        continue
+                    commit_response = await client.get(
+                        f"https://api.github.com/repos/{owner}/{repo}/commits/{candidate.head_sha}",
+                        headers=headers,
+                    )
+                    if commit_response.status_code != 200:
+                        raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
+                    commit_payload = commit_response.json()
+                    commit = (
+                        commit_payload.get("commit")
+                        if isinstance(commit_payload, dict)
+                        else None
+                    )
+                    message = commit.get("message") if isinstance(commit, dict) else None
+                    if not isinstance(message, str):
+                        raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE")
+                    if operation_trailer in {line.strip() for line in message.splitlines()}:
+                        matches.append(candidate)
+                if len(payload) < 100:
+                    break
+            else:
+                raise GitHubEvidenceError("PR_OPERATION_LOOKUP_LIMIT_EXCEEDED")
+    except httpx2.RequestError as exc:
+        raise GitHubEvidenceError("PR_OPERATION_EVIDENCE_UNAVAILABLE") from exc
+    unique = {item.url: item for item in matches}
+    if len(unique) > 1:
+        raise GitHubEvidenceError("PR_OPERATION_AMBIGUOUS")
+    return next(iter(unique.values()), None)
+
+
+def _pull_request_from_payload(
+    owner: str, repo: str, payload: object
+) -> PullRequestEvidence | None:
+    if not isinstance(payload, dict):
+        return None
+    head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
+    base = payload.get("base") if isinstance(payload.get("base"), dict) else {}
+    number = payload.get("number")
+    head_sha = head.get("sha")
+    base_sha = base.get("sha")
+    html_url = payload.get("html_url")
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        return None
+    if not isinstance(head_sha, str) or not head_sha:
+        return None
+    if not isinstance(base_sha, str) or not base_sha:
+        return None
+    if not isinstance(html_url, str) or not html_url:
+        return None
+    return PullRequestEvidence(
+        owner=owner,
+        repo=repo,
+        number=number,
+        url=html_url,
+        state=_string(payload.get("state")) or "unknown",
         head_sha=head_sha,
         head_ref=_string(head.get("ref")),
         base_sha=base_sha,

@@ -30,6 +30,9 @@ class FakeServices:
     child_status: dict[str, str] = field(default_factory=dict)
     implementation_metadata: dict = field(default_factory=dict)
     pr: PullRequestEvidence | None = None
+    operation_pr: PullRequestEvidence | None = None
+    operation_pr_error: str | None = None
+    operation_pr_lookup_calls: list[tuple[str, str, str, str]] = field(default_factory=list)
     ci: CiSignals | None = None
     commits: dict[str, CommitEvidence] = field(default_factory=dict)
     current_review: tuple[str, str] | None = None
@@ -234,6 +237,16 @@ class FakeServices:
 
     async def fetch_pr(self, pr_url: str) -> PullRequestEvidence | None:
         return self.pr
+
+    async def find_pr_for_operation(
+        self, *, owner: str, repo: str, base_ref: str, operation_key: str
+    ) -> PullRequestEvidence | None:
+        self.operation_pr_lookup_calls.append((owner, repo, base_ref, operation_key))
+        if self.operation_pr_error:
+            from forgeflow.adapters.github import GitHubEvidenceError
+
+            raise GitHubEvidenceError(self.operation_pr_error)
+        return self.operation_pr
 
     async def fetch_ci(self, pr: PullRequestEvidence) -> CiSignals | None:
         return self.ci
@@ -1510,3 +1523,139 @@ async def test_default_services_run_attempt_ledger_io_off_event_loop(
     assert finished is False
     assert observed_threads
     assert observed_threads[0] != caller_thread
+
+@pytest.mark.asyncio
+async def test_missing_thread_pr_uses_exact_operation_github_fallback() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    op = "implementation:policy-operation-fallback:retry:0"
+    services.operation_pr = _pr(HEAD1)
+    services.commits[HEAD1] = CommitEvidence(
+        sha=HEAD1,
+        message=f"feat: deliver\n\nForgeFlow-Operation: {op}",
+    )
+    state = _base_state("VERIFYING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id="run-success",
+        implementation_phase="INITIAL",
+        implementation_operation_key=op,
+    )
+    services.attempt_started[("openswe-current", op)] = False
+
+    result = await reconcile_once(
+        state, policy_thread_id="policy-operation-fallback", services=services
+    )
+
+    assert result["status"] == "WAITING_FOR_CI"
+    assert result["pr_url"] == PR
+    assert result["observed_head_sha"] == HEAD1
+    assert result["wait_stage"] is None
+    assert services.operation_pr_lookup_calls == [
+        ("o", "r", "main", op)
+    ]
+    assert services.attempt_finish_calls[-1]["outcome"] == "SUCCEEDED"
+    assert services.attempt_finish_calls[-1]["result_revision"] == HEAD1
+
+
+@pytest.mark.asyncio
+async def test_missing_pr_evidence_waits_without_dispatching_duplicate_writer() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    op = "implementation:policy-settle:retry:0"
+    state = _base_state("VERIFYING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id="run-success",
+        implementation_phase="INITIAL",
+        implementation_operation_key=op,
+    )
+    services.attempt_started[("openswe-current", op)] = False
+
+    current = state
+    for expected in range(1, 11):
+        current = await reconcile_once(current, policy_thread_id="policy-settle", services=services)
+        assert current["status"] == "VERIFYING"
+        assert current["wait_stage"] == "implementation_pr_evidence"
+        assert current["wait_count"] == expected
+        assert current["last_failure_code"] == "PR_EVIDENCE_SETTLING"
+        assert services.attempt_finish_calls == []
+        assert not any(action.startswith("dispatch_child:") for action in services.actions)
+
+    exhausted = await reconcile_once(current, policy_thread_id="policy-settle", services=services)
+    assert exhausted["status"] == "IMPLEMENTING"
+    assert exhausted["run_retry_count"] == 1
+    assert exhausted["last_failure_code"] == "NO_PROGRESS_NO_TRACKED_PR"
+    assert services.attempt_finish_calls[-1]["outcome"] == "FAILED"
+    assert services.attempt_finish_calls[-1]["failure_code"] == "NO_PROGRESS_NO_TRACKED_PR"
+
+
+@pytest.mark.asyncio
+async def test_pr_can_appear_during_evidence_settle_without_retry() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    op = "implementation:policy-eventual-pr:retry:0"
+    state = _base_state("VERIFYING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id="run-success",
+        implementation_phase="INITIAL",
+        implementation_operation_key=op,
+    )
+    services.attempt_started[("openswe-current", op)] = False
+
+    waiting = await reconcile_once(state, policy_thread_id="policy-eventual-pr", services=services)
+    assert waiting["status"] == "VERIFYING"
+    assert waiting["wait_count"] == 1
+
+    services.operation_pr = _pr(HEAD1)
+    services.commits[HEAD1] = CommitEvidence(
+        sha=HEAD1,
+        message=f"feat: deliver\n\nForgeFlow-Operation: {op}",
+    )
+    accepted = await reconcile_once(
+        waiting, policy_thread_id="policy-eventual-pr", services=services
+    )
+    assert accepted["status"] == "WAITING_FOR_CI"
+    assert accepted["run_retry_count"] == 0
+    assert accepted["wait_stage"] is None
+    assert len(services.attempt_finish_calls) == 1
+    assert services.attempt_finish_calls[0]["outcome"] == "SUCCEEDED"
+
+@pytest.mark.asyncio
+async def test_operation_pr_lookup_outage_never_retries_model_work() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    services.operation_pr_error = "PR_OPERATION_EVIDENCE_UNAVAILABLE"
+    op = "implementation:policy-github-outage:retry:0"
+    state = _base_state("VERIFYING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id="run-success",
+        implementation_phase="INITIAL",
+        implementation_operation_key=op,
+    )
+    services.attempt_started[("openswe-current", op)] = False
+
+    current = state
+    for expected in range(1, 11):
+        current = await reconcile_once(
+            current, policy_thread_id="policy-github-outage", services=services
+        )
+        assert current["status"] == "VERIFYING"
+        assert current["wait_stage"] == "implementation_pr_lookup"
+        assert current["wait_count"] == expected
+        assert services.attempt_finish_calls == []
+        assert services.child_operations == {}
+
+    blocked = await reconcile_once(
+        current, policy_thread_id="policy-github-outage", services=services
+    )
+    assert blocked["status"] == "ESCALATED"
+    assert blocked["last_failure_code"] == "PR_OPERATION_EVIDENCE_UNAVAILABLE_WAIT_EXHAUSTED"
+    assert blocked["run_retry_count"] == 0
+    assert services.attempt_finish_calls[-1]["outcome"] == "BLOCKED"
