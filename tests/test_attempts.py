@@ -173,3 +173,62 @@ def test_recovered_start_rejects_source_revision_drift(tmp_path: Path) -> None:
             operation_key="repair:1",
             source_revision="b" * 40,
         )
+
+
+def test_torn_uncommitted_tail_is_truncated_and_recovery_continues(tmp_path: Path) -> None:
+    path = tmp_path / "attempt-ledger.jsonl"
+    ledger = AttemptLedger(path)
+    first = ledger.ensure_started(
+        role="IMPLEMENT",
+        route_id="openswe-current",
+        priority=10,
+        runtime="OPEN_SWE",
+        target="current-model-policy",
+        operation_key="op:torn",
+    )
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"version":1,"event":"FIN')
+        handle.flush()
+
+    recovered = ledger.ensure_started(
+        role="IMPLEMENT",
+        route_id="openswe-current",
+        priority=10,
+        runtime="OPEN_SWE",
+        target="current-model-policy",
+        operation_key="op:torn",
+    )
+
+    assert recovered.handle.attempt_id == first.handle.attempt_id
+    assert recovered.finished is False
+    text = path.read_text(encoding="utf-8")
+    assert '"FIN' not in text
+    assert text.endswith("\n")
+    assert len(text.splitlines()) == 1
+
+
+def test_committed_corrupt_row_remains_fail_closed(tmp_path: Path) -> None:
+    from forgeflow.attempts import AttemptLedgerError
+
+    path = tmp_path / "attempt-ledger.jsonl"
+    ledger = AttemptLedger(path)
+    ledger.ensure_started(
+        role="IMPLEMENT",
+        route_id="openswe-current",
+        priority=10,
+        runtime="OPEN_SWE",
+        target="current-model-policy",
+        operation_key="op:corrupt",
+    )
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{not-json}\n')
+
+    with pytest.raises(AttemptLedgerError, match="ATTEMPT_LEDGER_INVALID_JSON"):
+        ledger.ensure_started(
+            role="IMPLEMENT",
+            route_id="openswe-current",
+            priority=10,
+            runtime="OPEN_SWE",
+            target="current-model-policy",
+            operation_key="op:next",
+        )

@@ -319,7 +319,20 @@ def _finish_payload(
 def _read_rows(file: IO[str]) -> list[dict[str, object]]:
     file.seek(0)
     rows: list[dict[str, object]] = []
-    for raw in file:
+    while True:
+        start = file.tell()
+        raw = file.readline()
+        if raw == "":
+            break
+        # A newline is the ledger commit marker. A crash can leave only the
+        # final append torn; truncate that uncommitted tail while preserving
+        # strict failure for corruption in any committed row.
+        if not raw.endswith("\n"):
+            file.seek(start)
+            file.truncate()
+            file.flush()
+            os.fsync(file.fileno())
+            break
         if not raw.strip():
             continue
         try:

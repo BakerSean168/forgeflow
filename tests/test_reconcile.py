@@ -110,6 +110,10 @@ class FakeServices:
         result_revision: str | None = None,
     ) -> None:
         key = (route_id, operation_key)
+        if key not in self.attempt_started:
+            # Mirror production migration of pre-ledger in-flight operations.
+            self.attempt_started[key] = False
+            self.attempt_start_calls.append((route_id, operation_key, source_revision))
         if self.attempt_started.get(key) is True:
             return
         self.attempt_started[key] = True
@@ -1168,3 +1172,90 @@ async def test_successful_openswe_repair_finishes_with_rejected_head_source_revi
     assert finished["outcome"] == "SUCCEEDED"
     assert finished["source_revision"] == HEAD1
     assert finished["result_revision"] == HEAD2
+
+@pytest.mark.asyncio
+async def test_preledger_inflight_openswe_run_is_adopted_before_terminal_evidence() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    operation_key = "implementation:legacy-accounting:retry:0"
+    state = _base_state("VERIFYING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id="legacy-run",
+        implementation_operation_key=operation_key,
+        implementation_phase="INITIAL",
+    )
+    services.implementation_metadata = {
+        "pr_url": PR,
+        "pr_number": 1,
+        "pr_state": "open",
+        "branch_name": "open-swe/task",
+        "base_branch": "main",
+    }
+    services.pr = _pr(HEAD1)
+    services.commits[HEAD1] = CommitEvidence(
+        sha=HEAD1,
+        message=f"feat: legacy run\n\nForgeFlow-Operation: {operation_key}",
+    )
+
+    result = await reconcile_once(
+        state, policy_thread_id="legacy-accounting", services=services
+    )
+
+    assert result["status"] == "WAITING_FOR_CI"
+    assert services.attempt_start_calls == [("openswe-current", operation_key, None)]
+    assert len(services.attempt_finish_calls) == 1
+    assert services.attempt_finish_calls[0]["outcome"] == "SUCCEEDED"
+    assert services.attempt_finish_calls[0]["result_revision"] == HEAD1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["IMPLEMENTING", "VERIFYING", "REPAIRING"])
+async def test_cancel_closes_active_openswe_attempt_before_terminal_state(status: str) -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    operation_key = f"active:{status.lower()}"
+    services.attempt_started[("openswe-current", operation_key)] = False
+    state = _base_state(status)
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id="run-active",
+        implementation_operation_key=operation_key,
+        implementation_phase="REPAIR" if status == "REPAIRING" else "INITIAL",
+        observed_head_sha=HEAD1 if status == "REPAIRING" else None,
+        cancel_requested=True,
+    )
+
+    result = await reconcile_once(state, policy_thread_id="cancel-ledger", services=services)
+
+    assert result["status"] == "CANCELLED"
+    assert result["cancel_requested"] is False
+    assert len(services.attempt_finish_calls) == 1
+    finished = services.attempt_finish_calls[0]
+    assert finished["outcome"] == "BLOCKED"
+    assert finished["failure_code"] == "POLICY_CANCELLED"
+    assert finished["failure_class"] == "POLICY_DENIED"
+    assert finished["source_revision"] == (HEAD1 if status == "REPAIRING" else None)
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_attempt_success_does_not_rewrite_finished_accounting() -> None:
+    services = FakeServices(cron_id="cron-1")
+    operation_key = "implementation:done:retry:0"
+    services.attempt_started[("openswe-current", operation_key)] = True
+    state = _base_state("WAITING_FOR_CI")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_operation_key=operation_key,
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        cancel_requested=True,
+    )
+
+    result = await reconcile_once(state, policy_thread_id="cancel-done", services=services)
+
+    assert result["status"] == "CANCELLED"
+    assert services.attempt_finish_calls == []

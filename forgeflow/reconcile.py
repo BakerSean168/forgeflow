@@ -289,11 +289,23 @@ class DefaultPolicyServices:
         source_revision: str | None = None,
         result_revision: str | None = None,
     ) -> None:
-        self._openswe_route(route_id)
+        route = self._openswe_route(route_id)
         if outcome not in {"SUCCEEDED", "FAILED", "BLOCKED"}:
             raise ReconcileError(f"invalid attempt outcome: {outcome}")
         try:
-            self._attempt_ledger().finish_operation(
+            ledger = self._attempt_ledger()
+            # Adopt pre-ledger in-flight operations using their existing stable
+            # route + operation provenance before recording the terminal event.
+            ledger.ensure_started(
+                role=route.role,
+                route_id=route.id,
+                priority=route.priority,
+                runtime=route.runtime,
+                target=route.target,
+                operation_key=operation_key,
+                source_revision=source_revision,
+            )
+            ledger.finish_operation(
                 route_id=route_id,
                 operation_key=operation_key,
                 outcome=outcome,  # type: ignore[arg-type]
@@ -488,6 +500,14 @@ async def reconcile_once(
         raise ReconcileError("policy thread_id is required")
 
     if state.get("cancel_requested") and state["status"] not in TERMINAL_STATUSES:
+        if state["status"] in {"IMPLEMENTING", "VERIFYING", "REPAIRING"}:
+            _finish_openswe_attempt_for_state(
+                state,
+                services,
+                outcome="BLOCKED",
+                failure_code="POLICY_CANCELLED",
+                failure_class="POLICY_DENIED",
+            )
         result = cancel(state)
         result["cancel_requested"] = False
         return result
