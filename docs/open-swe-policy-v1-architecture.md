@@ -31,6 +31,8 @@ GC timer. **There is no OpenHands Agent Server, OpenHands container, long-lived 
 Node control plane, or ForgeFlow SQLite workflow database in the current runtime.** An experimental,
 disabled-by-default Antigravity ACP bridge exists as an execution-scoped runtime extension. Writable external-agent turns are additionally wrapped in a short-lived Docker sandbox whose bootstrap account mount is detached before the project prompt; the extension does not own workflow state or change the default Open SWE route.
 
+Delivery ownership is explicit: external agents never receive GitHub delivery credentials; ForgeFlow independently verifies workspace evidence, writes operation provenance into the commit, pushes the branch, and creates the pull request.
+
 ## Historical destructive cutover contract
 
 The following sequence is retained as the v2 migration record. It is not a list of currently
