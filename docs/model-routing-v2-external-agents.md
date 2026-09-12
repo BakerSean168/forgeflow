@@ -1,6 +1,6 @@
 # ForgeFlow model and external-agent routing — V2 implementation plan
 
-> Status: Phase 1 ACP vertical slice implemented; Phase 2 evidence harness implemented but real coding gate is blocked by the current Antigravity headless permission/sandbox behavior.
+> Status: Phase 1 ACP vertical slice and Phase 2 isolated disposable coding gate are complete; Phase 3 guarded execution routing is next.
 > Date: 2026-09-12.
 
 ## 1. Decision summary
@@ -76,7 +76,7 @@ this work. `openswe_ext/model_policy.py` remains the authority for the current m
 
 ### 3.2 Antigravity host readiness
 
-GCP Dev currently has `agy 1.1.28` installed and an already-authenticated account session. Two direct
+GCP Dev currently has `agy 1.2.2` installed and an already-authenticated account session. Direct
 headless probes passed:
 
 1. JSON single-turn headless invocation returned `SUCCESS`.
@@ -134,6 +134,9 @@ it explicitly.
 | `FORGEFLOW_ANTIGRAVITY_EFFORT` | `high` | Antigravity effort |
 | `FORGEFLOW_ANTIGRAVITY_MODE` | `accept-edits` | future implementation-mode default |
 | `FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT` | `20m` | bounded agent turn timeout |
+| `FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX` | `docker` | mandatory outer isolation for unattended Antigravity coding |
+| `FORGEFLOW_ANTIGRAVITY_AUTH_STATE_DIR` | `$HOME/.gemini/antigravity-cli` | account bootstrap source; removed from the container namespace before the real task |
+| `FORGEFLOW_EXTERNAL_AGENT_DOCKER_IMAGE` | `forgeflow/openswe-sandbox:bookworm-node24` | pinned local sandbox image |
 
 The ACP bridge additionally requires one or more `--allowed-root` arguments supplied by the caller.
 The caller must derive them from the selected ForgeFlow project/workspace. They are deliberately not
@@ -146,8 +149,7 @@ a second global project registry.
 3. **No unrelated service secrets in the agent environment.** The `agy` child receives only a small runtime allowlist (`HOME`, `PATH`, XDG/locale/terminal basics); LiteLLM, GitHub and Codex service credentials are not inherited.
 4. **No arbitrary cwd.** An ACP session is rejected unless its resolved cwd is equal to or below an
    explicit allowed root.
-5. **No host-wide permission bypass in the bridge.** Phase 1 does not pass
-   `--dangerously-skip-permissions`.
+5. **No host-wide permission bypass.** `--dangerously-skip-permissions` is forbidden on the host path. It is appended only inside the outer Docker execution branch, after ForgeFlow has created a read-only/capability-dropped container contract; the bootstrap turn is tool-free and the account-state mount is removed before the real project prompt.
 6. **No long-lived agent daemon.** The ACP bridge and `agy` are execution-scoped child processes.
 7. **One writer per workspace.** A future selector must never start Open SWE and Antigravity against
    the same mutable worktree concurrently.
@@ -279,40 +281,48 @@ Credentials and full transcripts are excluded.
 
 **Gate:** full ForgeFlow regression suite stays green and a real ACP->Antigravity prompt succeeds.
 
-### Phase 2 — disposable coding smoke — harness complete, real gate blocked
+### Phase 2 — isolated disposable coding smoke — complete
 
-The disposable harness is implemented and always uses a generated repository below
+The disposable harness always uses a generated repository below
 `~/.local/share/forgeflow-policy/external-agent-workspaces`; it never points Antigravity at a live
-shared project checkout. It:
+shared project checkout. It independently records changed files (including untracked files), a binary
+diff SHA-256, base/result revisions, test exit code, ACP session id and Antigravity conversation id,
+then destroys the workspace on success or failure.
 
-1. establishes a known base commit;
-2. invokes the external agent through the generic ACP client;
-3. requires exactly one expected file to change and includes untracked files in the check;
-4. runs an explicit verification command independently of the agent;
-5. records a binary-diff SHA-256, base/result revisions, test exit code, ACP session id and external
-   conversation id;
-6. creates the result revision itself only after verification;
-7. destroys the disposable workspace on both success and failure.
+The initial host-only probes exposed two upstream constraints: headless `permissions.allow` is not
+reliable enough for unattended coding, and `--dangerously-skip-permissions --sandbox` alone did not
+provide a verifiable host filesystem boundary. ForgeFlow therefore added an **outer Docker sandbox**
+in `openswe_ext/external_agent_docker.py` rather than weakening the gate.
 
-The first real coding attempt exposed an upstream headless constraint rather than a ForgeFlow diff
-problem. `agy` returned `SUCCESS` while reporting a soft-denied `read_file` action, so no edit was
-made. ForgeFlow now treats any non-empty `denied_actions` result as the structured failure
-`ANTIGRAVITY_TOOL_PERMISSION_DENIED`; a soft denial can no longer masquerade as a successful run.
+The verified execution shape is:
 
-A second safety probe tested the only documented bypass, `--dangerously-skip-permissions` together
-with `--sandbox`. On the current GCP Dev host and `agy 1.1.28`, the resulting tool process attempted
-`find / ...` and remained `unconfined` with `Seccomp=0` and `NoNewPrivs=0`, in the same mount
-namespace as the host process. ForgeFlow therefore does **not** enable that bypass. Public upstream
-reports also document headless `permissions.allow` problems around the current 1.1.x line:
+```text
+ForgeFlow ACP bridge
+  -> execution-scoped Docker container
+       read-only rootfs
+       cap-drop ALL
+       no-new-privileges
+       non-root agent UID
+       only workspace (rw), agy binary (ro), bootstrap auth directory (ro) are bind-mounted
+  -> tool-free account bootstrap turn
+  -> one-shot no-network privileged helper detaches bootstrap auth from the mount namespace
+  -> dangling auth link is removed
+  -> real Antigravity coding turn
+  -> independent host Git/test evidence
+  -> container + disposable workspace destroyed
+```
 
-- https://github.com/google-antigravity/antigravity-cli/issues/548
-- https://github.com/google-antigravity/antigravity-cli/issues/955
+Because Antigravity headless still soft-denies required tools under narrow permissions, broad tool
+approval is used **only inside this outer container**. It is never added to the host execution path.
+The real coding gate on GCP Dev passed with `agy 1.2.2`: exactly `calc.py` changed, the independent
+unit test exited `0`, a distinct result revision was produced, conversation provenance was present,
+the workspace was removed, and no labeled external-agent container remained.
 
-The safe retry command is `uv run python deploy/gcp-dev/run-antigravity-acp-smoke.py`. It returns
-`PASS` with normalized revision/test evidence, or `BLOCKED` with a bounded failure code.
+The safe repeatable command is `uv run python deploy/gcp-dev/run-antigravity-acp-smoke.py`. It
+returns `PASS` with normalized revision/test evidence, or `BLOCKED` with a bounded failure code.
 
-**Gate:** still requires reproducible edit + test + independent git evidence, with no host pollution.
-Phase 3 must not be enabled until this command passes without broad permission bypasses.
+**Gate:** complete — reproducible edit + independent test + Git provenance + bootstrap-auth seal +
+execution-scoped cleanup have all passed.
 
 ### Phase 3 — guarded ForgeFlow execution route
 
