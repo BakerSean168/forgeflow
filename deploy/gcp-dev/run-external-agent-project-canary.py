@@ -17,7 +17,9 @@ from pathlib import Path
 from acp.exceptions import RequestError
 
 from forgeflow.adapters.external_delivery import GitHubExternalAgentDelivery
+from forgeflow.attempts import AttemptHandle, AttemptLedger
 from forgeflow.external_agents.execution import ExternalAgentExecutionRequest
+from forgeflow.routing import classify_failure_code, load_route_registry
 from openswe_ext.antigravity_execution import AntigravityExternalAgentExecution
 
 
@@ -74,6 +76,13 @@ def _cleanup_workspace(workspace: Path | None) -> None:
         shutil.rmtree(workspace, ignore_errors=False)
 
 
+def _failure_code(exc: BaseException) -> str:
+    if isinstance(exc, OSError):
+        return "PROJECT_CANARY_IO_FAILED"
+    code = str(exc).split(":", 1)[0].strip()
+    return code or type(exc).__name__
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one explicit external-agent project canary")
     parser.add_argument("--repo-path", required=True)
@@ -86,18 +95,58 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--commit-subject", required=True)
     parser.add_argument("--pr-title", required=True)
     parser.add_argument("--pr-body", default="Guarded ForgeFlow external-agent canary.")
+    parser.add_argument("--route-id", default="antigravity-account-primary")
+    parser.add_argument(
+        "--route-config",
+        default=os.environ.get(
+            "FORGEFLOW_ROUTE_CONFIG_FILE",
+            str(Path.home() / ".config/forgeflow-policy/routes.json"),
+        ),
+    )
+    parser.add_argument(
+        "--attempt-ledger",
+        default=os.environ.get(
+            "FORGEFLOW_ATTEMPT_LEDGER_FILE",
+            str(Path.home() / ".local/share/forgeflow-policy/attempt-ledger.jsonl"),
+        ),
+    )
     return parser
 
 
 async def _run(args: argparse.Namespace) -> int:
     root = Path.home() / ".local/share/forgeflow-policy/external-agent-workspaces"
     workspace: Path | None = None
+    expected_source: str | None = None
+    attempt: AttemptHandle | None = None
+    ledger = AttemptLedger(Path(args.attempt_ledger))
+    attempt_finished = False
     try:
+        registry = load_route_registry(Path(args.route_config))
+        route = registry.get(args.route_id)
+        if (
+            route.role != "IMPLEMENT"
+            or route.runtime != "EXTERNAL_ACP"
+            or route.adapter != "antigravity"
+        ):
+            raise ProjectCanaryError("PROJECT_CANARY_ROUTE_INVALID")
+
         workspace, expected_source = await asyncio.to_thread(
             _prepare_workspace,
             Path(args.repo_path),
             args.base_ref,
             root,
+        )
+        # This command is an explicit operator canary, so it may exercise a scheduler-disabled
+        # route without changing persistent route configuration. The adapter itself remains gated
+        # to this project/workspace for this invocation only.
+        attempt = ledger.start(
+            role=route.role,
+            route_id=route.id,
+            priority=route.priority,
+            runtime=route.runtime,
+            target=route.target,
+            operation_key=args.operation_key,
+            source_revision=expected_source,
         )
         route_env = dict(os.environ)
         route_env.update(
@@ -129,10 +178,21 @@ async def _run(args: argparse.Namespace) -> int:
             pr_title=args.pr_title,
             pr_body=args.pr_body,
         )
+        ledger.finish(
+            attempt,
+            outcome="SUCCEEDED",
+            source_revision=evidence.source_revision,
+            result_revision=delivery.head_sha,
+            external_session_id=evidence.acp_session_id,
+            external_conversation_id=evidence.external_conversation_id,
+        )
+        attempt_finished = True
         print(
             json.dumps(
                 {
                     "status": "PASS",
+                    "route": {"id": route.id, "priority": route.priority, "runtime": route.runtime},
+                    "attempt_id": attempt.attempt_id,
                     "execution": asdict(evidence),
                     "delivery": asdict(delivery),
                 },
@@ -140,8 +200,19 @@ async def _run(args: argparse.Namespace) -> int:
             )
         )
         return 0
-    except (RequestError, RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
-        code = str(exc).split(":", 1)[0] or type(exc).__name__
+    except (RequestError, RuntimeError, OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+        code = _failure_code(exc)
+        if attempt is not None and not attempt_finished:
+            try:
+                ledger.finish(
+                    attempt,
+                    outcome="BLOCKED",
+                    failure_class=classify_failure_code(code),
+                    fallback_reason=code,
+                    source_revision=expected_source,
+                )
+            except OSError:
+                code = "ATTEMPT_LEDGER_WRITE_FAILED"
         print(json.dumps({"status": "BLOCKED", "failure_code": code}, sort_keys=True))
         return 2
     finally:

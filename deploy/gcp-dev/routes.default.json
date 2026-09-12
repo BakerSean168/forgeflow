@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "routes": [
+    {
+      "id": "openswe-current",
+      "role": "IMPLEMENT",
+      "priority": 10,
+      "runtime": "OPEN_SWE",
+      "target": "current-model-policy",
+      "enabled": true,
+      "health": "READY"
+    },
+    {
+      "id": "antigravity-account-primary",
+      "role": "IMPLEMENT",
+      "priority": 20,
+      "runtime": "EXTERNAL_ACP",
+      "adapter": "antigravity",
+      "target": "google-account",
+      "enabled": false,
+      "health": "READY"
+    },
+    {
+      "id": "openswe-reviewer",
+      "role": "REASONING",
+      "priority": 10,
+      "runtime": "OPEN_SWE",
+      "target": "current-review-policy",
+      "enabled": true,
+      "health": "READY"
+    }
+  ]
+}

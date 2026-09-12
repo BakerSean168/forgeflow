@@ -12,10 +12,12 @@ broker_secret="$state_dir/codex-broker.secret"
 projects_file="$config_dir/projects.json"
 github_env="$config_dir/github-app.env"
 litellm_glm53_key="$config_dir/litellm-glm53.key"
+routes_file="$config_dir/routes.json"
+attempt_ledger_file="$state_dir/attempt-ledger.jsonl"
 langgraph_state_dir="$state_dir/langgraph"
 langgraph_root_link="$root/.langgraph_api"
 
-for required in "$auth_file" "$broker_secret" "$projects_file" "$litellm_glm53_key"; do
+for required in "$auth_file" "$broker_secret" "$projects_file" "$litellm_glm53_key" "$routes_file"; do
   [[ -r "$required" ]] || { echo "missing required ForgeFlow Policy file: $required" >&2; exit 2; }
 done
 expected_langgraph_state="$(readlink -f "$langgraph_state_dir" 2>/dev/null || true)"
@@ -29,6 +31,8 @@ export OPEN_SWE_LOCAL_AUTH_TOKEN="$(<"$auth_file")"
 export OPEN_SWE_LOCAL_PROJECTS_FILE="$projects_file"
 export OPEN_SWE_LOCAL_WORKTREES_DIR="$state_dir/worktrees"
 export OPEN_SWE_LOCAL_ARTIFACTS_DIR="$state_dir/artifacts"
+export FORGEFLOW_ROUTE_CONFIG_FILE="$routes_file"
+export FORGEFLOW_ATTEMPT_LEDGER_FILE="$attempt_ledger_file"
 export OPEN_SWE_OPENAI_OAUTH_BROKER_URL="http://127.0.0.1:${broker_port}/token"
 export OPEN_SWE_OPENAI_OAUTH_BROKER_TOKEN="$(<"$broker_secret")"
 
@@ -73,6 +77,7 @@ fi
 unset OPENAI_API_KEY OPENAI_BASE_URL
 
 cd "$root"
+"$HOME/.local/bin/uv" run python -m forgeflow.routing validate "$routes_file" >/dev/null
 exec "$HOME/.local/bin/uv" run langgraph dev \
   --no-browser \
   --no-reload \
