@@ -4,7 +4,15 @@
     "name": "Example project",
     "repo": "OWNER/REPO",
     "ci_required": true,
-    "required_checks": ["verify"],
-    "sandbox_read_repositories": []
+    "required_checks": [
+      "verify"
+    ],
+    "sandbox_read_repositories": [],
+    "external_agent_test_command": [
+      "uv",
+      "run",
+      "pytest",
+      "-q"
+    ]
   }
 ]
