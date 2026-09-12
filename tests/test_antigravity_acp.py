@@ -231,3 +231,52 @@ def test_acp_bridge_surfaces_soft_denied_tools_as_structured_failure(tmp_path: P
         "actions": ["read_file"],
     }
     assert "/secret/path" not in str(captured.value.data)
+
+
+def test_bootstrap_timeout_preserves_route_availability_code(tmp_path: Path) -> None:
+    from openswe_ext.antigravity_acp import AntigravityAcpAgent, AntigravityBridgeError, _Session
+
+    class Client:
+        async def session_update(self, *args, **kwargs):
+            del args, kwargs
+
+    class Stdin:
+        def write(self, data):
+            del data
+
+        async def drain(self):
+            return None
+
+    class Stdout:
+        async def readline(self):
+            raise TimeoutError
+
+    class Process:
+        stdin = Stdin()
+        stdout = Stdout()
+
+    class Sandbox:
+        async def seal_bootstrap(self):
+            raise AssertionError("timeout must fail before sealing")
+
+        async def exec(self, *args):
+            del args
+            raise AssertionError("timeout must fail before token cleanup")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake = _fake_agy(tmp_path)
+    agent = AntigravityAcpAgent(
+        client=Client(),
+        agy_bin=fake,
+        model="fake-model",
+        effort="high",
+        mode="plan",
+        allowed_roots=[workspace],
+        sandbox=False,
+        print_timeout="20m",
+    )
+    session = _Session(cwd=workspace, process=Process(), outer_sandbox=Sandbox())  # type: ignore[arg-type]
+
+    with pytest.raises(AntigravityBridgeError, match="ANTIGRAVITY_TIMEOUT"):
+        asyncio.run(agent._bootstrap_and_seal(session))

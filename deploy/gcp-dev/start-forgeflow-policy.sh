@@ -52,6 +52,7 @@ unset LLM_FALLBACK_MODEL_ID
 # do not alter Open SWE's current model routing until the scheduler explicitly
 # selects an external route. `agy` uses its own authenticated Google account state.
 export FORGEFLOW_ANTIGRAVITY_ACP_ENABLED="${FORGEFLOW_ANTIGRAVITY_ACP_ENABLED:-false}"
+export FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED="${FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED:-false}"
 export FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS="${FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS:-}"
 export FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT="${FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT:-$HOME/.local/share/forgeflow-policy/external-agent-workspaces}"
 export FORGEFLOW_ANTIGRAVITY_BIN="${FORGEFLOW_ANTIGRAVITY_BIN:-$HOME/.local/bin/agy}"

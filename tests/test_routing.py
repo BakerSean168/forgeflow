@@ -82,8 +82,27 @@ def test_failure_classifier_only_marks_route_availability_for_provider_runtime_f
     from forgeflow.routing import classify_failure_code
 
     assert classify_failure_code("ANTIGRAVITY_PROCESS_EXITED") == "ROUTE_AVAILABILITY"
+    assert classify_failure_code("ANTIGRAVITY_TIMEOUT") == "ROUTE_AVAILABILITY"
     assert classify_failure_code("EXTERNAL_AGENT_DOCKER_COMMAND_FAILED:timeout") == "ROUTE_AVAILABILITY"
+    assert classify_failure_code("ANTIGRAVITY_TOOL_PERMISSION_DENIED") == "POLICY_DENIED"
+    assert classify_failure_code("ANTIGRAVITY_WORKSPACE_NOT_ALLOWED") == "POLICY_DENIED"
+    assert classify_failure_code("ANTIGRAVITY_PROMPT_INVALID") == "POLICY_DENIED"
+    assert classify_failure_code("ANTIGRAVITY_ADDITIONAL_DIRECTORIES_UNSUPPORTED") == "POLICY_DENIED"
     assert classify_failure_code("EXTERNAL_AGENT_WORKSPACE_NOT_ALLOWED") == "POLICY_DENIED"
     assert classify_failure_code("EXTERNAL_AGENT_TEST_FAILED:1") == "TASK_FAILURE"
     assert classify_failure_code("EXTERNAL_AGENT_PROJECT_CONFIG_MISSING") == "POLICY_DENIED"
+    assert classify_failure_code("ANTIGRAVITY_RESULT_FAILED") == "UNCLASSIFIED"
     assert classify_failure_code("SOMETHING_NEW") == "UNCLASSIFIED"
+
+
+def test_select_can_exclude_failed_route_without_reordering_remaining_candidates() -> None:
+    registry = RouteRegistry(
+        (
+            RouteDefinition("first", "IMPLEMENT", 5, "OPEN_SWE", "a"),
+            RouteDefinition("second", "IMPLEMENT", 10, "OPEN_SWE", "b"),
+            RouteDefinition("third", "IMPLEMENT", 20, "OPEN_SWE", "c"),
+        )
+    )
+    selected = registry.select("IMPLEMENT", exclude_ids=frozenset({"first"}))
+    assert selected is not None
+    assert selected.id == "second"

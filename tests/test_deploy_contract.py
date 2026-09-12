@@ -40,3 +40,11 @@ def test_external_agent_graph_is_registered_without_becoming_an_openswe_graph_al
     installer = (DEPLOY / "install.sh").read_text(encoding="utf-8")
     assert '"external_agent"' in installer
     assert "$state_dir/external-agent-workspaces" in installer
+
+
+def test_automatic_route_fallback_is_disabled_by_default() -> None:
+    start = (DEPLOY / "start-forgeflow-policy.sh").read_text(encoding="utf-8")
+    assert (
+        'FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED="${FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED:-false}"'
+        in start
+    )

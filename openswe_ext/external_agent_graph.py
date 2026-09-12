@@ -74,6 +74,11 @@ class ExternalAgentGraphServices(Protocol):
 def _failure_code(exc: BaseException) -> str:
     if isinstance(exc, HttpxRequestError):
         return "EXTERNAL_AGENT_GITHUB_TRANSPORT_FAILED"
+    if isinstance(exc, RequestError):
+        data = getattr(exc, "data", None)
+        code = data.get("code") if isinstance(data, dict) else None
+        if isinstance(code, str) and code.strip():
+            return code.split(":", 1)[0].strip().upper()
     if isinstance(exc, OSError):
         return "EXTERNAL_AGENT_IO_FAILED"
     code = str(exc).split(":", 1)[0].strip()

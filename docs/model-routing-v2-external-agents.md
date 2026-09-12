@@ -382,9 +382,16 @@ implementation is executed as its own durable `external_agent` LangGraph child g
 normalized PR reference and then rejoins the same authoritative GitHub CI/review path used by Open
 SWE. Historical in-flight states without routing fields are migrated to `openswe-current / OPEN_SWE`.
 
-Automatic route fallback and external-agent same-PR repair are **not** enabled yet. If an explicitly
-selected external implementation reaches a repair state, policy fails closed instead of silently
-switching execution ownership.
+The route-availability fallback state machine is implemented but remains **disabled by default** behind
+`FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED=false`. When the gate is eventually enabled, only a
+terminal child result explicitly classified as `ROUTE_AVAILABILITY` may exclude the failed route and
+select the next eligible numeric priority; task failures stay on the engineering retry/repair path, and
+route exhaustion escalates instead of looping back. The gate stays off until Open SWE attempts have
+the same append-only STARTED/FINISHED accounting already used by external-agent attempts.
+
+External-agent same-PR repair is also **not** enabled yet. If an explicitly selected external
+implementation reaches a repair state, policy fails closed instead of silently switching execution
+ownership.
 
 The first safe production shape is conservative:
 
