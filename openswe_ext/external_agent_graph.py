@@ -112,7 +112,7 @@ class DefaultExternalAgentGraphServices:
         source_revision: str | None = None
         ledger = AttemptLedger(Path(ledger_path))
         try:
-            registry = load_route_registry(Path(route_config))
+            registry = await asyncio.to_thread(load_route_registry, Path(route_config))
             route = registry.get(request["route_id"])
             if (
                 route.role != "IMPLEMENT"
@@ -122,25 +122,35 @@ class DefaultExternalAgentGraphServices:
             ):
                 raise RuntimeError("EXTERNAL_AGENT_ROUTE_NOT_ELIGIBLE")
 
-            attempt = ledger.start(
+            attempt_status = await _cancellation_safe_to_thread(
+                ledger.ensure_started,
                 role=route.role,
                 route_id=route.id,
                 priority=route.priority,
                 runtime=route.runtime,
                 target=route.target,
                 operation_key=request["operation_key"],
+                cancel_cleanup=lambda status: _close_cancelled_attempt(
+                    ledger, status, source_revision=None
+                ),
             )
-            project = load_external_agent_project_config(request["owner"], request["repo"])
+            attempt = attempt_status.handle
+            attempt_finished = attempt_status.finished
+            if attempt_finished:
+                raise RuntimeError("EXTERNAL_AGENT_OPERATION_ALREADY_FINISHED")
+            project = await asyncio.to_thread(
+                load_external_agent_project_config, request["owner"], request["repo"]
+            )
             if project is None:
                 raise RuntimeError("EXTERNAL_AGENT_PROJECT_CONFIG_MISSING")
             root = Path(workspace_root).expanduser()
-            root.mkdir(parents=True, exist_ok=True, mode=0o700)
-            root.chmod(0o700)
-            prepared = await asyncio.to_thread(
+            await asyncio.to_thread(_ensure_private_directory, root)
+            prepared = await _cancellation_safe_to_thread(
                 prepare_external_workspace,
                 source_repo=project.cwd,
                 base_ref=request["base_ref"],
                 workspace_root=root,
+                cancel_cleanup=lambda prepared: cleanup_external_workspace(prepared.path),
             )
             workspace = prepared.path
             source_revision = prepared.source_revision
@@ -168,8 +178,10 @@ class DefaultExternalAgentGraphServices:
                     f"Operation: `{request['operation_key']}`"
                 ),
             )
-            ledger.finish(
-                attempt,
+            await _cancellation_safe_to_thread(
+                ledger.finish_operation,
+                route_id=route.id,
+                operation_key=request["operation_key"],
                 outcome="SUCCEEDED",
                 source_revision=evidence.source_revision,
                 result_revision=delivery.head_sha,
@@ -188,6 +200,19 @@ class DefaultExternalAgentGraphServices:
                 external_session_id=evidence.acp_session_id,
                 external_conversation_id=evidence.external_conversation_id,
             )
+        except asyncio.CancelledError:
+            if attempt is not None and not attempt_finished:
+                await _cancellation_safe_to_thread(
+                    ledger.finish_operation,
+                    route_id=attempt.route_id,
+                    operation_key=attempt.operation_key,
+                    outcome="BLOCKED",
+                    failure_class="POLICY_DENIED",
+                    fallback_reason="EXTERNAL_AGENT_CANCELLED",
+                    source_revision=source_revision,
+                )
+                attempt_finished = True
+            raise
         except (
             RequestError,
             HttpxRequestError,
@@ -201,8 +226,10 @@ class DefaultExternalAgentGraphServices:
             failure_class = classify_failure_code(code)
             if attempt is not None and not attempt_finished:
                 try:
-                    ledger.finish(
-                        attempt,
+                    await _cancellation_safe_to_thread(
+                        ledger.finish_operation,
+                        route_id=attempt.route_id,
+                        operation_key=attempt.operation_key,
                         outcome="BLOCKED",
                         failure_class=failure_class,
                         fallback_reason=code,
@@ -221,6 +248,38 @@ class DefaultExternalAgentGraphServices:
         finally:
             if workspace is not None:
                 await asyncio.to_thread(cleanup_external_workspace, workspace)
+
+
+async def _cancellation_safe_to_thread(
+    func, /, *args, cancel_cleanup=None, **kwargs
+):
+    """Finish a side-effecting worker before propagating task cancellation."""
+    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        result = await worker
+        if cancel_cleanup is not None:
+            await asyncio.to_thread(cancel_cleanup, result)
+        raise
+
+
+def _close_cancelled_attempt(ledger: AttemptLedger, status, *, source_revision: str | None) -> None:
+    if status.finished:
+        return
+    ledger.finish_operation(
+        route_id=status.handle.route_id,
+        operation_key=status.handle.operation_key,
+        outcome="BLOCKED",
+        failure_class="POLICY_DENIED",
+        fallback_reason="EXTERNAL_AGENT_CANCELLED",
+        source_revision=source_revision,
+    )
+
+
+def _ensure_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
 
 
 def build_external_agent_graph(*, services: ExternalAgentGraphServices | None = None):

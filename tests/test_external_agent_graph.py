@@ -64,10 +64,12 @@ def test_external_graph_persists_bounded_blocked_result() -> None:
 
 def test_delivery_transport_failure_is_normalized_and_closes_attempt(tmp_path, monkeypatch) -> None:
     import json
+    import threading
 
     import httpx2
 
     import openswe_ext.external_agent_graph as module
+    from forgeflow.attempts import AttemptLedger
     from forgeflow.external_agents.execution import ExternalAgentExecutionEvidence
     from forgeflow.projects import ExternalAgentProjectConfig
     from openswe_ext.external_agent_workspace import PreparedExternalWorkspace
@@ -105,6 +107,15 @@ def test_delivery_transport_failure_is_normalized_and_closes_attempt(tmp_path, m
     monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(route_config))
     monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger))
     monkeypatch.setenv("FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT", str(root))
+    caller_thread = threading.get_ident()
+    ledger_threads: list[int] = []
+    original_start = AttemptLedger.ensure_started
+
+    def recording_start(self, **kwargs):
+        ledger_threads.append(threading.get_ident())
+        return original_start(self, **kwargs)
+
+    monkeypatch.setattr(AttemptLedger, "ensure_started", recording_start)
     monkeypatch.setattr(
         module,
         "load_external_agent_project_config",
@@ -147,6 +158,7 @@ def test_delivery_transport_failure_is_normalized_and_closes_attempt(tmp_path, m
     assert [row["event"] for row in rows] == ["STARTED", "FINISHED"]
     assert rows[-1]["outcome"] == "BLOCKED"
     assert rows[-1]["fallback_reason"] == "EXTERNAL_AGENT_GITHUB_TRANSPORT_FAILED"
+    assert ledger_threads and ledger_threads[0] != caller_thread
 
 
 def test_request_error_failure_code_preserves_structured_antigravity_code() -> None:
@@ -160,3 +172,222 @@ def test_request_error_failure_code_preserves_structured_antigravity_code() -> N
         {"code": "ANTIGRAVITY_TIMEOUT"},
     )
     assert _failure_code(exc) == "ANTIGRAVITY_TIMEOUT"
+
+
+def test_cancellation_during_attempt_start_closes_one_idempotent_attempt(tmp_path, monkeypatch) -> None:
+    import json
+    import threading
+
+    import pytest
+
+    import openswe_ext.external_agent_graph as module
+    from forgeflow.attempts import AttemptLedger
+
+    route_config = tmp_path / "routes.json"
+    route_config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "external",
+                        "role": "IMPLEMENT",
+                        "priority": 1,
+                        "runtime": "EXTERNAL_ACP",
+                        "adapter": "antigravity",
+                        "target": "account",
+                        "enabled": True,
+                        "health": "READY",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ledger_path = tmp_path / "attempts.jsonl"
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(route_config))
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger_path))
+    monkeypatch.setenv("FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT", str(root))
+
+    entered = threading.Event()
+    release = threading.Event()
+    original = AttemptLedger.ensure_started
+
+    def blocking_start(self, **kwargs):
+        status = original(self, **kwargs)
+        entered.set()
+        assert release.wait(timeout=5)
+        return status
+
+    monkeypatch.setattr(AttemptLedger, "ensure_started", blocking_start)
+
+    async def scenario():
+        task = asyncio.create_task(module.DefaultExternalAgentGraphServices().run(_input()))
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["STARTED", "FINISHED"]
+    assert rows[0]["attempt_id"] == rows[1]["attempt_id"]
+    assert rows[1]["outcome"] == "BLOCKED"
+    assert rows[1]["fallback_reason"] == "EXTERNAL_AGENT_CANCELLED"
+    recovered = AttemptLedger(ledger_path).ensure_started(
+        role="IMPLEMENT",
+        route_id="external",
+        priority=1,
+        runtime="EXTERNAL_ACP",
+        target="account",
+        operation_key="op:1",
+    )
+    assert recovered.finished is True
+    assert len(ledger_path.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_cancellation_during_workspace_prepare_cleans_checkout_and_closes_attempt(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+    import threading
+
+    import pytest
+
+    import openswe_ext.external_agent_graph as module
+    from forgeflow.projects import ExternalAgentProjectConfig
+    from openswe_ext.external_agent_workspace import PreparedExternalWorkspace
+
+    route_config = tmp_path / "routes.json"
+    route_config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "external",
+                        "role": "IMPLEMENT",
+                        "priority": 1,
+                        "runtime": "EXTERNAL_ACP",
+                        "adapter": "antigravity",
+                        "target": "account",
+                        "enabled": True,
+                        "health": "READY",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ledger_path = tmp_path / "attempts.jsonl"
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    workspace = root / "run"
+    source_sha = "a" * 40
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(route_config))
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger_path))
+    monkeypatch.setenv("FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT", str(root))
+    monkeypatch.setattr(
+        module,
+        "load_external_agent_project_config",
+        lambda owner, repo: ExternalAgentProjectConfig(source, ("true",)),
+    )
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_prepare(**kwargs):
+        del kwargs
+        workspace.mkdir()
+        (workspace / "partial.txt").write_text("prepared\n", encoding="utf-8")
+        entered.set()
+        assert release.wait(timeout=5)
+        return PreparedExternalWorkspace(workspace, source_sha)
+
+    monkeypatch.setattr(module, "prepare_external_workspace", blocking_prepare)
+
+    async def scenario():
+        task = asyncio.create_task(module.DefaultExternalAgentGraphServices().run(_input()))
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    assert not workspace.exists()
+    rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["STARTED", "FINISHED"]
+    assert rows[-1]["outcome"] == "BLOCKED"
+    assert rows[-1]["fallback_reason"] == "EXTERNAL_AGENT_CANCELLED"
+
+
+def test_finished_external_operation_replay_is_bounded_and_does_not_rewrite_ledger(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    import openswe_ext.external_agent_graph as module
+    from forgeflow.attempts import AttemptLedger
+
+    route_config = tmp_path / "routes.json"
+    route_config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "external",
+                        "role": "IMPLEMENT",
+                        "priority": 1,
+                        "runtime": "EXTERNAL_ACP",
+                        "adapter": "antigravity",
+                        "target": "account",
+                        "enabled": True,
+                        "health": "READY",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ledger_path = tmp_path / "attempts.jsonl"
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(route_config))
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger_path))
+    monkeypatch.setenv("FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT", str(root))
+
+    ledger = AttemptLedger(ledger_path)
+    ledger.ensure_started(
+        role="IMPLEMENT",
+        route_id="external",
+        priority=1,
+        runtime="EXTERNAL_ACP",
+        target="account",
+        operation_key="op:1",
+    )
+    ledger.finish_operation(
+        route_id="external",
+        operation_key="op:1",
+        outcome="SUCCEEDED",
+        source_revision="a" * 40,
+        result_revision="b" * 40,
+    )
+
+    result = asyncio.run(module.DefaultExternalAgentGraphServices().run(_input()))
+
+    assert result.external_status == "BLOCKED"
+    assert result.failure_code == "EXTERNAL_AGENT_OPERATION_ALREADY_FINISHED"
+    assert result.failure_class == "POLICY_DENIED"
+    rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["STARTED", "FINISHED"]
+    assert rows[-1]["outcome"] == "SUCCEEDED"
+    assert rows[-1]["result_revision"] == "b" * 40

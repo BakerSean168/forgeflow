@@ -85,13 +85,13 @@ class FakeServices:
     def automatic_route_fallback_enabled(self) -> bool:
         return self.route_fallback_enabled
 
-    def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str:
+    async def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str:
         value = self.attempt_started.get((route_id, operation_key))
         if value is None:
             return "MISSING"
         return "FINISHED" if value else "OPEN"
 
-    def ensure_openswe_attempt_started(
+    async def ensure_openswe_attempt_started(
         self,
         *,
         route_id: str,
@@ -104,7 +104,7 @@ class FakeServices:
             self.attempt_start_calls.append((route_id, operation_key, source_revision))
         return self.attempt_started[key]
 
-    def finish_openswe_attempt(
+    async def finish_openswe_attempt(
         self,
         *,
         route_id: str,
@@ -1080,7 +1080,8 @@ async def test_finished_openswe_attempt_without_child_run_fails_closed() -> None
     assert services.child_operations == {}
 
 
-def test_default_services_persist_idempotent_openswe_attempts(tmp_path, monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_default_services_persist_idempotent_openswe_attempts(tmp_path, monkeypatch) -> None:
     import json
 
     routes = tmp_path / "routes.json"
@@ -1096,33 +1097,33 @@ def test_default_services_persist_idempotent_openswe_attempts(tmp_path, monkeypa
     services = DefaultPolicyServices(client=object())
 
     assert (
-        services.ensure_openswe_attempt_started(
+        await services.ensure_openswe_attempt_started(
             route_id="openswe-current",
             operation_key="implementation:service-test:retry:0",
         )
         is False
     )
     assert (
-        services.ensure_openswe_attempt_started(
+        await services.ensure_openswe_attempt_started(
             route_id="openswe-current",
             operation_key="implementation:service-test:retry:0",
         )
         is False
     )
-    services.finish_openswe_attempt(
+    await services.finish_openswe_attempt(
         route_id="openswe-current",
         operation_key="implementation:service-test:retry:0",
         outcome="SUCCEEDED",
         result_revision=HEAD1,
     )
-    services.finish_openswe_attempt(
+    await services.finish_openswe_attempt(
         route_id="openswe-current",
         operation_key="implementation:service-test:retry:0",
         outcome="SUCCEEDED",
         result_revision=HEAD1,
     )
     assert (
-        services.ensure_openswe_attempt_started(
+        await services.ensure_openswe_attempt_started(
             route_id="openswe-current",
             operation_key="implementation:service-test:retry:0",
         )
@@ -1470,3 +1471,42 @@ async def test_cancel_recovers_uncheckpointed_repair_dispatch_or_retry(
     assert finished["operation_key"] == operation_key
     assert finished["outcome"] == "BLOCKED"
     assert finished["source_revision"] == HEAD1
+
+@pytest.mark.asyncio
+async def test_default_services_run_attempt_ledger_io_off_event_loop(
+    tmp_path, monkeypatch
+) -> None:
+    import threading
+
+    from forgeflow.attempts import AttemptLedger
+
+    routes = tmp_path / "routes.json"
+    routes.write_text(
+        (Path(__file__).resolve().parents[1] / "deploy/gcp-dev/routes.default.json").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "attempt-ledger.jsonl"
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger))
+
+    caller_thread = threading.get_ident()
+    observed_threads: list[int] = []
+    original = AttemptLedger.ensure_started
+
+    def recording_ensure(self, **kwargs):
+        observed_threads.append(threading.get_ident())
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(AttemptLedger, "ensure_started", recording_ensure)
+    services = DefaultPolicyServices(client=object())
+
+    finished = await services.ensure_openswe_attempt_started(
+        route_id="openswe-current",
+        operation_key="implementation:async-ledger:retry:0",
+    )
+
+    assert finished is False
+    assert observed_threads
+    assert observed_threads[0] != caller_thread
