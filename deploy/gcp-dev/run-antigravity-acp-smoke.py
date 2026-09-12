@@ -50,6 +50,10 @@ async def _run() -> int:
         "--print-timeout",
         timeout,
         "--sandbox",
+        "--outer-sandbox",
+        "docker",
+        "--auth-state-dir",
+        str(Path.home() / ".gemini/antigravity-cli"),
     )
     prompt = (
         "This is a disposable ForgeFlow coding smoke. Modify only calc.py so add_one(value) "
@@ -68,8 +72,13 @@ async def _run() -> int:
     except RequestError as exc:
         data = exc.data if isinstance(exc.data, dict) else {}
         failure_code = data.get("code")
+        detail = None
+        actions = data.get("actions")
+        if isinstance(actions, list) and all(isinstance(item, str) for item in actions):
+            detail = "actions=" + ",".join(actions)
         _failure(
-            failure_code if isinstance(failure_code, str) else "ANTIGRAVITY_ACP_REQUEST_FAILED"
+            failure_code if isinstance(failure_code, str) else "ANTIGRAVITY_ACP_REQUEST_FAILED",
+            detail=detail,
         )
         return 2
     except CodingSmokeError as exc:

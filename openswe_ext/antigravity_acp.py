@@ -26,6 +26,12 @@ from acp.schema import (
     PromptResponse,
 )
 
+from openswe_ext.external_agent_docker import (
+    CONTAINER_HOME,
+    ExternalAgentDockerError,
+    ExternalAgentDockerSandbox,
+)
+
 LOGGER = logging.getLogger("forgeflow.antigravity_acp")
 MAX_EVENT_BYTES = 4 * 1024 * 1024
 MAX_PROMPT_CHARS = 200_000
@@ -60,6 +66,7 @@ class _Session:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
     conversation_id: str | None = None
+    outer_sandbox: ExternalAgentDockerSandbox | None = None
 
 
 class AntigravityAcpAgent:
@@ -76,6 +83,9 @@ class AntigravityAcpAgent:
         allowed_roots: Sequence[Path],
         sandbox: bool,
         print_timeout: str,
+        outer_sandbox: str = "host",
+        auth_state_dir: Path | None = None,
+        docker_image: str = "forgeflow/openswe-sandbox:bookworm-node24",
     ) -> None:
         self._client = client
         self._agy_bin = agy_bin
@@ -85,6 +95,9 @@ class AntigravityAcpAgent:
         self._allowed_roots = tuple(root.resolve(strict=True) for root in allowed_roots)
         self._sandbox = sandbox
         self._print_timeout = print_timeout
+        self._outer_sandbox = outer_sandbox
+        self._auth_state_dir = auth_state_dir
+        self._docker_image = docker_image
         self._sessions: dict[str, _Session] = {}
 
     async def initialize(
@@ -218,6 +231,11 @@ class AntigravityAcpAgent:
         session.cancelled.set()
         await self._terminate(session)
 
+    async def close(self) -> None:
+        for session in list(self._sessions.values()):
+            await self._terminate(session)
+        self._sessions.clear()
+
     def _validate_workspace(self, value: Path) -> Path:
         workspace = value.resolve(strict=True)
         if not workspace.is_dir():
@@ -267,6 +285,81 @@ class AntigravityAcpAgent:
         ]
         if self._sandbox:
             args.append("--sandbox")
+        if self._outer_sandbox == "docker":
+            # Antigravity headless permission matching is not reliable enough for
+            # unattended coding. Broad approval is permitted only after adding
+            # ForgeFlow's outer Docker isolation; the bootstrap turn is tool-free
+            # and auth is unmounted before the real task prompt is sent.
+            args.append("--dangerously-skip-permissions")
+            auth_state = self._auth_state_dir
+            if auth_state is None:
+                raise AntigravityBridgeError("ANTIGRAVITY_AUTH_STATE_REQUIRED")
+            sandbox = ExternalAgentDockerSandbox(
+                workspace=session.cwd,
+                executable=self._agy_bin,
+                bootstrap_dir=auth_state,
+                image=self._docker_image,
+            )
+            try:
+                await sandbox.start()
+                settings = {
+                    "permissions": {
+                        "allow": [
+                            "read_file(*)",
+                            "write_file(/workspace)",
+                            "command(*)",
+                        ],
+                        "deny": [
+                            "read_url(*)",
+                            "execute_url(*)",
+                            "mcp(*)",
+                            "unsandboxed(*)",
+                        ],
+                    },
+                    "trustedWorkspaces": ["/workspace"],
+                }
+                await sandbox.write_text(
+                    f"{CONTAINER_HOME}/.gemini/antigravity-cli/settings.json",
+                    json.dumps(settings, sort_keys=True) + "\n",
+                )
+                await sandbox.symlink_bootstrap_file(
+                    source_name="antigravity-oauth-token",
+                    destination=(
+                        f"{CONTAINER_HOME}/.gemini/antigravity-cli/antigravity-oauth-token"
+                    ),
+                )
+                container_args = args[1:]
+                process = await sandbox.start_process(container_args)
+                session.outer_sandbox = sandbox
+                session.process = process
+                await self._bootstrap_and_seal(session)
+                return process
+            except ExternalAgentDockerError as exc:
+                await sandbox.close()
+                session.outer_sandbox = None
+                session.process = None
+                code = str(exc).split(":", 1)[0]
+                raise RequestError(
+                    -32011,
+                    "External agent sandbox unavailable",
+                    {"code": code},
+                ) from exc
+            except AntigravityBridgeError as exc:
+                await sandbox.close()
+                session.outer_sandbox = None
+                session.process = None
+                code = str(exc).split(":", 1)[0]
+                raise RequestError(
+                    -32012,
+                    "Antigravity bootstrap failed",
+                    {"code": code},
+                ) from exc
+            except Exception:
+                await sandbox.close()
+                session.outer_sandbox = None
+                session.process = None
+                raise
+
         process = await asyncio.create_subprocess_exec(
             *args,
             cwd=session.cwd,
@@ -279,8 +372,71 @@ class AntigravityAcpAgent:
         session.process = process
         return process
 
+    async def _bootstrap_and_seal(self, session: _Session) -> None:
+        process = session.process
+        sandbox = session.outer_sandbox
+        if process is None or process.stdin is None or process.stdout is None or sandbox is None:
+            raise AntigravityBridgeError("ANTIGRAVITY_BOOTSTRAP_STREAM_UNAVAILABLE")
+        request = {
+            "event": "user",
+            "message": {
+                "content": (
+                    "ForgeFlow runtime bootstrap. Reply exactly FORGEFLOW_RUNTIME_READY. "
+                    "Do not use any tools."
+                )
+            },
+        }
+        process.stdin.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
+        await process.stdin.drain()
+        while True:
+            line = await asyncio.wait_for(process.stdout.readline(), timeout=90)
+            if not line:
+                raise AntigravityBridgeError("ANTIGRAVITY_BOOTSTRAP_PROCESS_EXITED")
+            event = self._event(line)
+            kind = event.get("event")
+            if kind == "init":
+                continue
+            if kind == "step_update":
+                update = event.get("step_update")
+                step_type = update.get("step_type") if isinstance(update, dict) else None
+                if step_type in {"user_input", "agent_response"}:
+                    continue
+                raise AntigravityBridgeError("ANTIGRAVITY_BOOTSTRAP_TOOL_ACTIVITY")
+            if kind != "result":
+                continue
+            result = event.get("result")
+            if not isinstance(result, dict):
+                raise AntigravityBridgeError("ANTIGRAVITY_BOOTSTRAP_RESULT_INVALID")
+            if _denied_action_names(result.get("denied_actions")):
+                raise AntigravityBridgeError("ANTIGRAVITY_BOOTSTRAP_PERMISSION_DENIED")
+            if str(result.get("status") or "").upper() != "SUCCESS":
+                raise AntigravityBridgeError("ANTIGRAVITY_BOOTSTRAP_FAILED")
+            response = result.get("response")
+            if not isinstance(response, str) or "FORGEFLOW_RUNTIME_READY" not in response:
+                raise AntigravityBridgeError("ANTIGRAVITY_BOOTSTRAP_MARKER_MISSING")
+            conversation_id = result.get("conversation_id")
+            if isinstance(conversation_id, str) and conversation_id:
+                session.conversation_id = conversation_id
+            break
+        await sandbox.seal_bootstrap()
+        await sandbox.exec(
+            "rm",
+            "-f",
+            f"{CONTAINER_HOME}/.gemini/antigravity-cli/antigravity-oauth-token",
+        )
+
     async def _terminate(self, session: _Session) -> None:
         process = session.process
+        if session.outer_sandbox is not None:
+            await session.outer_sandbox.close()
+            session.outer_sandbox = None
+            if process is not None and process.returncode is None:
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
+            return
         if process is None or process.returncode is not None:
             return
         try:
@@ -358,8 +514,10 @@ def _resolve_executable(value: str) -> Path:
 async def _serve(args: argparse.Namespace) -> None:
     agy_bin = _resolve_executable(args.agy_bin)
     roots = [Path(value).expanduser() for value in args.allowed_root]
-    await run_agent(
-        lambda client: AntigravityAcpAgent(
+    holder: dict[str, AntigravityAcpAgent] = {}
+
+    def factory(client: Any) -> AntigravityAcpAgent:
+        agent = AntigravityAcpAgent(
             client=client,
             agy_bin=agy_bin,
             model=args.model,
@@ -368,8 +526,21 @@ async def _serve(args: argparse.Namespace) -> None:
             allowed_roots=roots,
             sandbox=args.sandbox,
             print_timeout=args.print_timeout,
+            outer_sandbox=args.outer_sandbox,
+            auth_state_dir=(
+                Path(args.auth_state_dir).expanduser() if args.auth_state_dir else None
+            ),
+            docker_image=args.docker_image,
         )
-    )
+        holder["agent"] = agent
+        return agent
+
+    try:
+        await run_agent(factory)
+    finally:
+        agent = holder.get("agent")
+        if agent is not None:
+            await agent.close()
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -395,6 +566,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--allowed-root", action="append", required=True)
     parser.add_argument("--sandbox", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--outer-sandbox",
+        choices=("host", "docker"),
+        default=os.environ.get("FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX", "host"),
+    )
+    parser.add_argument(
+        "--auth-state-dir",
+        default=os.environ.get("FORGEFLOW_ANTIGRAVITY_AUTH_STATE_DIR"),
+    )
+    parser.add_argument(
+        "--docker-image",
+        default=os.environ.get(
+            "FORGEFLOW_EXTERNAL_AGENT_DOCKER_IMAGE",
+            "forgeflow/openswe-sandbox:bookworm-node24",
+        ),
+    )
     return parser
 
 

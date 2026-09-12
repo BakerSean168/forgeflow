@@ -124,7 +124,7 @@ def test_antigravity_bridge_does_not_require_api_key_env() -> None:
     assert "--input-format" in source
     assert "stream-json" in source
     assert "--allowed-root" in source
-    assert "--dangerously-skip-permissions" not in source
+    assert source.count("--dangerously-skip-permissions") == 1
     assert os.path.basename(source) != "auth.json"
 
 
@@ -140,6 +140,18 @@ def test_deployment_configures_antigravity_acp_but_keeps_it_disabled() -> None:
     )
     assert 'FORGEFLOW_ANTIGRAVITY_EFFORT="${FORGEFLOW_ANTIGRAVITY_EFFORT:-high}"' in start
     assert 'FORGEFLOW_ANTIGRAVITY_MODE="${FORGEFLOW_ANTIGRAVITY_MODE:-accept-edits}"' in start
+    assert (
+        'FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX="${FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX:-docker}"'
+        in start
+    )
+    assert (
+        'FORGEFLOW_ANTIGRAVITY_AUTH_STATE_DIR="${FORGEFLOW_ANTIGRAVITY_AUTH_STATE_DIR:-$HOME/.gemini/antigravity-cli}"'
+        in start
+    )
+    assert (
+        'FORGEFLOW_EXTERNAL_AGENT_DOCKER_IMAGE="${FORGEFLOW_EXTERNAL_AGENT_DOCKER_IMAGE:-forgeflow/openswe-sandbox:bookworm-node24}"'
+        in start
+    )
 
 
 def test_acp_cancel_terminates_active_antigravity_turn(tmp_path: Path) -> None:

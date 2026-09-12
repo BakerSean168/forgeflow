@@ -29,8 +29,7 @@ Current GCP Dev runtime components are `forgeflow-policy.service`,
 `open-swe-codex-broker.service`, the Open SWE Docker sandbox network helper, and the hourly sandbox
 GC timer. **There is no OpenHands Agent Server, OpenHands container, long-lived Antigravity worker,
 Node control plane, or ForgeFlow SQLite workflow database in the current runtime.** An experimental,
-disabled-by-default Antigravity ACP bridge exists as an execution-scoped runtime extension; it does
-not own workflow state or change the default Open SWE route.
+disabled-by-default Antigravity ACP bridge exists as an execution-scoped runtime extension. Writable external-agent turns are additionally wrapped in a short-lived Docker sandbox whose bootstrap account mount is detached before the project prompt; the extension does not own workflow state or change the default Open SWE route.
 
 ## Historical destructive cutover contract
 
