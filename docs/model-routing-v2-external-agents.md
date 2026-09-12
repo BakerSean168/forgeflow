@@ -1,6 +1,6 @@
 # ForgeFlow model and external-agent routing — V2 implementation plan
 
-> Status: Phase 1 and Phase 2 are complete. Phase 3 guarded execution + ForgeFlow-owned delivery is implemented behind explicit gates; automatic scheduling remains disabled.
+> Status: Phases 1-3 are complete. Guarded Antigravity ACP execution, independent evidence, ForgeFlow-owned delivery, CI, and exact-head Sol review are proven; automatic multi-route scheduling remains disabled.
 > Date: 2026-09-12.
 
 ## 1. Decision summary
@@ -324,7 +324,7 @@ returns `PASS` with normalized revision/test evidence, or `BLOCKED` with a bound
 **Gate:** complete — reproducible edit + independent test + Git provenance + bootstrap-auth seal +
 execution-scoped cleanup have all passed.
 
-### Phase 3 — guarded ForgeFlow execution route — implemented, rollout gate in progress
+### Phase 3 — guarded ForgeFlow execution route — complete
 
 The runtime now has a generic `ExternalAgentExecutionPort` contract plus an ACP workspace adapter.
 Vendor-specific Antigravity flags remain under `openswe_ext`; policy-facing types contain only the
@@ -349,11 +349,15 @@ It explicitly enables one project for the duration of the canary and prepares a 
 disposable clone so `.git` metadata does not escape the outer Agent container boundary. It does not
 change the long-running service's disabled route configuration.
 
-A real ForgeFlow self-canary completed the Agent + evidence + delivery path and opened PR #34 at
-exact head `6408ba2dacc53d28abb3689f225c179af477de80`; repository `verify` passed. The first independent
-Sol review correctly blocked that PR because its documentation described this delivery ownership
-before the Phase 3 runtime itself had landed on `main`. The rollout sequence is therefore: land this
-runtime first, then re-review the canary against the new base.
+A real ForgeFlow self-canary completed the Agent + evidence + delivery path in PR #34. The first
+independent Sol review correctly blocked the early canary because the documentation described this
+delivery ownership before the Phase 3 runtime itself had landed on `main`. The runtime was then
+landed, reviewer evidence was hardened so explicitly stale historical findings cannot block a new
+exact head, and the canary was rebased again. Final head
+`2552a70103c5084dbbb758ab848e982a80150041` passed repository `verify` and the official Open SWE
+Sol reviewer with zero current-head findings, then merged as `8ea49eae8a72328c101cf80ef99aea4f7a4ee93d`.
+`deploy/gcp-dev/run-pr-review-gate.py` now provides the reusable authenticated loopback gate for
+future exact-head reviewer acceptance without exposing the local auth secret on the command line.
 
 Initial rollout rules remain:
 
@@ -364,8 +368,9 @@ Initial rollout rules remain:
 - official review remains the current Open SWE Sol reviewer;
 - no automatic fallback to ACP until the attempt ledger and failure classifier exist.
 
-**Gate:** Agent execution, independent evidence, GitHub delivery, and CI are proven. Independent
-review must be repeated after this runtime lands on `main`; only then is Phase 3 accepted.
+**Gate:** complete — isolated Agent execution, normalized evidence, GitHub delivery, CI, and
+independent exact-head Sol review are all proven. The long-running route remains disabled by default
+until Phase 4 adds auditable ordered routing and attempt accounting.
 
 ### Phase 4 — ordered role routing
 
