@@ -384,10 +384,16 @@ SWE. Historical in-flight states without routing fields are migrated to `openswe
 
 The route-availability fallback state machine is implemented but remains **disabled by default** behind
 `FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED=false`. When the gate is eventually enabled, only a
-terminal child result explicitly classified as `ROUTE_AVAILABILITY` may exclude the failed route and
-select the next eligible numeric priority; task failures stay on the engineering retry/repair path, and
-route exhaustion escalates instead of looping back. The gate stays off until Open SWE attempts have
-the same append-only STARTED/FINISHED accounting already used by external-agent attempts.
+terminal failure code reclassified by ForgeFlow policy as `ROUTE_AVAILABILITY` may exclude the failed
+route and select the next eligible numeric priority; task/policy failures stay on the engineering or
+fail-closed path, and route exhaustion escalates instead of looping back.
+
+Open SWE implementation and repair operations now use the same private append-only attempt ledger as
+external-agent routes. STARTED is keyed by stable route + operation provenance and is recovered
+idempotently after a crash; FAILED/BLOCKED closes at terminal failure, while SUCCEEDED is not recorded
+until authoritative PR evidence and the operation trailer prove the resulting head. The global fallback
+gate remains off until a real deployed Open SWE acceptance run proves this STARTED -> FINISHED
+accounting against an authoritative PR head.
 
 External-agent same-PR repair is also **not** enabled yet. If an explicitly selected external
 implementation reaches a repair state, policy fails closed instead of silently switching execution
