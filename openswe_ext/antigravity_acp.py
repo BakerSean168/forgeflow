@@ -179,6 +179,16 @@ class AntigravityAcpAgent:
                 conversation_id = result.get("conversation_id")
                 if isinstance(conversation_id, str) and conversation_id:
                     session.conversation_id = conversation_id
+                denied_actions = _denied_action_names(result.get("denied_actions"))
+                if denied_actions:
+                    raise RequestError(
+                        -32010,
+                        "External agent tool permission denied",
+                        {
+                            "code": "ANTIGRAVITY_TOOL_PERMISSION_DENIED",
+                            "actions": list(denied_actions),
+                        },
+                    )
                 status = str(result.get("status") or "").upper()
                 if status == "SUCCESS":
                     if not response_parts:
@@ -316,6 +326,19 @@ class AntigravityAcpAgent:
 def _agy_environment(source: dict[str, str] | None = None) -> dict[str, str]:
     current = os.environ if source is None else source
     return {key: value for key, value in current.items() if key in AGY_ENV_ALLOWLIST}
+
+
+def _denied_action_names(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    names: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        action = item.get("action")
+        if isinstance(action, str) and action.strip():
+            names.append(action.strip())
+    return tuple(dict.fromkeys(names))
 
 
 def _resolve_executable(value: str) -> Path:

@@ -25,6 +25,9 @@ for raw in sys.stdin:
     if text == "BLOCK":
         import time
         time.sleep(30)
+    if text == "DENY":
+        print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"","conversation_id":conversation,"denied_actions":[{"action":"read_file","display_name":"ListDir","target":"/secret/path"}]}}), flush=True)
+        continue
     response = "FAKE_AGY:" + text
     print(json.dumps({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":response}}), flush=True)
     print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":response,"conversation_id":conversation}}), flush=True)
@@ -188,3 +191,26 @@ def test_antigravity_child_environment_drops_unrelated_service_secrets() -> None
         }
     )
     assert child == {"HOME": "/home/dev", "PATH": "/usr/bin", "LANG": "C.UTF-8"}
+
+
+def test_acp_bridge_surfaces_soft_denied_tools_as_structured_failure(tmp_path: Path) -> None:
+    fake = _fake_agy(tmp_path)
+    workspace = tmp_path / "denied-repo"
+    workspace.mkdir()
+    command, _ = python_module_command("openswe_ext.antigravity_acp")
+
+    with pytest.raises(RequestError) as captured:
+        asyncio.run(
+            run_acp_agent(
+                command=command,
+                args=_bridge_args(workspace, fake),
+                cwd=workspace,
+                prompt="DENY",
+            )
+        )
+    assert captured.value.code == -32010
+    assert captured.value.data == {
+        "code": "ANTIGRAVITY_TOOL_PERMISSION_DENIED",
+        "actions": ["read_file"],
+    }
+    assert "/secret/path" not in str(captured.value.data)

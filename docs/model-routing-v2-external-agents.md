@@ -1,6 +1,6 @@
 # ForgeFlow model and external-agent routing — V2 implementation plan
 
-> Status: Phase 1 ACP vertical slice implemented on `feat/antigravity-acp-routing`.
+> Status: Phase 1 ACP vertical slice implemented; Phase 2 evidence harness implemented but real coding gate is blocked by the current Antigravity headless permission/sandbox behavior.
 > Date: 2026-09-12.
 
 ## 1. Decision summary
@@ -279,25 +279,40 @@ Credentials and full transcripts are excluded.
 
 **Gate:** full ForgeFlow regression suite stays green and a real ACP->Antigravity prompt succeeds.
 
-### Phase 2 — disposable coding smoke — next
+### Phase 2 — disposable coding smoke — harness complete, real gate blocked
 
-Use a disposable worktree/repository, never a live shared worktree:
+The disposable harness is implemented and always uses a generated repository below
+`~/.local/share/forgeflow-policy/external-agent-workspaces`; it never points Antigravity at a live
+shared project checkout. It:
 
-1. establish known base SHA;
-2. invoke Antigravity through ACP in `accept-edits` mode;
-3. make one small deterministic code change;
-4. run an explicit test command;
-5. verify diff/revision provenance independently of the agent's prose;
-6. destroy the disposable workspace.
+1. establishes a known base commit;
+2. invokes the external agent through the generic ACP client;
+3. requires exactly one expected file to change and includes untracked files in the check;
+4. runs an explicit verification command independently of the agent;
+5. records a binary-diff SHA-256, base/result revisions, test exit code, ACP session id and external
+   conversation id;
+6. creates the result revision itself only after verification;
+7. destroys the disposable workspace on both success and failure.
 
-Add evidence normalization for:
+The first real coding attempt exposed an upstream headless constraint rather than a ForgeFlow diff
+problem. `agy` returned `SUCCESS` while reporting a soft-denied `read_file` action, so no edit was
+made. ForgeFlow now treats any non-empty `denied_actions` result as the structured failure
+`ANTIGRAVITY_TOOL_PERMISSION_DENIED`; a soft denial can no longer masquerade as a successful run.
 
-- changed files/diff presence;
-- command/test result;
-- base/result revision;
-- ACP session id and Antigravity conversation id.
+A second safety probe tested the only documented bypass, `--dangerously-skip-permissions` together
+with `--sandbox`. On the current GCP Dev host and `agy 1.1.28`, the resulting tool process attempted
+`find / ...` and remained `unconfined` with `Seccomp=0` and `NoNewPrivs=0`, in the same mount
+namespace as the host process. ForgeFlow therefore does **not** enable that bypass. Public upstream
+reports also document headless `permissions.allow` problems around the current 1.1.x line:
 
-**Gate:** reproducible edit + test + independent git evidence, with no host pollution.
+- https://github.com/google-antigravity/antigravity-cli/issues/548
+- https://github.com/google-antigravity/antigravity-cli/issues/955
+
+The safe retry command is `uv run python deploy/gcp-dev/run-antigravity-acp-smoke.py`. It returns
+`PASS` with normalized revision/test evidence, or `BLOCKED` with a bounded failure code.
+
+**Gate:** still requires reproducible edit + test + independent git evidence, with no host pollution.
+Phase 3 must not be enabled until this command passes without broad permission bypasses.
 
 ### Phase 3 — guarded ForgeFlow execution route
 
