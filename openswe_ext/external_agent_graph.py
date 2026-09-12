@@ -135,7 +135,8 @@ class DefaultExternalAgentGraphServices:
                 ),
             )
             attempt = attempt_status.handle
-            if attempt_status.finished:
+            attempt_finished = attempt_status.finished
+            if attempt_finished:
                 raise RuntimeError("EXTERNAL_AGENT_OPERATION_ALREADY_FINISHED")
             project = await asyncio.to_thread(
                 load_external_agent_project_config, request["owner"], request["repo"]

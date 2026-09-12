@@ -327,3 +327,67 @@ def test_cancellation_during_workspace_prepare_cleans_checkout_and_closes_attemp
     assert [row["event"] for row in rows] == ["STARTED", "FINISHED"]
     assert rows[-1]["outcome"] == "BLOCKED"
     assert rows[-1]["fallback_reason"] == "EXTERNAL_AGENT_CANCELLED"
+
+
+def test_finished_external_operation_replay_is_bounded_and_does_not_rewrite_ledger(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    import openswe_ext.external_agent_graph as module
+    from forgeflow.attempts import AttemptLedger
+
+    route_config = tmp_path / "routes.json"
+    route_config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "external",
+                        "role": "IMPLEMENT",
+                        "priority": 1,
+                        "runtime": "EXTERNAL_ACP",
+                        "adapter": "antigravity",
+                        "target": "account",
+                        "enabled": True,
+                        "health": "READY",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ledger_path = tmp_path / "attempts.jsonl"
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(route_config))
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger_path))
+    monkeypatch.setenv("FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT", str(root))
+
+    ledger = AttemptLedger(ledger_path)
+    ledger.ensure_started(
+        role="IMPLEMENT",
+        route_id="external",
+        priority=1,
+        runtime="EXTERNAL_ACP",
+        target="account",
+        operation_key="op:1",
+    )
+    ledger.finish_operation(
+        route_id="external",
+        operation_key="op:1",
+        outcome="SUCCEEDED",
+        source_revision="a" * 40,
+        result_revision="b" * 40,
+    )
+
+    result = asyncio.run(module.DefaultExternalAgentGraphServices().run(_input()))
+
+    assert result.external_status == "BLOCKED"
+    assert result.failure_code == "EXTERNAL_AGENT_OPERATION_ALREADY_FINISHED"
+    assert result.failure_class == "POLICY_DENIED"
+    rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["STARTED", "FINISHED"]
+    assert rows[-1]["outcome"] == "SUCCEEDED"
+    assert rows[-1]["result_revision"] == "b" * 40
