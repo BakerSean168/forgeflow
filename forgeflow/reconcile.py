@@ -1025,13 +1025,16 @@ def _finish_openswe_attempt_for_state(
     resolved_class = failure_class
     if outcome != "SUCCEEDED" and resolved_class is None and failure_code:
         resolved_class = classify_failure_code(failure_code)
+    resolved_source_revision = source_revision
+    if resolved_source_revision is None and state.get("implementation_phase") == "REPAIR":
+        resolved_source_revision = state.get("observed_head_sha")
     services.finish_openswe_attempt(
         route_id=route_id,
         operation_key=operation_key,
         outcome=outcome,
         failure_class=resolved_class,
         failure_code=failure_code,
-        source_revision=source_revision,
+        source_revision=resolved_source_revision,
         result_revision=result_revision,
     )
 

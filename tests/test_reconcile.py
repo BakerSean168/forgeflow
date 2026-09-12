@@ -1115,3 +1115,56 @@ def test_default_services_persist_idempotent_openswe_attempts(tmp_path, monkeypa
     assert [row["event"] for row in rows] == ["STARTED", "FINISHED"]
     assert rows[0]["attempt_id"] == rows[1]["attempt_id"]
     assert rows[1]["result_revision"] == HEAD1
+
+@pytest.mark.asyncio
+async def test_successful_openswe_repair_finishes_with_rejected_head_source_revision() -> None:
+    services = FakeServices(
+        cron_id="cron-1", implementation_thread="implementation-thread", pr=_pr(HEAD1)
+    )
+    state = _base_state("REPAIRING")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id=None,
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        last_failure_code="CHECK_FAILED:tests",
+    )
+
+    running = await reconcile_once(state, policy_thread_id="ledger-repair-success", services=services)
+    run_id = running["implementation_run_id"]
+    operation_key = running["implementation_operation_key"]
+    assert run_id is not None
+    assert operation_key is not None
+    services.child_status[run_id] = "success"
+    verifying = await reconcile_once(
+        running, policy_thread_id="ledger-repair-success", services=services
+    )
+    assert verifying["status"] == "VERIFYING"
+    assert verifying["implementation_phase"] == "REPAIR"
+    assert services.attempt_finish_calls == []
+
+    services.implementation_metadata = {
+        "pr_url": PR,
+        "pr_number": 1,
+        "pr_state": "open",
+        "branch_name": "open-swe/task",
+        "base_branch": "main",
+    }
+    services.pr = _pr(HEAD2)
+    services.commits[HEAD2] = CommitEvidence(
+        sha=HEAD2,
+        message=f"fix: repair\n\nForgeFlow-Operation: {operation_key}",
+    )
+    accepted = await reconcile_once(
+        verifying, policy_thread_id="ledger-repair-success", services=services
+    )
+
+    assert accepted["status"] == "WAITING_FOR_CI"
+    assert accepted["observed_head_sha"] == HEAD2
+    assert len(services.attempt_finish_calls) == 1
+    finished = services.attempt_finish_calls[0]
+    assert finished["outcome"] == "SUCCEEDED"
+    assert finished["source_revision"] == HEAD1
+    assert finished["result_revision"] == HEAD2
