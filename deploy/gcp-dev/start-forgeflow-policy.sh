@@ -43,6 +43,16 @@ export LANGSMITH_TRACING="${LANGSMITH_TRACING:-false}"
 export FIREWORKS_API_BASE="${FORGEFLOW_LITELLM_BASE_URL:-https://oracle.taile92a8e.ts.net:10446}"
 export FIREWORKS_API_KEY="$(<"$litellm_glm53_key")"
 unset LLM_FALLBACK_MODEL_ID
+
+# External-agent routing is opt-in. These defaults configure the ACP bridge but
+# do not alter Open SWE's current model routing until the scheduler explicitly
+# selects an external route. `agy` uses its own authenticated Google account state.
+export FORGEFLOW_ANTIGRAVITY_ACP_ENABLED="${FORGEFLOW_ANTIGRAVITY_ACP_ENABLED:-false}"
+export FORGEFLOW_ANTIGRAVITY_BIN="${FORGEFLOW_ANTIGRAVITY_BIN:-$HOME/.local/bin/agy}"
+export FORGEFLOW_ANTIGRAVITY_MODEL="${FORGEFLOW_ANTIGRAVITY_MODEL:-gemini-3.8-flash-high}"
+export FORGEFLOW_ANTIGRAVITY_EFFORT="${FORGEFLOW_ANTIGRAVITY_EFFORT:-high}"
+export FORGEFLOW_ANTIGRAVITY_MODE="${FORGEFLOW_ANTIGRAVITY_MODE:-accept-edits}"
+export FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT="${FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT:-20m}"
 export SANDBOX_TYPE="${SANDBOX_TYPE:-docker}"
 
 # Full official Reviewer requires a separate Open SWE GitHub App. Loading this

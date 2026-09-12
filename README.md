@@ -54,6 +54,7 @@ evidence for the underlying Open SWE review → repair → re-review loop.
   isolation and lifecycle.
 - [`docs/github-app.md`](./docs/github-app.md) — current GitHub App and required-check setup.
 - [`docs/upstream.md`](./docs/upstream.md) — pinned Open SWE contract and upgrade procedure.
+- [`docs/model-routing-v2-external-agents.md`](./docs/model-routing-v2-external-agents.md) — model-vs-agent routing plan and the opt-in Antigravity ACP vertical slice.
 - [`docs/open-swe-policy-v1-refactor-plan.md`](./docs/open-swe-policy-v1-refactor-plan.md) — completed
   v2 migration/acceptance record; retained as history, not as the current architecture guide.
 

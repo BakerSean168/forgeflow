@@ -27,8 +27,10 @@ ForgeFlow policy graph -------------------- deterministic quality decisions
 
 Current GCP Dev runtime components are `forgeflow-policy.service`,
 `open-swe-codex-broker.service`, the Open SWE Docker sandbox network helper, and the hourly sandbox
-GC timer. **There is no OpenHands Agent Server, OpenHands container, Antigravity worker, Node
-control plane, or ForgeFlow SQLite workflow database in the current runtime.**
+GC timer. **There is no OpenHands Agent Server, OpenHands container, long-lived Antigravity worker,
+Node control plane, or ForgeFlow SQLite workflow database in the current runtime.** An experimental,
+disabled-by-default Antigravity ACP bridge exists as an execution-scoped runtime extension; it does
+not own workflow state or change the default Open SWE route.
 
 ## Historical destructive cutover contract
 
@@ -167,7 +169,7 @@ ForgeFlow Policy V1 does not implement:
 - custom Plan/WorkItem/Execution/Review entities mirroring Open SWE;
 - custom worktree creation or ACL management;
 - OpenHands Agent Server integration;
-- Antigravity worker integration;
+- the legacy long-lived Antigravity worker integration (replaced only by an optional execution-scoped ACP bridge);
 - LiteLLM resource directory / runtime admission / provider health routing;
 - custom execution leases;
 - custom event store;
@@ -557,7 +559,8 @@ UPSTREAM_OPEN_SWE_SHA
 ```
 
 No `src/`, legacy TypeScript control plane, generated client, custom worktree runtime, OpenHands
-Agent Server integration, Antigravity execution adapter, or ForgeFlow workflow database survives.
+Agent Server integration, long-lived Antigravity worker, or ForgeFlow workflow database survives.
+The later ACP experiment is a new bounded runtime extension, not a restored legacy execution plane.
 
 ## 19. Deployment shape
 
@@ -624,7 +627,7 @@ Static architecture checks forbid:
 - `sqlite3`, `node:sqlite`, SQL schema files;
 - custom Git worktree creation commands inside ForgeFlow package;
 - custom provider SDK clients in policy code;
-- OpenHands/Antigravity-specific execution adapters;
+- OpenHands-specific execution adapters or a long-lived Antigravity execution plane; the optional Antigravity ACP bridge must remain execution-scoped and outside policy ownership;
 - direct modification of Open SWE reviewer findings metadata outside the upstream reviewer APIs;
 - a second FastAPI/Fastify control plane unless explicitly approved later.
 
