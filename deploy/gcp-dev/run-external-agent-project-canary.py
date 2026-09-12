@@ -16,7 +16,6 @@ from pathlib import Path
 
 from acp.exceptions import RequestError
 
-from forgeflow.adapters.external_delivery import GitHubExternalAgentDelivery
 from forgeflow.attempts import AttemptHandle, AttemptLedger
 from forgeflow.external_agents.execution import ExternalAgentExecutionRequest
 from forgeflow.routing import classify_failure_code, load_route_registry
@@ -25,6 +24,21 @@ from openswe_ext.antigravity_execution import AntigravityExternalAgentExecution
 
 class ProjectCanaryError(RuntimeError):
     pass
+
+
+def _load_external_env(path: Path) -> None:
+    """Load the deployment env file without emitting values or shell-evaluating it."""
+
+    if not path.is_file():
+        raise ProjectCanaryError("PROJECT_CANARY_GITHUB_ENV_MISSING")
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw or raw.lstrip().startswith("#") or "=" not in raw:
+            continue
+        key, encoded = raw.split("=", 1)
+        parsed = shlex.split(encoded)
+        if len(parsed) != 1:
+            raise ProjectCanaryError(f"PROJECT_CANARY_GITHUB_ENV_INVALID:{key}")
+        os.environ[key] = parsed[0]
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -110,6 +124,10 @@ def _parser() -> argparse.ArgumentParser:
             str(Path.home() / ".local/share/forgeflow-policy/attempt-ledger.jsonl"),
         ),
     )
+    parser.add_argument(
+        "--github-env",
+        default=str(Path.home() / ".config/forgeflow-policy/github-app.env"),
+    )
     return parser
 
 
@@ -121,6 +139,11 @@ async def _run(args: argparse.Namespace) -> int:
     ledger = AttemptLedger(Path(args.attempt_ledger))
     attempt_finished = False
     try:
+        _load_external_env(Path(args.github_env).expanduser())
+        # GitHub App values are captured by the pinned Open SWE modules at import time.
+        # Import delivery only after the operator env has been loaded.
+        from forgeflow.adapters.external_delivery import GitHubExternalAgentDelivery
+
         registry = load_route_registry(Path(args.route_config))
         route = registry.get(args.route_id)
         if (
