@@ -58,6 +58,9 @@ def prepare_external_workspace(
     revision = _git(source, "rev-parse", f"origin/{base_ref}").stdout.strip()
     if len(revision) != 40:
         raise ExternalAgentWorkspaceError("EXTERNAL_AGENT_SOURCE_REVISION_INVALID")
+    origin_url = _git(source, "remote", "get-url", "origin").stdout.strip()
+    if not origin_url:
+        raise ExternalAgentWorkspaceError("EXTERNAL_AGENT_ORIGIN_URL_MISSING")
 
     root = workspace_root.expanduser().resolve(strict=True)
     if not root.is_dir():
@@ -65,7 +68,7 @@ def prepare_external_workspace(
     placeholder = Path(tempfile.mkdtemp(prefix="forgeflow-external-run-", dir=root))
     placeholder.rmdir()
     result = subprocess.run(
-        ["git", "clone", "--quiet", "--no-local", "--no-checkout", str(source), str(placeholder)],
+        ["git", "clone", "--quiet", "--no-local", "--no-checkout", origin_url, str(placeholder)],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,

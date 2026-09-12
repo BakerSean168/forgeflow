@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal, Protocol, TypedDict
 
 from acp.exceptions import RequestError
+from httpx2 import RequestError as HttpxRequestError
 from langgraph.graph import END, START, StateGraph
 
 from forgeflow.adapters.external_delivery import GitHubExternalAgentDelivery
@@ -71,6 +72,8 @@ class ExternalAgentGraphServices(Protocol):
 
 
 def _failure_code(exc: BaseException) -> str:
+    if isinstance(exc, HttpxRequestError):
+        return "EXTERNAL_AGENT_GITHUB_TRANSPORT_FAILED"
     if isinstance(exc, OSError):
         return "EXTERNAL_AGENT_IO_FAILED"
     code = str(exc).split(":", 1)[0].strip()
@@ -180,7 +183,15 @@ class DefaultExternalAgentGraphServices:
                 external_session_id=evidence.acp_session_id,
                 external_conversation_id=evidence.external_conversation_id,
             )
-        except (RequestError, RuntimeError, OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+        except (
+            RequestError,
+            HttpxRequestError,
+            RuntimeError,
+            OSError,
+            subprocess.SubprocessError,
+            ValueError,
+            KeyError,
+        ) as exc:
             code = _failure_code(exc)
             failure_class = classify_failure_code(code)
             if attempt is not None and not attempt_finished:
