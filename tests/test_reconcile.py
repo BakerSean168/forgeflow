@@ -49,6 +49,11 @@ class FakeServices:
             "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
         )
     )
+    fallback_route: RouteDefinition | None = None
+    route_fallback_enabled: bool = False
+    child_failure_code: dict[str, str] = field(default_factory=dict)
+    child_failure_class: dict[str, str] = field(default_factory=dict)
+    fallback_threads: dict[str, str] = field(default_factory=dict)
 
     async def preflight_repository(self, state: ForgeFlowState) -> RepositoryPreflight:
         return RepositoryPreflight(status=self.preflight_status)  # type: ignore[arg-type]
@@ -64,8 +69,17 @@ class FakeServices:
             self.actions.append("delete_cron")
             self.cron_id = None
 
-    def select_implementation_route(self) -> RouteDefinition | None:
-        return self.selected_route
+    def select_implementation_route(
+        self, *, exclude_ids: frozenset[str] = frozenset()
+    ) -> RouteDefinition | None:
+        if self.selected_route.id not in exclude_ids:
+            return self.selected_route
+        if self.fallback_route is not None and self.fallback_route.id not in exclude_ids:
+            return self.fallback_route
+        return None
+
+    def automatic_route_fallback_enabled(self) -> bool:
+        return self.route_fallback_enabled
 
     async def ensure_implementation_thread(
         self,
@@ -77,12 +91,18 @@ class FakeServices:
         repo_name: str,
         objective: str,
     ) -> str:
-        assert route_id == self.selected_route.id or self.implementation_thread is not None
         assert runtime in {"OPEN_SWE", "EXTERNAL_ACP"}
-        if self.implementation_thread is None:
-            self.actions.append("create_implementation_thread")
-            self.implementation_thread = "implementation-thread"
-        return self.implementation_thread
+        if route_id == self.selected_route.id:
+            if self.implementation_thread is None:
+                self.actions.append("create_implementation_thread")
+                self.implementation_thread = "implementation-thread"
+            return self.implementation_thread
+        if self.fallback_route is None or route_id != self.fallback_route.id:
+            raise AssertionError(f"unexpected route {route_id}")
+        if route_id not in self.fallback_threads:
+            self.actions.append(f"create_implementation_thread:{route_id}")
+            self.fallback_threads[route_id] = f"implementation-thread-{route_id}"
+        return self.fallback_threads[route_id]
 
     async def find_child_run(
         self, *, thread_id: str, operation_key: str, route_id: str, runtime: str
@@ -137,7 +157,13 @@ class FakeServices:
         self, *, thread_id: str, run_id: str, route_id: str, runtime: str
     ) -> ChildRunSnapshot:
         del route_id, runtime
-        return ChildRunSnapshot(thread_id=thread_id, run_id=run_id, status=self.child_status[run_id])
+        return ChildRunSnapshot(
+            thread_id=thread_id,
+            run_id=run_id,
+            status=self.child_status[run_id],
+            failure_code=self.child_failure_code.get(run_id),
+            failure_class=self.child_failure_class.get(run_id),
+        )
 
     async def read_implementation_thread(
         self, thread_id: str, *, route_id: str, runtime: str
@@ -657,3 +683,156 @@ async def test_legacy_active_implementation_state_is_migrated_to_openswe_route()
     assert migrated["implementation_route_id"] == "openswe-current"
     assert migrated["implementation_runtime"] == "OPEN_SWE"
     assert migrated["status"] == "IMPLEMENTING"
+
+
+@pytest.mark.asyncio
+async def test_route_availability_failure_falls_through_to_next_eligible_route() -> None:
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        5,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    openswe = RouteDefinition(
+        "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+    )
+    services = FakeServices(
+        cron_id="cron-1",
+        implementation_thread="external-thread",
+        selected_route=external,
+        fallback_route=openswe,
+        route_fallback_enabled=True,
+    )
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id=external.id,
+        implementation_runtime=external.runtime,
+        implementation_thread_id="external-thread",
+        implementation_run_id="external-run",
+        implementation_operation_key="op:external",
+    )
+    services.child_status["external-run"] = "error"
+    services.child_failure_code["external-run"] = "ANTIGRAVITY_PROCESS_EXITED"
+    services.child_failure_class["external-run"] = "ROUTE_AVAILABILITY"
+
+    fallback = await reconcile_once(state, policy_thread_id="policy-fallback", services=services)
+    assert fallback["status"] == "IMPLEMENTING"
+    assert fallback["implementation_failed_route_ids"] == [external.id]
+    assert fallback["implementation_route_id"] == openswe.id
+    assert fallback["implementation_runtime"] == "OPEN_SWE"
+    assert fallback["implementation_thread_id"] is None
+    assert fallback["implementation_run_id"] is None
+    assert fallback["last_failure_code"] == "ANTIGRAVITY_PROCESS_EXITED"
+
+    threaded = await reconcile_once(fallback, policy_thread_id="policy-fallback", services=services)
+    assert threaded["implementation_thread_id"] == "implementation-thread-openswe-current"
+    dispatched = await reconcile_once(threaded, policy_thread_id="policy-fallback", services=services)
+    assert dispatched["implementation_run_id"] is not None
+    assert dispatched["implementation_route_id"] == openswe.id
+
+
+@pytest.mark.asyncio
+async def test_task_failure_does_not_switch_routes() -> None:
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        5,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    openswe = RouteDefinition(
+        "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+    )
+    services = FakeServices(
+        cron_id="cron-1",
+        implementation_thread="external-thread",
+        selected_route=external,
+        fallback_route=openswe,
+    )
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id=external.id,
+        implementation_runtime=external.runtime,
+        implementation_thread_id="external-thread",
+        implementation_run_id="external-run",
+    )
+    services.child_status["external-run"] = "error"
+    services.child_failure_code["external-run"] = "EXTERNAL_AGENT_TEST_FAILED:1"
+    services.child_failure_class["external-run"] = "TASK_FAILURE"
+    result = await reconcile_once(state, policy_thread_id="policy-task-failure", services=services)
+    assert result["implementation_route_id"] == external.id
+    assert result["implementation_runtime"] == external.runtime
+    assert result["implementation_run_id"] is None
+    assert result["run_retry_count"] == 1
+    assert result.get("implementation_failed_route_ids", []) == []
+
+
+@pytest.mark.asyncio
+async def test_route_availability_exhaustion_escalates_without_retrying_failed_route() -> None:
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        5,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    services = FakeServices(
+        cron_id="cron-1",
+        implementation_thread="external-thread",
+        selected_route=external,
+        route_fallback_enabled=True,
+    )
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id=external.id,
+        implementation_runtime=external.runtime,
+        implementation_thread_id="external-thread",
+        implementation_run_id="external-run",
+    )
+    services.child_status["external-run"] = "error"
+    services.child_failure_code["external-run"] = "ANTIGRAVITY_PROCESS_EXITED"
+    services.child_failure_class["external-run"] = "ROUTE_AVAILABILITY"
+    result = await reconcile_once(state, policy_thread_id="policy-exhausted", services=services)
+    assert result["status"] == "ESCALATED"
+    assert result["last_failure_code"] == "IMPLEMENTATION_ROUTE_EXHAUSTED"
+
+
+@pytest.mark.asyncio
+async def test_route_availability_does_not_fall_through_while_global_gate_is_disabled() -> None:
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        5,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    openswe = RouteDefinition(
+        "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+    )
+    services = FakeServices(
+        cron_id="cron-1",
+        implementation_thread="external-thread",
+        selected_route=external,
+        fallback_route=openswe,
+        route_fallback_enabled=False,
+    )
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id=external.id,
+        implementation_runtime=external.runtime,
+        implementation_thread_id="external-thread",
+        implementation_run_id="external-run",
+    )
+    services.child_status["external-run"] = "error"
+    services.child_failure_code["external-run"] = "ANTIGRAVITY_PROCESS_EXITED"
+    services.child_failure_class["external-run"] = "ROUTE_AVAILABILITY"
+    result = await reconcile_once(state, policy_thread_id="policy-gated", services=services)
+    assert result["implementation_route_id"] == external.id
+    assert result["implementation_run_id"] is None
+    assert result["run_retry_count"] == 1
+    assert result.get("implementation_failed_route_ids", []) == []

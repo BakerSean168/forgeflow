@@ -87,3 +87,16 @@ def test_failure_classifier_only_marks_route_availability_for_provider_runtime_f
     assert classify_failure_code("EXTERNAL_AGENT_TEST_FAILED:1") == "TASK_FAILURE"
     assert classify_failure_code("EXTERNAL_AGENT_PROJECT_CONFIG_MISSING") == "POLICY_DENIED"
     assert classify_failure_code("SOMETHING_NEW") == "UNCLASSIFIED"
+
+
+def test_select_can_exclude_failed_route_without_reordering_remaining_candidates() -> None:
+    registry = RouteRegistry(
+        (
+            RouteDefinition("first", "IMPLEMENT", 5, "OPEN_SWE", "a"),
+            RouteDefinition("second", "IMPLEMENT", 10, "OPEN_SWE", "b"),
+            RouteDefinition("third", "IMPLEMENT", 20, "OPEN_SWE", "c"),
+        )
+    )
+    selected = registry.select("IMPLEMENT", exclude_ids=frozenset({"first"}))
+    assert selected is not None
+    assert selected.id == "second"

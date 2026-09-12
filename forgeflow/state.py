@@ -49,6 +49,7 @@ class ForgeFlowState(TypedDict, total=False):
     workspace_path: str | None
     implementation_route_id: str
     implementation_runtime: Literal["OPEN_SWE", "EXTERNAL_ACP"]
+    implementation_failed_route_ids: list[str]
     implementation_thread_id: str
     implementation_run_id: str | None
     implementation_operation_key: str | None
@@ -94,6 +95,7 @@ def initial_state(*, objective: str, repo_owner: str, repo_name: str, base_ref: 
         "repo_name": repo_name,
         "base_ref": base_ref,
         "run_retry_count": 0,
+        "implementation_failed_route_ids": [],
         "repair_round": 0,
         "reviewer_retry_count": 0,
         "reviewer_retry_pending": False,

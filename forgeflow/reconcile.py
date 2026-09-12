@@ -84,7 +84,11 @@ class PolicyServices(Protocol):
 
     async def preflight_repository(self, state: ForgeFlowState) -> RepositoryPreflight: ...
 
-    def select_implementation_route(self) -> RouteDefinition | None: ...
+    def select_implementation_route(
+        self, *, exclude_ids: frozenset[str] = frozenset()
+    ) -> RouteDefinition | None: ...
+
+    def automatic_route_fallback_enabled(self) -> bool: ...
 
     async def ensure_implementation_thread(
         self,
@@ -217,11 +221,19 @@ class DefaultPolicyServices:
             )
         return github
 
-    def select_implementation_route(self) -> RouteDefinition | None:
+    def select_implementation_route(
+        self, *, exclude_ids: frozenset[str] = frozenset()
+    ) -> RouteDefinition | None:
         path = os.environ.get("FORGEFLOW_ROUTE_CONFIG_FILE", "").strip()
         if not path:
             raise ReconcileError("FORGEFLOW_ROUTE_CONFIG_FILE is required")
-        return load_route_registry(Path(path)).select("IMPLEMENT")
+        return load_route_registry(Path(path)).select("IMPLEMENT", exclude_ids=exclude_ids)
+
+    def automatic_route_fallback_enabled(self) -> bool:
+        value = os.environ.get("FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED", "false").strip().lower()
+        if value not in {"true", "false"}:
+            raise ReconcileError("FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED must be true or false")
+        return value == "true"
 
     async def ensure_implementation_thread(
         self,
@@ -446,7 +458,9 @@ async def _reconcile_new(
     route_id = state.get("implementation_route_id")
     runtime = state.get("implementation_runtime")
     if not route_id or not runtime:
-        route = services.select_implementation_route()
+        route = services.select_implementation_route(
+            exclude_ids=frozenset(state.get("implementation_failed_route_ids", []))
+        )
         if route is None:
             return escalate(state, "IMPLEMENTATION_ROUTE_UNAVAILABLE")
         result = deepcopy(state)
@@ -473,6 +487,18 @@ async def _reconcile_new(
 async def _reconcile_implementation_run(
     state: ForgeFlowState, policy_thread_id: str, services: PolicyServices
 ) -> ForgeFlowState:
+    if not state.get("implementation_thread_id"):
+        thread_id = await services.ensure_implementation_thread(
+            policy_thread_id=policy_thread_id,
+            route_id=_required(state, "implementation_route_id"),
+            runtime=_required(state, "implementation_runtime"),
+            repo_owner=_required(state, "repo_owner"),
+            repo_name=_required(state, "repo_name"),
+            objective=_required(state, "objective"),
+        )
+        result = deepcopy(state)
+        result["implementation_thread_id"] = thread_id
+        return result
     if not state.get("implementation_run_id"):
         return await _adopt_or_dispatch_initial(state, policy_thread_id, services)
     thread_id = _required(state, "implementation_thread_id")
@@ -488,7 +514,31 @@ async def _reconcile_implementation_run(
     if snapshot.status == "success":
         return mark_run_terminal(state)
     failure_code = snapshot.failure_code or f"CHILD_RUN_{snapshot.status.upper()}"
+    if (
+        snapshot.failure_class == "ROUTE_AVAILABILITY"
+        and services.automatic_route_fallback_enabled()
+    ):
+        return _fallback_implementation_route(state, services, failure_code=failure_code)
     return note_child_run_failure(state, failure_code)
+
+
+def _fallback_implementation_route(
+    state: ForgeFlowState, services: PolicyServices, *, failure_code: str
+) -> ForgeFlowState:
+    failed = list(dict.fromkeys([*state.get("implementation_failed_route_ids", []), _required(state, "implementation_route_id")]))
+    route = services.select_implementation_route(exclude_ids=frozenset(failed))
+    if route is None:
+        return escalate(state, "IMPLEMENTATION_ROUTE_EXHAUSTED")
+    result = deepcopy(state)
+    result["implementation_failed_route_ids"] = failed
+    result["implementation_route_id"] = route.id
+    result["implementation_runtime"] = route.runtime
+    result["implementation_thread_id"] = None
+    result["implementation_run_id"] = None
+    result["implementation_operation_key"] = None
+    result["run_retry_count"] = 0
+    result["last_failure_code"] = failure_code
+    return result
 
 
 async def _adopt_or_dispatch_initial(
@@ -848,6 +898,7 @@ def _normalize_state(raw: ForgeFlowState) -> ForgeFlowState:
     state.setdefault("blocking_finding_ids", [])
     state.setdefault("last_failure_code", None)
     state.setdefault("cancel_requested", False)
+    state.setdefault("implementation_failed_route_ids", [])
     if state.get("implementation_thread_id") and not state.get("implementation_route_id"):
         state["implementation_route_id"] = _LEGACY_IMPLEMENTATION_ROUTE_ID
         state["implementation_runtime"] = "OPEN_SWE"

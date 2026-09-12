@@ -75,8 +75,16 @@ class RouteRegistry:
         ]
         return tuple(sorted(candidates, key=lambda route: (route.priority, route.id)))
 
-    def select(self, role: RouteRole, *, now: datetime | None = None) -> RouteDefinition | None:
-        candidates = self.eligible(role, now=now)
+    def select(
+        self,
+        role: RouteRole,
+        *,
+        now: datetime | None = None,
+        exclude_ids: frozenset[str] = frozenset(),
+    ) -> RouteDefinition | None:
+        candidates = [
+            route for route in self.eligible(role, now=now) if route.id not in exclude_ids
+        ]
         return candidates[0] if candidates else None
 
 
