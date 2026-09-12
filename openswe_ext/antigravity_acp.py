@@ -389,7 +389,10 @@ class AntigravityAcpAgent:
         process.stdin.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
         await process.stdin.drain()
         while True:
-            line = await asyncio.wait_for(process.stdout.readline(), timeout=90)
+            try:
+                line = await asyncio.wait_for(process.stdout.readline(), timeout=90)
+            except TimeoutError as exc:
+                raise AntigravityBridgeError("ANTIGRAVITY_TIMEOUT") from exc
             if not line:
                 raise AntigravityBridgeError("ANTIGRAVITY_BOOTSTRAP_PROCESS_EXITED")
             event = self._event(line)

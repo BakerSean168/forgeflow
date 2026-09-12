@@ -147,3 +147,16 @@ def test_delivery_transport_failure_is_normalized_and_closes_attempt(tmp_path, m
     assert [row["event"] for row in rows] == ["STARTED", "FINISHED"]
     assert rows[-1]["outcome"] == "BLOCKED"
     assert rows[-1]["fallback_reason"] == "EXTERNAL_AGENT_GITHUB_TRANSPORT_FAILED"
+
+
+def test_request_error_failure_code_preserves_structured_antigravity_code() -> None:
+    from acp.exceptions import RequestError
+
+    from openswe_ext.external_agent_graph import _failure_code
+
+    exc = RequestError(
+        -32012,
+        "Antigravity bootstrap failed",
+        {"code": "ANTIGRAVITY_TIMEOUT"},
+    )
+    assert _failure_code(exc) == "ANTIGRAVITY_TIMEOUT"
