@@ -771,6 +771,48 @@ async def test_task_failure_does_not_switch_routes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_child_claimed_route_availability_cannot_override_policy_classifier() -> None:
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        5,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    openswe = RouteDefinition(
+        "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+    )
+    services = FakeServices(
+        cron_id="cron-1",
+        implementation_thread="external-thread",
+        selected_route=external,
+        fallback_route=openswe,
+        route_fallback_enabled=True,
+    )
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id=external.id,
+        implementation_runtime=external.runtime,
+        implementation_thread_id="external-thread",
+        implementation_run_id="external-run",
+    )
+    services.child_status["external-run"] = "error"
+    services.child_failure_code["external-run"] = "ANTIGRAVITY_TOOL_PERMISSION_DENIED"
+    services.child_failure_class["external-run"] = "ROUTE_AVAILABILITY"
+
+    result = await reconcile_once(
+        state, policy_thread_id="policy-classifier-authority", services=services
+    )
+
+    assert result["implementation_route_id"] == external.id
+    assert result["implementation_runtime"] == external.runtime
+    assert result["implementation_run_id"] is None
+    assert result["run_retry_count"] == 1
+    assert result.get("implementation_failed_route_ids", []) == []
+
+
+@pytest.mark.asyncio
 async def test_route_availability_exhaustion_escalates_without_retrying_failed_route() -> None:
     external = RouteDefinition(
         "antigravity-account-primary",

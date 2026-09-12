@@ -62,7 +62,7 @@ from forgeflow.policy import (
 from forgeflow.projects import load_repository_policy
 from forgeflow.prompts.implementation import build_implementation_prompt, operation_trailer
 from forgeflow.prompts.repair import build_ci_repair_prompt, build_review_repair_prompt
-from forgeflow.routing import RouteDefinition, load_route_registry
+from forgeflow.routing import RouteDefinition, classify_failure_code, load_route_registry
 from forgeflow.state import DEFAULT_BUDGET, TERMINAL_STATUSES, ForgeFlowState
 from openswe_ext.external_agent_runtime import ExternalAgentChildRuntime
 
@@ -514,8 +514,11 @@ async def _reconcile_implementation_run(
     if snapshot.status == "success":
         return mark_run_terminal(state)
     failure_code = snapshot.failure_code or f"CHILD_RUN_{snapshot.status.upper()}"
+    # Routing policy owns this classification. A child result may report its
+    # own class for diagnostics, but it cannot authorize an ownership switch.
+    failure_class = classify_failure_code(failure_code)
     if (
-        snapshot.failure_class == "ROUTE_AVAILABILITY"
+        failure_class == "ROUTE_AVAILABILITY"
         and services.automatic_route_fallback_enabled()
     ):
         return _fallback_implementation_route(state, services, failure_code=failure_code)
