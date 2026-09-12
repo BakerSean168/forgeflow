@@ -262,3 +262,27 @@ def test_operation_status_is_non_mutating(tmp_path: Path) -> None:
     finished = ledger.operation_status(route_id="openswe-current", operation_key="op:status")
     assert finished is not None and finished.finished is True
     assert len(path.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_finish_operation_preserves_external_provenance(tmp_path: Path) -> None:
+    ledger = AttemptLedger(tmp_path / "attempt-ledger.jsonl")
+    ledger.ensure_started(
+        role="IMPLEMENT",
+        route_id="external",
+        priority=20,
+        runtime="EXTERNAL_ACP",
+        target="account",
+        operation_key="external:provenance",
+    )
+    ledger.finish_operation(
+        route_id="external",
+        operation_key="external:provenance",
+        outcome="SUCCEEDED",
+        source_revision="a" * 40,
+        result_revision="b" * 40,
+        external_session_id="session-1",
+        external_conversation_id="conversation-1",
+    )
+    rows = [json.loads(line) for line in ledger.path.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["external_session_id"] == "session-1"
+    assert rows[-1]["external_conversation_id"] == "conversation-1"

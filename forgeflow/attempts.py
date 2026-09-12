@@ -178,6 +178,8 @@ class AttemptLedger:
         fallback_reason: str | None = None,
         source_revision: str | None = None,
         result_revision: str | None = None,
+        external_session_id: str | None = None,
+        external_conversation_id: str | None = None,
     ) -> str:
         """Idempotently close the unique attempt for one operation key."""
         with self._locked_file() as file:
@@ -203,6 +205,8 @@ class AttemptLedger:
                     fallback_reason=fallback_reason,
                     source_revision=source_revision,
                     result_revision=result_revision,
+                    external_session_id=external_session_id,
+                    external_conversation_id=external_conversation_id,
                 )
                 return handle.attempt_id
             _append_locked(
@@ -214,6 +218,8 @@ class AttemptLedger:
                     fallback_reason=fallback_reason,
                     source_revision=source_revision,
                     result_revision=result_revision,
+                    external_session_id=external_session_id,
+                    external_conversation_id=external_conversation_id,
                 ),
             )
             return handle.attempt_id
@@ -415,6 +421,8 @@ def _require_finish_compatible(
     fallback_reason: str | None,
     source_revision: str | None,
     result_revision: str | None,
+    external_session_id: str | None,
+    external_conversation_id: str | None,
 ) -> None:
     expected = {
         "outcome": outcome,
@@ -427,6 +435,13 @@ def _require_finish_compatible(
         raise AttemptLedgerError("ATTEMPT_LEDGER_FINISH_SOURCE_MISMATCH")
     if result_revision is not None and row.get("result_revision") != result_revision:
         raise AttemptLedgerError("ATTEMPT_LEDGER_FINISH_RESULT_MISMATCH")
+    if external_session_id is not None and row.get("external_session_id") != external_session_id:
+        raise AttemptLedgerError("ATTEMPT_LEDGER_FINISH_SESSION_MISMATCH")
+    if (
+        external_conversation_id is not None
+        and row.get("external_conversation_id") != external_conversation_id
+    ):
+        raise AttemptLedgerError("ATTEMPT_LEDGER_FINISH_CONVERSATION_MISMATCH")
 
 
 def _handle_from_start(row: dict[str, object]) -> AttemptHandle:
