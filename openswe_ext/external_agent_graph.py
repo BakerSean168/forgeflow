@@ -112,7 +112,7 @@ class DefaultExternalAgentGraphServices:
         source_revision: str | None = None
         ledger = AttemptLedger(Path(ledger_path))
         try:
-            registry = load_route_registry(Path(route_config))
+            registry = await asyncio.to_thread(load_route_registry, Path(route_config))
             route = registry.get(request["route_id"])
             if (
                 route.role != "IMPLEMENT"
@@ -122,7 +122,8 @@ class DefaultExternalAgentGraphServices:
             ):
                 raise RuntimeError("EXTERNAL_AGENT_ROUTE_NOT_ELIGIBLE")
 
-            attempt = ledger.start(
+            attempt = await asyncio.to_thread(
+                ledger.start,
                 role=route.role,
                 route_id=route.id,
                 priority=route.priority,
@@ -130,12 +131,13 @@ class DefaultExternalAgentGraphServices:
                 target=route.target,
                 operation_key=request["operation_key"],
             )
-            project = load_external_agent_project_config(request["owner"], request["repo"])
+            project = await asyncio.to_thread(
+                load_external_agent_project_config, request["owner"], request["repo"]
+            )
             if project is None:
                 raise RuntimeError("EXTERNAL_AGENT_PROJECT_CONFIG_MISSING")
             root = Path(workspace_root).expanduser()
-            root.mkdir(parents=True, exist_ok=True, mode=0o700)
-            root.chmod(0o700)
+            await asyncio.to_thread(_ensure_private_directory, root)
             prepared = await asyncio.to_thread(
                 prepare_external_workspace,
                 source_repo=project.cwd,
@@ -168,7 +170,8 @@ class DefaultExternalAgentGraphServices:
                     f"Operation: `{request['operation_key']}`"
                 ),
             )
-            ledger.finish(
+            await asyncio.to_thread(
+                ledger.finish,
                 attempt,
                 outcome="SUCCEEDED",
                 source_revision=evidence.source_revision,
@@ -201,7 +204,8 @@ class DefaultExternalAgentGraphServices:
             failure_class = classify_failure_code(code)
             if attempt is not None and not attempt_finished:
                 try:
-                    ledger.finish(
+                    await asyncio.to_thread(
+                        ledger.finish,
                         attempt,
                         outcome="BLOCKED",
                         failure_class=failure_class,
@@ -221,6 +225,11 @@ class DefaultExternalAgentGraphServices:
         finally:
             if workspace is not None:
                 await asyncio.to_thread(cleanup_external_workspace, workspace)
+
+
+def _ensure_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
 
 
 def build_external_agent_graph(*, services: ExternalAgentGraphServices | None = None):
