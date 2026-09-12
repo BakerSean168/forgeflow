@@ -1,6 +1,6 @@
 # ForgeFlow model and external-agent routing — V2 implementation plan
 
-> Status: Phase 1 ACP vertical slice and Phase 2 isolated disposable coding gate are complete; Phase 3 guarded execution routing is next.
+> Status: Phase 1 and Phase 2 are complete. Phase 3 guarded execution + ForgeFlow-owned delivery is implemented behind explicit gates; automatic scheduling remains disabled.
 > Date: 2026-09-12.
 
 ## 1. Decision summary
@@ -324,21 +324,48 @@ returns `PASS` with normalized revision/test evidence, or `BLOCKED` with a bound
 **Gate:** complete — reproducible edit + independent test + Git provenance + bootstrap-auth seal +
 execution-scoped cleanup have all passed.
 
-### Phase 3 — guarded ForgeFlow execution route
+### Phase 3 — guarded ForgeFlow execution route — implemented, rollout gate in progress
 
-Add a tiny `ExternalAgentExecutionPort`/adapter boundary to the ForgeFlow orchestration layer. Do not
-teach policy code about Antigravity-specific CLI flags.
+The runtime now has a generic `ExternalAgentExecutionPort` contract plus an ACP workspace adapter.
+Vendor-specific Antigravity flags remain under `openswe_ext`; policy-facing types contain only the
+request/evidence contract. Selection is fail-closed: the boolean feature gate, exact project
+allowlist, `IMPLEMENT`/`REPAIR` phase, and external-workspace root must all match. The deployed
+default is still disabled and the project allowlist is empty.
 
-Initial rollout rules:
+The Agent is deliberately **not** the delivery owner. It may edit only the isolated workspace and is
+instructed not to commit, change branches, push, alter remotes, or open a PR. ForgeFlow then:
 
-- route feature flag remains off by default;
-- only explicitly allowlisted trusted projects;
-- only `IMPLEMENT`/repair phases;
-- official review still uses the current Open SWE Sol reviewer;
-- no automatic fallback to ACP until the attempt ledger and failure classifier are present.
+1. independently verifies the source revision, changed-file set and binary diff digest;
+2. runs the configured test command and rejects tests that mutate the workspace;
+3. stages exactly the verified files;
+4. creates the commit with the authoritative `ForgeFlow-Operation` trailer;
+5. disables Git hooks and uses a short-lived repository-scoped GitHub App token only in the push/API
+   processes;
+6. pushes a deterministic `forgeflow/external-*` branch and creates or adopts one PR;
+7. leaves normal CI and the existing Open SWE Sol reviewer as the independent acceptance gates.
 
-**Gate:** one real project task completes through external route and passes normal CI + independent
-review.
+`deploy/gcp-dev/run-external-agent-project-canary.py` is the only current project-level entrypoint.
+It explicitly enables one project for the duration of the canary and prepares a self-contained
+disposable clone so `.git` metadata does not escape the outer Agent container boundary. It does not
+change the long-running service's disabled route configuration.
+
+A real ForgeFlow self-canary completed the Agent + evidence + delivery path and opened PR #34 at
+exact head `6408ba2dacc53d28abb3689f225c179af477de80`; repository `verify` passed. The first independent
+Sol review correctly blocked that PR because its documentation described this delivery ownership
+before the Phase 3 runtime itself had landed on `main`. The rollout sequence is therefore: land this
+runtime first, then re-review the canary against the new base.
+
+Initial rollout rules remain:
+
+- route feature flag off by default;
+- project allowlist empty by default;
+- only explicit canary/manual selection;
+- only `IMPLEMENT`/`REPAIR`;
+- official review remains the current Open SWE Sol reviewer;
+- no automatic fallback to ACP until the attempt ledger and failure classifier exist.
+
+**Gate:** Agent execution, independent evidence, GitHub delivery, and CI are proven. Independent
+review must be repeated after this runtime lands on `main`; only then is Phase 3 accepted.
 
 ### Phase 4 — ordered role routing
 

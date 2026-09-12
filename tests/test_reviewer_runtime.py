@@ -131,6 +131,24 @@ async def test_read_review_returns_only_bounded_reviewer_state() -> None:
     assert snapshot.findings[0]["id"] == "f1"
 
 
+
+@pytest.mark.asyncio
+async def test_default_findings_reader_uses_runtime_client_metadata() -> None:
+    client = FakeClient()
+    client.threads.records["rt"] = {
+        "metadata": {
+            "current_reviewer_run_id": "rr",
+            "last_reviewed_sha": HEAD,
+            "findings": [{"id": "f1", "severity": "medium", "status": "open", "description": "x"}],
+        }
+    }
+    client.runs.records[("rt", "rr")] = {"status": "success"}
+    snapshot = await OpenSweReviewerRuntime(client).read_review(thread_id="rt", run_id="rr")
+    assert len(snapshot.findings) == 1
+    assert snapshot.findings[0]["id"] == "f1"
+    assert snapshot.findings[0]["severity"] == "medium"
+    assert snapshot.findings[0]["status"] == "open"
+
 def test_exact_head_reviewer_snapshot_normalizes_structured_findings() -> None:
     snapshot = ReviewerSnapshot(
         thread_id="rt",

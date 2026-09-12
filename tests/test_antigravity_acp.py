@@ -133,6 +133,11 @@ def test_deployment_configures_antigravity_acp_but_keeps_it_disabled() -> None:
     assert (
         'FORGEFLOW_ANTIGRAVITY_ACP_ENABLED="${FORGEFLOW_ANTIGRAVITY_ACP_ENABLED:-false}"' in start
     )
+    assert 'FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS="${FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS:-}"' in start
+    assert (
+        'FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT="${FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT:-$HOME/.local/share/forgeflow-policy/external-agent-workspaces}"'
+        in start
+    )
     assert 'FORGEFLOW_ANTIGRAVITY_BIN="${FORGEFLOW_ANTIGRAVITY_BIN:-$HOME/.local/bin/agy}"' in start
     assert (
         'FORGEFLOW_ANTIGRAVITY_MODEL="${FORGEFLOW_ANTIGRAVITY_MODEL:-gemini-3.8-flash-high}"'
