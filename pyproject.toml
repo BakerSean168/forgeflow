@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14,<3.15"
 license = { text = "MIT" }
 dependencies = [
+  "agent-client-protocol==0.12.1",
   "open-swe-agent @ git+https://github.com/langchain-ai/open-swe.git@0ff86e22a94cc84e32883fcb1beee568560d4140",
 ]
 
