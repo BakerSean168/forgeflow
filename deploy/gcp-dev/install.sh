@@ -8,6 +8,7 @@ unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 port="${FORGEFLOW_POLICY_PORT:-58810}"
 broker_port="${OPEN_SWE_CODEX_BROKER_PORT:-58811}"
 projects_source="${FORGEFLOW_POLICY_PROJECTS_SOURCE:-}"
+routes_source="${FORGEFLOW_POLICY_ROUTES_SOURCE:-}"
 
 for tool in git openssl systemctl curl python3 docker sudo; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }
@@ -50,8 +51,18 @@ elif [[ ! -f "$config_dir/projects.json" ]]; then
 fi
 python3 -m json.tool "$config_dir/projects.json" >/dev/null
 
+if [[ -n "$routes_source" ]]; then
+  [[ -r "$routes_source" ]] || { echo "routes source is not readable: $routes_source" >&2; exit 2; }
+  python3 -m json.tool "$routes_source" >/dev/null
+  install -m 0600 "$routes_source" "$config_dir/routes.json"
+elif [[ ! -f "$config_dir/routes.json" ]]; then
+  install -m 0600 "$root/deploy/gcp-dev/routes.default.json" "$config_dir/routes.json"
+fi
+python3 -m json.tool "$config_dir/routes.json" >/dev/null
+
 cd "$root"
 "$HOME/.local/bin/uv" sync --locked --python 3.14
+"$HOME/.local/bin/uv" run python -m forgeflow.routing validate "$config_dir/routes.json" >/dev/null
 "$HOME/.local/bin/uv" run pytest -q
 "$HOME/.local/bin/uv" run ruff check forgeflow openswe_ext tests
 "$root/deploy/gcp-dev/setup-docker-sandbox.sh"
