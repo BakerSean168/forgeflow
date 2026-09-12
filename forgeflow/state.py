@@ -47,6 +47,8 @@ class ForgeFlowState(TypedDict, total=False):
     repo_name: str
     base_ref: str
     workspace_path: str | None
+    implementation_route_id: str
+    implementation_runtime: Literal["OPEN_SWE", "EXTERNAL_ACP"]
     implementation_thread_id: str
     implementation_run_id: str | None
     implementation_operation_key: str | None

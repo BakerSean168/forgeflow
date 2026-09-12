@@ -27,3 +27,16 @@ def test_route_registry_and_attempt_ledger_are_deployed_fail_closed() -> None:
     assert '"id": "openswe-current"' in default_routes
     assert "AttemptLedger" in canary
     assert "classify_failure_code" in canary
+
+
+def test_external_agent_graph_is_registered_without_becoming_an_openswe_graph_alias() -> None:
+    import json
+
+    root = DEPLOY.parents[1]
+    config = json.loads((root / "langgraph.json").read_text(encoding="utf-8"))
+    assert config["graphs"]["external_agent"] == (
+        "openswe_ext.external_agent_graph:get_external_agent_graph"
+    )
+    installer = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    assert '"external_agent"' in installer
+    assert "$state_dir/external-agent-workspaces" in installer

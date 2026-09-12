@@ -48,7 +48,7 @@ replacement_preflight() {
     "http://127.0.0.1:$port/assistants/search" -d '{"limit":20}')"
   ASSISTANTS_JSON="$assistants" python3 - <<'PY'
 import json, os
-required={"agent","reviewer","analyzer","chat","scheduler","forgeflow"}
+required={"agent","reviewer","analyzer","chat","scheduler","external_agent","forgeflow"}
 actual={item.get("graph_id") for item in json.loads(os.environ["ASSISTANTS_JSON"])}
 missing=required-actual
 if missing:

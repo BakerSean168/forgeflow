@@ -8,6 +8,7 @@
     "analyzer": "openswe_ext.graphs:analyzer_graph",
     "chat": "openswe_ext.graphs:chat_graph",
     "scheduler": "openswe_ext.graphs:scheduler_graph",
+    "external_agent": "openswe_ext.external_agent_graph:get_external_agent_graph",
     "forgeflow": "forgeflow.graph:get_forgeflow_graph"
   },
   "dependencies": [

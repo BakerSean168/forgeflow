@@ -6,7 +6,7 @@ from forgeflow.adapters.github import PullRequestEvidence
 from forgeflow.adapters.openswe import GRAPH_ENTRIES, implementation_config, reviewer_config
 
 REPO = Path(__file__).resolve().parents[1]
-EXPECTED_GRAPHS = {"agent", "reviewer", "analyzer", "chat", "scheduler", "forgeflow"}
+EXPECTED_GRAPHS = {"agent", "reviewer", "analyzer", "chat", "scheduler", "external_agent", "forgeflow"}
 
 
 def _resolve(spec: str):
@@ -23,7 +23,7 @@ def test_one_langgraph_deployment_exposes_upstream_and_policy_graphs() -> None:
 
 
 def test_open_swe_graph_imports_are_centralized() -> None:
-    assert set(GRAPH_ENTRIES) == EXPECTED_GRAPHS - {"forgeflow"}
+    assert set(GRAPH_ENTRIES) == EXPECTED_GRAPHS - {"external_agent", "forgeflow"}
     for path in (REPO / "forgeflow").rglob("*.py"):
         if path.name == "openswe.py":
             continue

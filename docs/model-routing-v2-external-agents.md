@@ -376,8 +376,15 @@ until Phase 4 adds auditable ordered routing and attempt accounting.
 
 The ordered-routing foundation is now implemented: a validated role/priority `RouteRegistry`, a
 private append-only `AttemptLedger`, and deployed defaults that still select the current Open SWE
-chain while Antigravity remains scheduler-disabled. Automatic fallback is not enabled yet; this
-canary validates attempt accounting.
+chain while Antigravity remains scheduler-disabled. New policy runs now snapshot the selected
+`implementation_route_id` and runtime before child-thread creation. An `EXTERNAL_ACP` initial
+implementation is executed as its own durable `external_agent` LangGraph child graph, which returns a
+normalized PR reference and then rejoins the same authoritative GitHub CI/review path used by Open
+SWE. Historical in-flight states without routing fields are migrated to `openswe-current / OPEN_SWE`.
+
+Automatic route fallback and external-agent same-PR repair are **not** enabled yet. If an explicitly
+selected external implementation reaches a repair state, policy fails closed instead of silently
+switching execution ownership.
 
 The first safe production shape is conservative:
 
