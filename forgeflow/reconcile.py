@@ -91,6 +91,8 @@ class PolicyServices(Protocol):
 
     def automatic_route_fallback_enabled(self) -> bool: ...
 
+    def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str: ...
+
     def ensure_openswe_attempt_started(
         self,
         *,
@@ -156,6 +158,10 @@ class PolicyServices(Protocol):
     async def read_child_run(
         self, *, thread_id: str, run_id: str, route_id: str, runtime: str
     ) -> ChildRunSnapshot: ...
+
+    async def cancel_child_run(
+        self, *, thread_id: str, run_id: str, route_id: str, runtime: str
+    ) -> None: ...
 
     async def read_implementation_thread(
         self, thread_id: str, *, route_id: str, runtime: str
@@ -255,6 +261,18 @@ class DefaultPolicyServices:
         if value not in {"true", "false"}:
             raise ReconcileError("FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED must be true or false")
         return value == "true"
+
+    def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str:
+        self._openswe_route(route_id)
+        try:
+            status = self._attempt_ledger().operation_status(
+                route_id=route_id, operation_key=operation_key
+            )
+        except AttemptLedgerError as exc:
+            raise ReconcileError(str(exc)) from exc
+        if status is None:
+            return "MISSING"
+        return "FINISHED" if status.finished else "OPEN"
 
     def ensure_openswe_attempt_started(
         self,
@@ -444,6 +462,14 @@ class DefaultPolicyServices:
             return await self.external.read_run(thread_id=thread_id, run_id=run_id)
         raise ReconcileError(f"unsupported implementation runtime: {runtime}")
 
+    async def cancel_child_run(
+        self, *, thread_id: str, run_id: str, route_id: str, runtime: str
+    ) -> None:
+        del route_id
+        if runtime != "OPEN_SWE":
+            raise ReconcileError("external-agent cancellation is not enabled yet")
+        await self.client.runs.cancel(thread_id, run_id, wait=False, action="interrupt")
+
     async def read_implementation_thread(
         self, thread_id: str, *, route_id: str, runtime: str
     ) -> ThreadSnapshot:
@@ -500,17 +526,9 @@ async def reconcile_once(
         raise ReconcileError("policy thread_id is required")
 
     if state.get("cancel_requested") and state["status"] not in TERMINAL_STATUSES:
-        if state["status"] in {"IMPLEMENTING", "VERIFYING", "REPAIRING"}:
-            _finish_openswe_attempt_for_state(
-                state,
-                services,
-                outcome="BLOCKED",
-                failure_code="POLICY_CANCELLED",
-                failure_class="POLICY_DENIED",
-            )
-        result = cancel(state)
-        result["cancel_requested"] = False
-        return result
+        return await _reconcile_cancel_request(
+            state, policy_thread_id=policy_thread_id, services=services
+        )
 
     if state["status"] in TERMINAL_STATUSES:
         cron_id = state.get("reconcile_cron_id")
@@ -543,6 +561,67 @@ async def reconcile_once(
     if status == "READY":
         return await _reconcile_ready(state, services)
     raise ReconcileError(f"unsupported policy status: {status}")
+
+
+async def _reconcile_cancel_request(
+    state: ForgeFlowState, *, policy_thread_id: str, services: PolicyServices
+) -> ForgeFlowState:
+    accounting_state = state
+    runtime = state.get("implementation_runtime")
+    route_id = state.get("implementation_route_id")
+    thread_id = state.get("implementation_thread_id")
+    run_id = state.get("implementation_run_id")
+    operation_key = state.get("implementation_operation_key")
+    attempt_status = "MISSING"
+
+    if runtime == "OPEN_SWE" and route_id:
+        if state["status"] == "NEW" and thread_id:
+            operation_key = operation_key or _implementation_operation_key(policy_thread_id, state)
+            run_id = await services.find_child_run(
+                thread_id=thread_id,
+                operation_key=operation_key,
+                route_id=route_id,
+                runtime=runtime,
+            )
+        if operation_key:
+            attempt_status = services.openswe_attempt_status(
+                route_id=route_id, operation_key=operation_key
+            )
+        if operation_key and (run_id is not None or attempt_status != "MISSING"):
+            accounting_state = deepcopy(state)
+            accounting_state["implementation_operation_key"] = operation_key
+            accounting_state["implementation_run_id"] = run_id
+
+    if (
+        accounting_state.get("implementation_runtime") == "OPEN_SWE"
+        and accounting_state.get("implementation_operation_key")
+    ):
+        if thread_id and run_id:
+            snapshot = await services.read_child_run(
+                thread_id=thread_id,
+                run_id=run_id,
+                route_id=_required(accounting_state, "implementation_route_id"),
+                runtime="OPEN_SWE",
+            )
+            if snapshot.status in _PENDING_RUN_STATUSES:
+                await services.cancel_child_run(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    route_id=_required(accounting_state, "implementation_route_id"),
+                    runtime="OPEN_SWE",
+                )
+        if attempt_status != "FINISHED":
+            _finish_openswe_attempt_for_state(
+                accounting_state,
+                services,
+                outcome="BLOCKED",
+                failure_code="POLICY_CANCELLED",
+                failure_class="POLICY_DENIED",
+            )
+
+    result = cancel(state)
+    result["cancel_requested"] = False
+    return result
 
 
 async def _reconcile_new(

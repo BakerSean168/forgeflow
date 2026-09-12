@@ -232,3 +232,33 @@ def test_committed_corrupt_row_remains_fail_closed(tmp_path: Path) -> None:
             target="current-model-policy",
             operation_key="op:next",
         )
+
+
+def test_operation_status_is_non_mutating(tmp_path: Path) -> None:
+    path = tmp_path / "attempt-ledger.jsonl"
+    ledger = AttemptLedger(path)
+    assert ledger.operation_status(route_id="openswe-current", operation_key="op:missing") is None
+    assert path.read_text(encoding="utf-8") == ""
+
+    started = ledger.ensure_started(
+        role="IMPLEMENT",
+        route_id="openswe-current",
+        priority=10,
+        runtime="OPEN_SWE",
+        target="current-model-policy",
+        operation_key="op:status",
+    )
+    current = ledger.operation_status(route_id="openswe-current", operation_key="op:status")
+    assert current is not None and current.finished is False
+    assert current.handle.attempt_id == started.handle.attempt_id
+
+    ledger.finish_operation(
+        route_id="openswe-current",
+        operation_key="op:status",
+        outcome="BLOCKED",
+        failure_class="POLICY_DENIED",
+        fallback_reason="POLICY_CANCELLED",
+    )
+    finished = ledger.operation_status(route_id="openswe-current", operation_key="op:status")
+    assert finished is not None and finished.finished is True
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 2

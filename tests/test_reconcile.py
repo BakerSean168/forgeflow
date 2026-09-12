@@ -85,6 +85,12 @@ class FakeServices:
     def automatic_route_fallback_enabled(self) -> bool:
         return self.route_fallback_enabled
 
+    def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str:
+        value = self.attempt_started.get((route_id, operation_key))
+        if value is None:
+            return "MISSING"
+        return "FINISHED" if value else "OPEN"
+
     def ensure_openswe_attempt_started(
         self,
         *,
@@ -212,6 +218,13 @@ class FakeServices:
             failure_code=self.child_failure_code.get(run_id),
             failure_class=self.child_failure_class.get(run_id),
         )
+
+    async def cancel_child_run(
+        self, *, thread_id: str, run_id: str, route_id: str, runtime: str
+    ) -> None:
+        del thread_id, route_id, runtime
+        self.actions.append(f"cancel_child:{run_id}")
+        self.child_status[run_id] = "interrupted"
 
     async def read_implementation_thread(
         self, thread_id: str, *, route_id: str, runtime: str
@@ -1216,6 +1229,7 @@ async def test_cancel_closes_active_openswe_attempt_before_terminal_state(status
     services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
     operation_key = f"active:{status.lower()}"
     services.attempt_started[("openswe-current", operation_key)] = False
+    services.child_status["run-active"] = "success" if status == "VERIFYING" else "running"
     state = _base_state(status)
     state.update(
         implementation_route_id="openswe-current",
@@ -1238,6 +1252,10 @@ async def test_cancel_closes_active_openswe_attempt_before_terminal_state(status
     assert finished["failure_code"] == "POLICY_CANCELLED"
     assert finished["failure_class"] == "POLICY_DENIED"
     assert finished["source_revision"] == (HEAD1 if status == "REPAIRING" else None)
+    if status == "VERIFYING":
+        assert "cancel_child:run-active" not in services.actions
+    else:
+        assert "cancel_child:run-active" in services.actions
 
 
 @pytest.mark.asyncio
@@ -1259,3 +1277,116 @@ async def test_cancel_after_attempt_success_does_not_rewrite_finished_accounting
 
     assert result["status"] == "CANCELLED"
     assert services.attempt_finish_calls == []
+
+@pytest.mark.asyncio
+async def test_cancel_recovers_child_dispatched_before_new_state_checkpoint() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    services.crash_child_once = True
+    state = _base_state("NEW")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+    )
+
+    with pytest.raises(SimulatedCrash):
+        await reconcile_once(state, policy_thread_id="cancel-crash", services=services)
+    operation_key = "implementation:cancel-crash:retry:0"
+    run_id = services.child_operations[operation_key]
+    assert services.attempt_started[("openswe-current", operation_key)] is False
+    assert services.child_status[run_id] == "running"
+
+    cancelled_input = dict(state)
+    cancelled_input["cancel_requested"] = True
+    cancelled = await reconcile_once(
+        cancelled_input, policy_thread_id="cancel-crash", services=services
+    )
+
+    assert cancelled["status"] == "CANCELLED"
+    assert f"cancel_child:{run_id}" in services.actions
+    assert services.child_status[run_id] == "interrupted"
+    assert services.attempt_started[("openswe-current", operation_key)] is True
+    assert services.attempt_finish_calls[-1]["operation_key"] == operation_key
+    assert services.attempt_finish_calls[-1]["outcome"] == "BLOCKED"
+    assert services.attempt_finish_calls[-1]["failure_code"] == "POLICY_CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_cancel_closes_start_written_before_child_creation_without_inventing_child() -> None:
+    class CrashBeforeChildServices(FakeServices):
+        async def dispatch_implementation(self, **kwargs):
+            raise SimulatedCrash("crashed before child run creation")
+
+    services = CrashBeforeChildServices(
+        cron_id="cron-1", implementation_thread="implementation-thread"
+    )
+    state = _base_state("NEW")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+    )
+
+    with pytest.raises(SimulatedCrash):
+        await reconcile_once(state, policy_thread_id="cancel-prechild", services=services)
+    operation_key = "implementation:cancel-prechild:retry:0"
+    assert services.attempt_started[("openswe-current", operation_key)] is False
+    assert operation_key not in services.child_operations
+
+    cancelled_input = dict(state)
+    cancelled_input["cancel_requested"] = True
+    cancelled = await reconcile_once(
+        cancelled_input, policy_thread_id="cancel-prechild", services=services
+    )
+
+    assert cancelled["status"] == "CANCELLED"
+    assert not any(action.startswith("cancel_child:") for action in services.actions)
+    assert services.attempt_started[("openswe-current", operation_key)] is True
+    assert services.attempt_finish_calls[-1]["outcome"] == "BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_cancel_new_before_any_dispatch_does_not_create_attempt() -> None:
+    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    state = _base_state("NEW")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        cancel_requested=True,
+    )
+
+    result = await reconcile_once(state, policy_thread_id="cancel-clean-new", services=services)
+
+    assert result["status"] == "CANCELLED"
+    assert services.attempt_start_calls == []
+    assert services.attempt_finish_calls == []
+    assert services.child_operations == {}
+
+@pytest.mark.asyncio
+async def test_default_services_cancel_openswe_child_uses_langgraph_interrupt() -> None:
+    calls = []
+
+    class Runs:
+        async def cancel(self, thread_id, run_id, *, wait, action):
+            calls.append((thread_id, run_id, wait, action))
+
+    class Client:
+        runs = Runs()
+
+    services = DefaultPolicyServices(client=Client())
+    await services.cancel_child_run(
+        thread_id="thread",
+        run_id="run",
+        route_id="openswe-current",
+        runtime="OPEN_SWE",
+    )
+    assert calls == [("thread", "run", False, "interrupt")]
+
+    with pytest.raises(Exception, match="external-agent cancellation is not enabled"):
+        await services.cancel_child_run(
+            thread_id="thread",
+            run_id="run",
+            route_id="external",
+            runtime="EXTERNAL_ACP",
+        )

@@ -47,6 +47,25 @@ class AttemptLedger:
     def path(self) -> Path:
         return self._path
 
+    def operation_status(self, *, route_id: str, operation_key: str) -> AttemptStatus | None:
+        """Read the unique attempt for an operation without creating ledger state."""
+        with self._locked_file() as file:
+            rows = _read_rows(file)
+            starts = _matching_starts(rows, route_id=route_id, operation_key=operation_key)
+            if not starts:
+                return None
+            if len(starts) > 1:
+                raise AttemptLedgerError("ATTEMPT_LEDGER_DUPLICATE_OPERATION")
+            handle = _handle_from_start(starts[0])
+            finishes = [
+                row
+                for row in rows
+                if row.get("event") == "FINISHED" and row.get("attempt_id") == handle.attempt_id
+            ]
+            if len(finishes) > 1:
+                raise AttemptLedgerError("ATTEMPT_LEDGER_DUPLICATE_FINISH")
+            return AttemptStatus(handle=handle, finished=bool(finishes))
+
     def start(
         self,
         *,
