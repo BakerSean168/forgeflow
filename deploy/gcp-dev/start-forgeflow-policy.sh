@@ -11,10 +11,11 @@ auth_file="$config_dir/local-auth.secret"
 broker_secret="$state_dir/codex-broker.secret"
 projects_file="$config_dir/projects.json"
 github_env="$config_dir/github-app.env"
+litellm_glm53_key="$config_dir/litellm-glm53.key"
 langgraph_state_dir="$state_dir/langgraph"
 langgraph_root_link="$root/.langgraph_api"
 
-for required in "$auth_file" "$broker_secret" "$projects_file"; do
+for required in "$auth_file" "$broker_secret" "$projects_file" "$litellm_glm53_key"; do
   [[ -r "$required" ]] || { echo "missing required ForgeFlow Policy file: $required" >&2; exit 2; }
 done
 expected_langgraph_state="$(readlink -f "$langgraph_state_dir" 2>/dev/null || true)"
@@ -35,7 +36,13 @@ export OPEN_SWE_OPENAI_OAUTH_BROKER_TOKEN="$(<"$broker_secret")"
 # boundary is the Open SWE Docker provider; upstream remote providers remain
 # available only when explicitly configured in the service environment.
 export LANGSMITH_TRACING="${LANGSMITH_TRACING:-false}"
-export LLM_FALLBACK_MODEL_ID="${LLM_FALLBACK_MODEL_ID:-openai:gpt-5.6-sol}"
+# ForgeFlow implementation/repair uses the Open SWE-supported Fireworks GLM 5.3
+# identity, but points that provider at the private Tailnet LiteLLM gateway.
+# The scoped virtual key can call only the GLM alias; the upstream provider key
+# remains on Oracle2. Role-specific fallback is installed by openswe_ext.model_policy.
+export FIREWORKS_API_BASE="${FORGEFLOW_LITELLM_BASE_URL:-https://oracle.taile92a8e.ts.net:10446}"
+export FIREWORKS_API_KEY="$(<"$litellm_glm53_key")"
+unset LLM_FALLBACK_MODEL_ID
 export SANDBOX_TYPE="${SANDBOX_TYPE:-docker}"
 
 # Full official Reviewer requires a separate Open SWE GitHub App. Loading this

@@ -16,7 +16,7 @@ The current lifecycle is:
 
 ```text
 Objective
-  -> Open SWE implementation (Luna xhigh)
+  -> Open SWE implementation (GLM 5.3 max; Luna xhigh fallback)
   -> real PR/head evidence
   -> exact-head CI
   -> independent Open SWE review (Sol medium)
@@ -41,7 +41,7 @@ sandboxes supplied through `openswe_ext`.
 
 The real ForgeFlow policy acceptance on PR #28 reached `READY` after a controlled read-only-rootfs
 regression at `7115c08` passed CI, the Official Reviewer raised a blocking high finding, and the
-same implementation thread performed Luna xhigh repair `94ddd70`. Exact-head CI and re-review then
+same implementation thread performed GLM 5.3 max repair with Luna xhigh fallback available `94ddd70`. Exact-head CI and re-review then
 resolved the blocker with `repair_round=1`. Digital Biome PR #59 remains separate corroborating
 evidence for the underlying Open SWE review → repair → re-review loop.
 

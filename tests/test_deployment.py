@@ -142,6 +142,7 @@ def test_start_script_accepts_canonical_equivalent_langgraph_state_path(tmp_path
     uv.parent.mkdir(parents=True)
     (config / "local-auth.secret").write_text("auth", encoding="utf-8")
     (config / "projects.json").write_text("[]\n", encoding="utf-8")
+    (config / "litellm-glm53.key").write_text("scoped-key\n", encoding="utf-8")
     (state / "codex-broker.secret").write_text("broker", encoding="utf-8")
     uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     uv.chmod(0o700)

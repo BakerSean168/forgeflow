@@ -34,8 +34,8 @@ def test_open_swe_graph_imports_are_centralized() -> None:
 
 def test_default_model_policy_uses_luna_for_build_and_sol_for_review() -> None:
     impl = implementation_config(thread_id="thread-1", repo_owner="o", repo_name="r")
-    assert impl["agent_model_id"] == "openai:gpt-5.6-luna"
-    assert impl["agent_effort"] == "xhigh"
+    assert impl["agent_model_id"] == "fireworks:accounts/fireworks/models/glm-5p3"
+    assert impl["agent_effort"] == "max"
     assert impl["draft_prs"] is True
 
     review = reviewer_config(reviewer_thread_id="review-1")

@@ -46,14 +46,14 @@ def test_upstream_run_config_still_accepts_policy_model_and_desktop_fields() -> 
             "thread_id": "thread",
             "source": "desktop",
             "local_project_path": "/tmp/worktree",
-            "agent_model_id": "openai:gpt-5.6-luna",
+            "agent_model_id": "fireworks:accounts/fireworks/models/glm-5p3",
             "agent_effort": "xhigh",
             "reviewer_model_id": "openai:gpt-5.6-sol",
             "reviewer_reasoning_effort": "medium",
         }
     )
     assert parsed.local_project_path == "/tmp/worktree"
-    assert parsed.agent_model_id == "openai:gpt-5.6-luna"
+    assert parsed.agent_model_id == "fireworks:accounts/fireworks/models/glm-5p3"
     assert parsed.reviewer_model_id == "openai:gpt-5.6-sol"
 
 

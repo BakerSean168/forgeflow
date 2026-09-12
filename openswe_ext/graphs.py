@@ -5,6 +5,7 @@ from __future__ import annotations
 from agent.sandboxes.providers.registry import SANDBOX_FACTORIES
 
 from openswe_ext.github_auth import install_forgeflow_github_auth
+from openswe_ext.model_policy import install_forgeflow_model_policy
 from openswe_ext.workflow_push_guard import install_workflow_push_guard_base_fix
 
 _DOCKER_FACTORY = ("openswe_ext.docker_sandbox", "create_docker_sandbox")
@@ -18,6 +19,7 @@ def register_runtime_extensions() -> None:
 
 
 register_runtime_extensions()
+install_forgeflow_model_policy()
 install_forgeflow_github_auth()
 install_workflow_push_guard_base_fix()
 
