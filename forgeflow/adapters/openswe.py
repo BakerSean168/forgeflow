@@ -34,7 +34,7 @@ from agent.graphs.analyzer import traced_analyzer
 from agent.graphs.chat import traced_chat_agent
 from agent.graphs.reviewer import traced_reviewer_agent
 from agent.graphs.scheduler import get_scheduler
-from agent.review.findings import list_findings
+from agent.review.findings import coerce_findings, list_findings
 from agent.run_config import RunConfig
 from agent.slack.client import GitHubPrRef, parse_github_pr_url
 from agent.thread_ids import reviewer_thread_id
@@ -313,11 +313,17 @@ class OpenSweReviewerRuntime:
         client: Any,
         *,
         dispatch: DispatchFn = dispatch_agent_run,
-        findings_reader: FindingsReader = list_findings,
+        findings_reader: FindingsReader | None = None,
     ) -> None:
         self._client = client
         self._dispatch = dispatch
-        self._findings_reader = findings_reader
+        self._findings_reader = findings_reader or self._read_findings_from_client
+
+    async def _read_findings_from_client(self, thread_id: str) -> list[dict[str, Any]]:
+        thread = await self._client.threads.get(thread_id)
+        metadata = thread.get("metadata") if isinstance(thread, Mapping) else None
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        return [dict(item) for item in coerce_findings(metadata.get("findings"))]
 
     async def find_current_review(
         self, *, pr_url: str, expected_head_sha: str, operation_key: str
