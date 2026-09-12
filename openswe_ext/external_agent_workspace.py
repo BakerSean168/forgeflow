@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -86,9 +87,34 @@ def prepare_external_workspace(
     return PreparedExternalWorkspace(path=placeholder, source_revision=revision)
 
 
-def cleanup_external_workspace(workspace: Path | None) -> None:
-    if workspace is not None and workspace.exists():
-        shutil.rmtree(workspace, ignore_errors=False)
+def cleanup_external_workspace(
+    workspace: Path | None,
+    *,
+    attempts: int = 6,
+    retry_delay_seconds: float = 0.05,
+) -> None:
+    """Remove a disposable checkout despite short-lived process/filesystem races.
+
+    External tools can still be reaping children when the ACP turn unwinds. A bounded
+    retry absorbs those transient races; persistent residue is surfaced as a named
+    policy failure instead of leaking a raw ``OSError`` out of the LangGraph node.
+    """
+    if workspace is None:
+        return
+    last_error: OSError | None = None
+    for index in range(max(1, attempts)):
+        if not workspace.exists():
+            return
+        try:
+            shutil.rmtree(workspace, ignore_errors=False)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+            if index + 1 < max(1, attempts):
+                time.sleep(retry_delay_seconds * (index + 1))
+    raise ExternalAgentWorkspaceError("EXTERNAL_AGENT_WORKSPACE_CLEANUP_FAILED") from last_error
 
 
 __all__ = [

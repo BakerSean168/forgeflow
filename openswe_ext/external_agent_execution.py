@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import stat
@@ -93,6 +94,22 @@ def _test(workspace: Path, command: tuple[str, ...]) -> tuple[int, str]:
     return result.returncode, hashlib.sha256(result.stdout).hexdigest()
 
 
+async def _cancellation_safe_to_thread(func, /, *args, **kwargs):
+    """Finish one synchronous evidence operation before propagating cancellation.
+
+    Git, hashing, filesystem probing, and project tests are blocking operations. Running
+    them on the LangGraph event loop triggers Blockbuster and, more importantly, can
+    race workspace cleanup if a task is cancelled while a worker thread is still using
+    the checkout.
+    """
+    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        await worker
+        raise
+
+
 class AcpWorkspaceExecutionAdapter:
     """Execute one external-agent turn without granting it delivery credentials."""
 
@@ -112,15 +129,24 @@ class AcpWorkspaceExecutionAdapter:
     async def execute(
         self, request: ExternalAgentExecutionRequest
     ) -> ExternalAgentExecutionEvidence:
-        workspace = self._gate.validate(request)
-        if _git(workspace, "status", "--porcelain").stdout.strip():
+        workspace = await _cancellation_safe_to_thread(self._gate.validate, request)
+        status = await _cancellation_safe_to_thread(_git, workspace, "status", "--porcelain")
+        if status.stdout.strip():
             raise ExternalAgentExecutionError("EXTERNAL_AGENT_WORKSPACE_NOT_CLEAN")
-        source_revision = _git(workspace, "rev-parse", "HEAD").stdout.decode().strip()
+        source_revision = (
+            await _cancellation_safe_to_thread(_git, workspace, "rev-parse", "HEAD")
+        ).stdout.decode().strip()
         branch_before = (
-            _git(workspace, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
-            .stdout.decode()
-            .strip()
-        )
+            await _cancellation_safe_to_thread(
+                _git,
+                workspace,
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "HEAD",
+                check=False,
+            )
+        ).stdout.decode().strip()
 
         prompt = (
             f"{request.objective.strip()}\n\n"
@@ -138,26 +164,38 @@ class AcpWorkspaceExecutionAdapter:
         if result.stop_reason != "end_turn":
             raise ExternalAgentExecutionError(f"EXTERNAL_AGENT_STOP_{result.stop_reason.upper()}")
 
-        head_after = _git(workspace, "rev-parse", "HEAD").stdout.decode().strip()
+        head_after = (
+            await _cancellation_safe_to_thread(_git, workspace, "rev-parse", "HEAD")
+        ).stdout.decode().strip()
         if head_after != source_revision:
             raise ExternalAgentExecutionError("EXTERNAL_AGENT_COMMIT_NOT_ALLOWED")
         branch_after = (
-            _git(workspace, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
-            .stdout.decode()
-            .strip()
-        )
+            await _cancellation_safe_to_thread(
+                _git,
+                workspace,
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "HEAD",
+                check=False,
+            )
+        ).stdout.decode().strip()
         if branch_after != branch_before:
             raise ExternalAgentExecutionError("EXTERNAL_AGENT_BRANCH_CHANGE_NOT_ALLOWED")
 
-        paths = changed_files(workspace)
+        paths = await _cancellation_safe_to_thread(changed_files, workspace)
         if not paths:
             raise ExternalAgentExecutionError("EXTERNAL_AGENT_NO_CHANGES")
-        diff_sha256 = working_tree_digest(workspace, paths)
-        test_exit_code, test_output_sha256 = _test(workspace, request.test_command)
+        diff_sha256 = await _cancellation_safe_to_thread(working_tree_digest, workspace, paths)
+        test_exit_code, test_output_sha256 = await _cancellation_safe_to_thread(
+            _test, workspace, request.test_command
+        )
         if test_exit_code != 0:
             raise ExternalAgentExecutionError(f"EXTERNAL_AGENT_TEST_FAILED:{test_exit_code}")
-        post_test_paths = changed_files(workspace)
-        post_test_digest = working_tree_digest(workspace, post_test_paths)
+        post_test_paths = await _cancellation_safe_to_thread(changed_files, workspace)
+        post_test_digest = await _cancellation_safe_to_thread(
+            working_tree_digest, workspace, post_test_paths
+        )
         if post_test_paths != paths or post_test_digest != diff_sha256:
             raise ExternalAgentExecutionError("EXTERNAL_AGENT_TEST_MUTATED_WORKSPACE")
 

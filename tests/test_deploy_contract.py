@@ -48,3 +48,10 @@ def test_automatic_route_fallback_is_disabled_by_default() -> None:
         'FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED="${FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED:-false}"'
         in start
     )
+
+
+def test_example_project_manifest_documents_external_agent_validation_command() -> None:
+    import json
+
+    payload = json.loads(Path("deploy/gcp-dev/projects.example.json").read_text(encoding="utf-8"))
+    assert payload[0]["external_agent_test_command"] == ["uv", "run", "pytest", "-q"]
