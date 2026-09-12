@@ -290,7 +290,7 @@ def review_decision(snapshot, *, expected_head_sha: str):
         raise EvidenceViolation("official reviewer evidence is stale for the current PR head")
 
     normalized = []
-    for item in snapshot.findings:
+    for item in _review_findings_for_head(snapshot.findings, expected_head_sha=expected_head_sha):
         finding_id = item.get("id")
         severity = item.get("severity")
         status = item.get("status", "open")
@@ -320,7 +320,7 @@ def blocking_repair_findings(snapshot, *, expected_head_sha: str):
     if not isinstance(snapshot, ReviewerSnapshot):
         raise TypeError("snapshot must be ReviewerSnapshot")
     findings = []
-    for item in snapshot.findings:
+    for item in _review_findings_for_head(snapshot.findings, expected_head_sha=expected_head_sha):
         if item.get("status", "open") != "open" or item.get("severity") not in {
             "critical",
             "high",
@@ -341,6 +341,31 @@ def blocking_repair_findings(snapshot, *, expected_head_sha: str):
             )
         )
     return tuple(findings)
+
+
+def _review_findings_for_head(findings, *, expected_head_sha: str):
+    """Return only findings attributable to one exact reviewed head.
+
+    Open SWE keeps historical findings on the durable reviewer thread. A re-review can
+    complete for a new head while an older still-open finding remains in thread metadata
+    with ``last_confirmed_sha`` pointing at the previous revision. That finding is
+    historical evidence, not a blocker for the newly reviewed head.
+
+    Older upstream payloads may omit ``last_confirmed_sha`` entirely. Preserve the
+    previous fail-closed behavior for those entries rather than silently dropping
+    evidence whose revision cannot be attributed.
+    """
+
+    current = []
+    for item in findings:
+        confirmed = item.get("last_confirmed_sha")
+        if confirmed is not None:
+            if not isinstance(confirmed, str) or not confirmed:
+                raise EvidenceViolation("review finding has invalid last_confirmed_sha")
+            if confirmed != expected_head_sha:
+                continue
+        current.append(item)
+    return tuple(current)
 
 
 def _bounded_string(value: Any, *, fallback: str, limit: int) -> str:

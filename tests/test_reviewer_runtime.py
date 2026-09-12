@@ -8,7 +8,7 @@ from forgeflow.adapters.openswe import (
     ReviewerSupersededError,
     reviewer_thread_id,
 )
-from forgeflow.evidence import EvidenceViolation, review_decision
+from forgeflow.evidence import EvidenceViolation, blocking_repair_findings, review_decision
 
 PR = "https://github.com/o/r/pull/1"
 HEAD = "a" * 40
@@ -216,3 +216,76 @@ async def test_operation_run_does_not_overwrite_a_different_current_reviewer_run
         )
     assert exc.value.current_run_id == "external-current"
     assert client.threads.records[thread_id]["metadata"]["current_reviewer_run_id"] == "external-current"
+
+
+def test_explicitly_stale_open_findings_do_not_block_new_exact_head_review() -> None:
+    old_head = "b" * 40
+    snapshot = ReviewerSnapshot(
+        thread_id="rt",
+        run_id="rr",
+        run_status="success",
+        last_reviewed_sha=HEAD,
+        findings=(
+            {
+                "id": "old",
+                "severity": "medium",
+                "status": "open",
+                "last_confirmed_sha": old_head,
+                "title": "Historical finding",
+                "file": "docs/old.md",
+                "description": "This finding belonged to the prior head only.",
+            },
+        ),
+    )
+
+    decision = review_decision(snapshot, expected_head_sha=HEAD)
+    assert decision.findings == ()
+    assert blocking_repair_findings(snapshot, expected_head_sha=HEAD) == ()
+
+
+def test_current_head_and_legacy_findings_remain_actionable() -> None:
+    snapshot = ReviewerSnapshot(
+        thread_id="rt",
+        run_id="rr",
+        run_status="success",
+        last_reviewed_sha=HEAD,
+        findings=(
+            {
+                "id": "current",
+                "severity": "high",
+                "status": "open",
+                "last_confirmed_sha": HEAD,
+                "title": "Current finding",
+                "file": "src/current.py",
+                "description": "Still present on this exact head.",
+            },
+            {
+                "id": "legacy",
+                "severity": "low",
+                "status": "open",
+            },
+        ),
+    )
+
+    decision = review_decision(snapshot, expected_head_sha=HEAD)
+    assert [finding.id for finding in decision.findings] == ["current", "legacy"]
+
+
+def test_invalid_explicit_last_confirmed_sha_fails_closed() -> None:
+    snapshot = ReviewerSnapshot(
+        thread_id="rt",
+        run_id="rr",
+        run_status="success",
+        last_reviewed_sha=HEAD,
+        findings=(
+            {
+                "id": "f1",
+                "severity": "high",
+                "status": "open",
+                "last_confirmed_sha": 123,
+            },
+        ),
+    )
+
+    with pytest.raises(EvidenceViolation, match="last_confirmed_sha"):
+        review_decision(snapshot, expected_head_sha=HEAD)
