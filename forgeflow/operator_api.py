@@ -1,6 +1,6 @@
 """Small operator/Hermes facade mounted inside the ForgeFlow LangGraph web app.
 
-This is deliberately not a second control plane.  LangGraph threads remain the
+This is deliberately not a second control plane. LangGraph threads remain the
 single durable lifecycle state; this router only provides stable, bounded views
 and commands for Hermes and the human status dashboard.
 """
@@ -18,14 +18,32 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Query
 from langgraph_sdk import get_client
+from langgraph_sdk.errors import NotFoundError
 from pydantic import BaseModel, Field
 
-from forgeflow.routing import RouteConfigError, load_route_registry
+from forgeflow.routing import RouteConfigError, RouteDefinition, load_route_registry
+from openswe_ext.operator_projection import (
+    LAST_MODEL_ERROR_KEY,
+    implementation_profile,
+    model_view,
+    provider_for_model,
+    review_profile,
+)
 
 router = APIRouter(prefix="/forgeflow/api/v1", tags=["forgeflow-operator"])
 
 _ACTIVE_STATUSES = frozenset(
     {"NEW", "IMPLEMENTING", "VERIFYING", "WAITING_FOR_CI", "REVIEWING", "REPAIRING"}
+)
+_PROVIDER_FAILURE_CODES = frozenset(
+    {
+        "provider_rate_limited",
+        "provider_overloaded",
+        "provider_unavailable",
+        "provider_timeout",
+        "provider_quota_exhausted",
+        "model_unavailable",
+    }
 )
 _PROJECT_KEY_RE = re.compile(r"[^a-z0-9]+")
 
@@ -146,6 +164,16 @@ def _thread_project_key(thread: Mapping[str, Any], lookup: Mapping[str, str]) ->
     return None
 
 
+def _route_registry():
+    path_raw = os.environ.get("FORGEFLOW_ROUTE_CONFIG_FILE", "").strip()
+    if not path_raw:
+        return None
+    try:
+        return load_route_registry(Path(path_raw))
+    except RouteConfigError as exc:
+        raise HTTPException(status_code=503, detail="ForgeFlow route registry is invalid") from exc
+
+
 def _objective_view(thread: Mapping[str, Any], lookup: Mapping[str, str], *, full: bool = False) -> dict[str, Any]:
     values = thread.get("values")
     values = values if isinstance(values, Mapping) else {}
@@ -168,7 +196,16 @@ def _objective_view(thread: Mapping[str, Any], lookup: Mapping[str, str], *, ful
         "implementationRuntime": values.get("implementation_runtime"),
         "implementationThreadId": values.get("implementation_thread_id"),
         "implementationRunId": values.get("implementation_run_id"),
+        "implementationPhase": values.get("implementation_phase"),
+        "implementationFailedRouteIds": values.get("implementation_failed_route_ids", []),
+        "reviewerThreadId": values.get("reviewer_thread_id"),
+        "reviewerRunId": values.get("reviewer_run_id"),
+        "reviewerRetryCount": values.get("reviewer_retry_count", 0),
+        "runRetryCount": values.get("run_retry_count", 0),
         "repairRound": values.get("repair_round", 0),
+        "blockingFindingIds": values.get("blocking_finding_ids", []),
+        "waitStage": values.get("wait_stage"),
+        "waitCount": values.get("wait_count", 0),
         "lastFailureCode": values.get("last_failure_code"),
         "prUrl": values.get("pr_url"),
         "prNumber": values.get("pr_number"),
@@ -201,6 +238,101 @@ async def _assistant_id(client: Any) -> str:
 async def _search_threads(*, limit: int = 100) -> list[Mapping[str, Any]]:
     rows = await _client().threads.search(limit=min(max(limit, 1), 200), sort_by="updated_at", sort_order="desc")
     return [row for row in rows if isinstance(row, Mapping) and _is_forgeflow_thread(row)]
+
+
+def _matching_run(rows: Any, run_id: str | None) -> Mapping[str, Any] | None:
+    if not isinstance(rows, list) or not run_id:
+        return None
+    for row in rows:
+        if isinstance(row, Mapping) and row.get("run_id") == run_id:
+            return row
+    return None
+
+
+async def _run_observation(
+    client: Any, thread_id: Any, run_id: Any
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not (isinstance(thread_id, str) and thread_id and isinstance(run_id, str) and run_id):
+        return None, None
+    try:
+        thread = await client.threads.get(thread_id)
+    except NotFoundError:
+        return None, None
+    metadata = thread.get("metadata") if isinstance(thread, Mapping) else None
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    raw_error = metadata.get(LAST_MODEL_ERROR_KEY)
+    last_model_error = None
+    if isinstance(raw_error, Mapping) and raw_error.get("run_id") == run_id:
+        last_model_error = {
+            "code": raw_error.get("code"),
+            "errorType": raw_error.get("error_type"),
+        }
+    run = _matching_run(await client.runs.list(thread_id, limit=100), run_id)
+    run_view = (
+        {
+            "runId": run.get("run_id"),
+            "status": run.get("status"),
+            "createdAt": run.get("created_at"),
+            "updatedAt": run.get("updated_at"),
+        }
+        if run is not None
+        else None
+    )
+    return run_view, last_model_error
+
+
+async def _execution_snapshot(client: Any, objective: Mapping[str, Any]) -> dict[str, Any]:
+    route_id = objective.get("implementationRouteId")
+    runtime = objective.get("implementationRuntime")
+    route = None
+    registry = _route_registry()
+    if registry is not None and isinstance(route_id, str) and route_id:
+        try:
+            route = registry.get(route_id)
+        except KeyError:
+            route = None
+    implementation = implementation_profile(route, runtime if isinstance(runtime, str) else None)
+    review = review_profile()
+    implementation_run, implementation_error = await _run_observation(
+        client,
+        objective.get("implementationThreadId"),
+        objective.get("implementationRunId"),
+    )
+    review_run, review_error = await _run_observation(
+        client,
+        objective.get("reviewerThreadId"),
+        objective.get("reviewerRunId"),
+    )
+    reviewing = objective.get("status") == "REVIEWING"
+    active_profile = review if reviewing else implementation
+    active_run = review_run if reviewing else implementation_run
+    active_error = review_error if reviewing else implementation_error
+    fallback_triggered = bool(
+        active_profile
+        and active_profile.get("fallbackModel")
+        and active_error
+        and active_error.get("code") in _PROVIDER_FAILURE_CODES
+    )
+    return {
+        "routeId": route_id,
+        "runtime": runtime,
+        "routeTarget": route.target if route is not None else None,
+        "routeHealth": route.health if route is not None else None,
+        "implementation": implementation,
+        "review": review,
+        "activeProfile": active_profile,
+        "implementationRun": implementation_run,
+        "reviewRun": review_run,
+        "childRun": active_run,
+        "lastModelError": active_error,
+        "fallbackTriggered": fallback_triggered,
+    }
+
+
+async def _enrich_objective(client: Any, objective: dict[str, Any]) -> dict[str, Any]:
+    result = dict(objective)
+    result["execution"] = await _execution_snapshot(client, result)
+    return result
 
 
 def _compose_objective(body: ObjectiveCreate) -> str:
@@ -304,10 +436,11 @@ async def list_objectives(
 @router.get("/objectives/{thread_id}")
 async def get_objective(thread_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_operator_auth(authorization)
-    thread = await _client().threads.get(thread_id, include=["values"])
+    client = _client()
+    thread = await client.threads.get(thread_id, include=["values"])
     if not isinstance(thread, Mapping) or not _is_forgeflow_thread(thread):
         raise HTTPException(status_code=404, detail="ForgeFlow objective not found")
-    return _objective_view(thread, _project_lookup(_load_projects()), full=True)
+    return await _enrich_objective(client, _objective_view(thread, _project_lookup(_load_projects()), full=True))
 
 
 async def _command_objective(thread_id: str, *, cancel_requested: bool) -> dict[str, Any]:
@@ -343,28 +476,47 @@ async def cancel_objective(
     return await _command_objective(thread_id, cancel_requested=True)
 
 
+def _route_view(route: RouteDefinition, *, fallback_target: str | None = None) -> dict[str, Any]:
+    if route.role == "REASONING":
+        model = model_view(route.target, effort="medium")
+        profile = {
+            "agent": {"id": "open-swe-reviewer", "name": "Open SWE Reviewer", "harness": "Open SWE"},
+            "provider": provider_for_model(route.target),
+            "model": model,
+            "fallbackModel": model_view(fallback_target, effort="medium"),
+        }
+    else:
+        profile = implementation_profile(route, route.runtime) or {}
+    return {
+        "id": route.id,
+        "role": route.role,
+        "priority": route.priority,
+        "runtime": route.runtime,
+        "target": route.target,
+        "adapter": route.adapter,
+        "enabled": route.enabled,
+        "health": route.health,
+        "expiresAt": route.expires_at.isoformat() if route.expires_at else None,
+        "agent": profile.get("agent"),
+        "provider": profile.get("provider"),
+        "model": profile.get("model"),
+        "fallbackModel": profile.get("fallbackModel"),
+    }
+
+
 @router.get("/resources")
 async def list_resources(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_operator_auth(authorization)
-    path_raw = os.environ.get("FORGEFLOW_ROUTE_CONFIG_FILE", "").strip()
-    if not path_raw:
+    registry = _route_registry()
+    if registry is None:
         return {"routes": []}
-    try:
-        registry = load_route_registry(Path(path_raw))
-    except RouteConfigError as exc:
-        raise HTTPException(status_code=503, detail="ForgeFlow route registry is invalid") from exc
+    reasoning = list(registry.eligible("REASONING"))
+    next_reasoning: dict[str, str | None] = {}
+    for index, route in enumerate(reasoning):
+        next_reasoning[route.id] = reasoning[index + 1].target if index + 1 < len(reasoning) else None
     return {
         "routes": [
-            {
-                "id": route.id,
-                "role": route.role,
-                "priority": route.priority,
-                "runtime": route.runtime,
-                "target": route.target,
-                "enabled": route.enabled,
-                "health": route.health,
-                "expiresAt": route.expires_at.isoformat() if route.expires_at else None,
-            }
+            _route_view(route, fallback_target=next_reasoning.get(route.id))
             for route in registry.routes
         ]
     }
@@ -375,20 +527,33 @@ async def summary(authorization: str | None = Header(default=None)) -> dict[str,
     require_operator_auth(authorization)
     projects = _load_projects()
     lookup = _project_lookup(projects)
+    client = _client()
     latest: dict[str, dict[str, Any]] = {}
-    active_count = 0
+    active: list[dict[str, Any]] = []
     for thread in await _search_threads(limit=200):
         view = _objective_view(thread, lookup)
         key = view["projectKey"]
+        needs_enrichment = bool(view["active"] or (isinstance(key, str) and key not in latest))
+        enriched = await _enrich_objective(client, view) if needs_enrichment else view
         if view["active"]:
-            active_count += 1
+            active.append(enriched)
         if isinstance(key, str) and key not in latest:
-            latest[key] = view
+            latest[key] = enriched
     project_views = [dict(project, latestObjective=latest.get(project["projectKey"])) for project in projects]
-    routes = await list_resources(authorization)
+    resources = await list_resources(authorization)
+    active.sort(key=lambda row: str(row.get("updatedAt") or ""), reverse=True)
+    running_agents = sum(
+        1
+        for row in active
+        if isinstance(row.get("execution"), Mapping)
+        and isinstance(row["execution"].get("childRun"), Mapping)
+        and row["execution"]["childRun"].get("status") in {"pending", "running"}
+    )
     return {
         "runtime": {"status": "ONLINE", "kind": "policy-v1"},
-        "activeObjectiveCount": active_count,
+        "activeObjectiveCount": len(active),
+        "runningAgentCount": running_agents,
         "projects": project_views,
-        "routes": routes["routes"],
+        "activeObjectives": active,
+        "routes": resources["routes"],
     }

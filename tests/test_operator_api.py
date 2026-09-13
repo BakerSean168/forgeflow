@@ -42,12 +42,18 @@ class FakeRuns:
     def __init__(self, threads):
         self.threads = threads
         self.calls = []
+        self.rows: dict[str, list[dict]] = {}
 
     async def create(self, thread_id, assistant_id, **kwargs):
         self.calls.append((thread_id, assistant_id, kwargs))
         if kwargs.get("input"):
             self.threads.rows[thread_id]["values"].update(kwargs["input"])
-        return {"run_id": f"run-{len(self.calls)}"}
+        row = {"run_id": f"run-{len(self.calls)}", "status": "running", "created_at": "2026-09-13T00:00:00+00:00", "updated_at": "2026-09-13T00:00:00+00:00"}
+        self.rows.setdefault(thread_id, []).append(row)
+        return row
+
+    async def list(self, thread_id, **kwargs):
+        return self.rows.get(thread_id, [])
 
 
 class FakeClient:
@@ -119,3 +125,56 @@ def test_summary_surfaces_latest_project_state(manifest: Path, monkeypatch: pyte
     body = next(row for row in payload["projects"] if row["projectKey"] == "bodysense")
     assert body["latestObjective"]["status"] == "ESCALATED"
     assert body["latestObjective"]["lastFailureCode"] == "CHILD_RUN_ERROR"
+
+
+def test_summary_exposes_active_agent_provider_model_and_fallback(manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    routes = tmp_path / "routes.json"
+    routes.write_text(json.dumps({"version": 1, "routes": [
+        {"id": "openswe-current", "role": "IMPLEMENT", "priority": 10, "runtime": "OPEN_SWE", "target": "current-model-policy", "enabled": True, "health": "READY"},
+        {"id": "openswe-reviewer", "role": "REASONING", "priority": 10, "runtime": "OPEN_SWE", "target": "openai:gpt-5.6-sol", "enabled": True, "health": "READY"},
+        {"id": "openswe-reviewer-glm53", "role": "REASONING", "priority": 20, "runtime": "OPEN_SWE", "target": "fireworks:accounts/fireworks/models/glm-5p3", "enabled": True, "health": "READY"}
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    asyncio.run(client.threads.create(thread_id="body-active", graph_id="forgeflow", metadata={"project_key": "bodysense"}))
+    asyncio.run(client.threads.create(thread_id="child-1", graph_id="agent", metadata={}))
+    client.threads.rows["body-active"]["values"] = {
+        "repo_owner": "BakerSean168", "repo_name": "BodySense", "objective": "Finish Phase 02",
+        "status": "IMPLEMENTING", "implementation_route_id": "openswe-current",
+        "implementation_runtime": "OPEN_SWE", "implementation_thread_id": "child-1",
+        "implementation_run_id": "run-child"
+    }
+    client.runs.rows["child-1"] = [{"run_id": "run-child", "status": "running", "created_at": "2026-09-13T00:01:00+00:00", "updated_at": "2026-09-13T00:02:00+00:00"}]
+    client.threads.rows["child-1"]["metadata"][api.LAST_MODEL_ERROR_KEY] = {"run_id": "run-child", "code": "provider_quota_exhausted", "error_type": "FireworksPermissionDeniedError"}
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+    assert payload["activeObjectiveCount"] == 1
+    assert payload["runningAgentCount"] == 1
+    active = payload["activeObjectives"][0]
+    assert active["execution"]["implementation"]["agent"]["name"] == "Open SWE Agent"
+    assert active["execution"]["implementation"]["provider"]["name"] == "Private LiteLLM"
+    assert active["execution"]["implementation"]["model"]["name"] == "glm-5p3"
+    assert active["execution"]["implementation"]["fallbackModel"]["name"] == "gpt-5.6-luna"
+    assert active["execution"]["fallbackTriggered"] is True
+    assert active["execution"]["childRun"]["status"] == "running"
+
+
+def test_resources_expose_agent_provider_and_model_profiles(manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    routes = tmp_path / "routes.json"
+    routes.write_text(json.dumps({"version": 1, "routes": [
+        {"id": "openswe-current", "role": "IMPLEMENT", "priority": 10, "runtime": "OPEN_SWE", "target": "current-model-policy", "enabled": True, "health": "READY"},
+        {"id": "antigravity-account-primary", "role": "IMPLEMENT", "priority": 20, "runtime": "EXTERNAL_ACP", "adapter": "antigravity", "target": "google-account", "enabled": True, "health": "READY"},
+        {"id": "openswe-reviewer", "role": "REASONING", "priority": 10, "runtime": "OPEN_SWE", "target": "openai:gpt-5.6-sol", "enabled": True, "health": "READY"}
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    payload = asyncio.run(api.list_resources(authorization="Bearer secret"))
+    openswe = next(row for row in payload["routes"] if row["id"] == "openswe-current")
+    assert openswe["agent"]["name"] == "Open SWE Agent"
+    assert openswe["provider"]["name"] == "Private LiteLLM"
+    assert openswe["fallbackModel"]["provider"]["name"] == "ChatGPT OAuth"
+    antigravity = next(row for row in payload["routes"] if row["id"] == "antigravity-account-primary")
+    assert antigravity["agent"]["name"] == "Antigravity"
+    assert antigravity["provider"]["name"] == "Google Account"
+    reviewer = next(row for row in payload["routes"] if row["id"] == "openswe-reviewer")
+    assert reviewer["agent"]["name"] == "Open SWE Reviewer"
+    assert reviewer["model"]["name"] == "gpt-5.6-sol"
