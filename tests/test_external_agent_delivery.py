@@ -128,3 +128,93 @@ def test_delivery_refuses_workspace_drift(tmp_path: Path) -> None:
                 pr_body="x",
             )
         )
+
+
+def test_delivery_git_transaction_runs_off_event_loop(tmp_path: Path, monkeypatch) -> None:
+    import threading
+
+    import forgeflow.adapters.external_delivery as module
+
+    repo, request, evidence = _fixture(tmp_path)
+    caller_thread = threading.get_ident()
+    git_threads: list[int] = []
+    original_git = module._git
+
+    def recording_git(*args, **kwargs):
+        git_threads.append(threading.get_ident())
+        return original_git(*args, **kwargs)
+
+    async def token_provider(owner: str, repo_name: str) -> str:
+        del owner, repo_name
+        return "test-token"
+
+    def push(workspace: Path, owner: str, repo_name: str, branch: str, token: str) -> None:
+        del workspace, owner, repo_name, branch, token
+
+    async def pr_writer(owner, repo_name, branch, base_ref, title, body, token):
+        del owner, repo_name, title, body, token
+        head_sha = await asyncio.to_thread(_git, repo, "rev-parse", "HEAD")
+        return ExternalAgentPullRequestDelivery(
+            pr_url="https://github.com/o/r/pull/1",
+            pr_number=1,
+            branch=branch,
+            head_sha=head_sha,
+            base_ref=base_ref,
+        )
+
+    monkeypatch.setattr(module, "_git", recording_git)
+    delivery = GitHubExternalAgentDelivery(
+        token_provider=token_provider,
+        pr_writer=pr_writer,
+        push=push,
+    )
+    asyncio.run(
+        delivery.deliver(
+            request=request,
+            evidence=evidence,
+            base_ref="main",
+            commit_subject="test: threaded delivery",
+            pr_title="External delivery",
+            pr_body="Canary",
+        )
+    )
+    assert git_threads
+    assert all(thread_id != caller_thread for thread_id in git_threads)
+
+
+def test_delivery_cancellation_wins_over_worker_failure(tmp_path: Path, monkeypatch) -> None:
+    import threading
+
+    import forgeflow.adapters.external_delivery as module
+
+    _, request, evidence = _fixture(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def failing_prepare(*args):
+        del args
+        entered.set()
+        assert release.wait(timeout=5)
+        raise ExternalAgentDeliveryError("EXTERNAL_AGENT_GIT_COMMAND_FAILED")
+
+    monkeypatch.setattr(module, "_prepare_local_delivery", failing_prepare)
+    delivery = GitHubExternalAgentDelivery()
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            delivery.deliver(
+                request=request,
+                evidence=evidence,
+                base_ref="main",
+                commit_subject="test: cancel delivery",
+                pr_title="External delivery",
+                pr_body="Canary",
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())

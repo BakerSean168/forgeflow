@@ -120,6 +120,7 @@ class DefaultExternalAgentGraphServices:
         result: ExternalAgentGraphResult | None = None
         cancel_exc: asyncio.CancelledError | None = None
         cleanup_failed = False
+        unexpected_exc: Exception | None = None
         ledger = AttemptLedger(Path(ledger_path))
         route = None
 
@@ -225,6 +226,15 @@ class DefaultExternalAgentGraphServices:
                 attempt_id=attempt.attempt_id if attempt is not None else None,
                 source_revision=source_revision,
             )
+        except Exception as exc:  # noqa: BLE001 - terminalize durable attempt, then re-raise
+            unexpected_exc = exc
+            result = ExternalAgentGraphResult(
+                external_status="BLOCKED",
+                failure_code="EXTERNAL_AGENT_UNEXPECTED_FAILURE",
+                failure_class="UNCLASSIFIED",
+                attempt_id=attempt.attempt_id if attempt is not None else None,
+                source_revision=source_revision,
+            )
         finally:
             if workspace is not None:
                 try:
@@ -306,6 +316,8 @@ class DefaultExternalAgentGraphServices:
 
         if cancel_exc is not None:
             raise cancel_exc
+        if unexpected_exc is not None:
+            raise unexpected_exc
         if result is None:
             return ExternalAgentGraphResult(
                 "BLOCKED",

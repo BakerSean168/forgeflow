@@ -805,3 +805,74 @@ def test_graph_thread_boundary_keeps_cancellation_authoritative_when_cancel_clea
         assert isinstance(exc_info.value.__cause__, OSError)
 
     asyncio.run(scenario())
+
+
+def test_unknown_programming_error_finishes_attempt_before_reraise(tmp_path, monkeypatch) -> None:
+    import json
+
+    import pytest
+
+    import openswe_ext.external_agent_graph as module
+    from forgeflow.projects import ExternalAgentProjectConfig
+    from openswe_ext.external_agent_workspace import PreparedExternalWorkspace
+
+    route_config = tmp_path / "routes.json"
+    route_config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "external",
+                        "role": "IMPLEMENT",
+                        "priority": 1,
+                        "runtime": "EXTERNAL_ACP",
+                        "adapter": "antigravity",
+                        "target": "account",
+                        "enabled": True,
+                        "health": "READY",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "attempts.jsonl"
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    workspace = root / "run"
+    workspace.mkdir()
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(route_config))
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger))
+    monkeypatch.setenv("FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT", str(root))
+    monkeypatch.setattr(
+        module,
+        "load_external_agent_project_config",
+        lambda owner, repo: ExternalAgentProjectConfig(source, ("true",)),
+    )
+    monkeypatch.setattr(
+        module,
+        "prepare_external_workspace",
+        lambda **kwargs: PreparedExternalWorkspace(workspace, "a" * 40),
+    )
+    monkeypatch.setattr(module, "cleanup_external_workspace", lambda path: None)
+
+    class BrokenExecution:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        async def execute(self, request):
+            del request
+            raise TypeError("programming bug")
+
+    monkeypatch.setattr(module, "AntigravityExternalAgentExecution", BrokenExecution)
+    with pytest.raises(TypeError, match="programming bug"):
+        asyncio.run(module.DefaultExternalAgentGraphServices().run(_input()))
+
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["STARTED", "FINISHED"]
+    assert rows[-1]["outcome"] == "BLOCKED"
+    assert rows[-1]["failure_class"] == "UNCLASSIFIED"
+    assert rows[-1]["fallback_reason"] == "EXTERNAL_AGENT_UNEXPECTED_FAILURE"
