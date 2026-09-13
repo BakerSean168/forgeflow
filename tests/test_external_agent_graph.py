@@ -129,6 +129,9 @@ def test_delivery_transport_failure_is_normalized_and_closes_attempt(tmp_path, m
     monkeypatch.setattr(module, "cleanup_external_workspace", lambda path: None)
 
     class FakeExecution:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
         async def execute(self, request):
             return ExternalAgentExecutionEvidence(
                 runtime="antigravity",
@@ -445,6 +448,9 @@ def test_availability_failure_closes_attempt_after_workspace_cleanup(tmp_path, m
     )
 
     class FailingExecution:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
         async def execute(self, request):
             del request
             raise RequestError(
@@ -521,6 +527,9 @@ def test_cleanup_failure_is_fail_closed_and_finishes_attempt(tmp_path, monkeypat
     )
 
     class FailingExecution:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
         async def execute(self, request):
             del request
             raise RequestError(
@@ -598,6 +607,9 @@ def test_subprocess_failure_is_terminalized_in_attempt_ledger(tmp_path, monkeypa
     monkeypatch.setattr(module, "cleanup_external_workspace", lambda path: None)
 
     class FailingExecution:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
         async def execute(self, request):
             del request
             raise subprocess.TimeoutExpired(["git", "status"], timeout=30)
@@ -673,6 +685,9 @@ def test_cleanup_cancellation_after_delivery_preserves_success_terminalization(
     )
 
     class FakeExecution:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
         async def execute(self, request):
             del request
             return ExternalAgentExecutionEvidence(
