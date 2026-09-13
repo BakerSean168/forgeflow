@@ -128,10 +128,14 @@ def test_antigravity_bridge_does_not_require_api_key_env() -> None:
     assert os.path.basename(source) != "auth.json"
 
 
-def test_deployment_configures_antigravity_acp_but_keeps_it_disabled() -> None:
+def test_deployment_enables_guarded_antigravity_acp_fallback() -> None:
     start = Path("deploy/gcp-dev/start-forgeflow-policy.sh").read_text(encoding="utf-8")
     assert (
-        'FORGEFLOW_ANTIGRAVITY_ACP_ENABLED="${FORGEFLOW_ANTIGRAVITY_ACP_ENABLED:-false}"' in start
+        'FORGEFLOW_ANTIGRAVITY_ACP_ENABLED="${FORGEFLOW_ANTIGRAVITY_ACP_ENABLED:-true}"' in start
+    )
+    assert (
+        'FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED="${FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED:-true}"'
+        in start
     )
     assert 'FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS="${FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS:-}"' in start
     assert (

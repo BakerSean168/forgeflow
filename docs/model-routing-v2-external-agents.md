@@ -1,7 +1,7 @@
 # ForgeFlow model and external-agent routing — V2 implementation plan
 
-> Status: Phases 1-3 are complete. Guarded Antigravity ACP execution, independent evidence, ForgeFlow-owned delivery, CI, and exact-head Sol review are proven; automatic multi-route scheduling remains disabled.
-> Date: 2026-09-12.
+> Status: Production ordered routing is enabled. Open SWE remains the IMPLEMENT p10 primary; Antigravity ACP is the p20 availability fallback. External execution, cancellation, same-PR repair handoff, fallback accounting, CI, and exact-head review have all passed controlled production canaries.
+> Date: 2026-09-13.
 
 ## 1. Decision summary
 
@@ -34,8 +34,9 @@ ForgeFlow policy / future route selector
                                                          `-- Google account auth
 ```
 
-The ACP bridge is an **opt-in compatibility surface**, not a restored ForgeFlow runtime. There is no
-new SQLite workflow engine, no long-lived Antigravity systemd worker, and no resurrection of the old
+The ACP bridge is a **bounded external-agent execution surface**, not a restored standalone ForgeFlow
+runtime. It is now eligible only as the production p20 availability fallback behind the p10 Open SWE
+route. There is no new SQLite workflow engine, no long-lived Antigravity systemd worker, and no resurrection of the old
 Resource Selector.
 
 ## 2. Why this boundary
@@ -123,12 +124,13 @@ The expected marker was returned exactly and conversation provenance was present
 
 ## 4. Configuration contract
 
-The deployment exports configuration only; the route stays disabled until a future scheduler selects
-it explicitly.
+The production deployment enables the bridge, while ordered routing keeps it behind Open SWE. A new
+implementation selects Antigravity only after the active p10 Open SWE route reaches a terminal failure
+classified as `ROUTE_AVAILABILITY`; policy/task failures never trigger this fallback.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `FORGEFLOW_ANTIGRAVITY_ACP_ENABLED` | `false` | feature gate; no scheduling effect in Phase 1 |
+| `FORGEFLOW_ANTIGRAVITY_ACP_ENABLED` | `true` | production external-agent execution gate; route ordering still keeps Open SWE primary |
 | `FORGEFLOW_ANTIGRAVITY_BIN` | `$HOME/.local/bin/agy` | official/headless CLI executable |
 | `FORGEFLOW_ANTIGRAVITY_MODEL` | `gemini-3.8-flash-high` | initial implementation model |
 | `FORGEFLOW_ANTIGRAVITY_EFFORT` | `high` | Antigravity effort |
@@ -328,9 +330,10 @@ execution-scoped cleanup have all passed.
 
 The runtime now has a generic `ExternalAgentExecutionPort` contract plus an ACP workspace adapter.
 Vendor-specific Antigravity flags remain under `openswe_ext`; policy-facing types contain only the
-request/evidence contract. Selection is fail-closed: the boolean feature gate, exact project
-allowlist, `IMPLEMENT`/`REPAIR` phase, and external-workspace root must all match. The deployed
-default is still disabled and the project allowlist is empty.
+request/evidence contract. Selection is fail-closed: the boolean feature gate, manifest-derived execution-scoped project
+allowlist, eligible phase, and external-workspace root must all match. Production enables the bridge,
+but the route remains p20 behind the p10 Open SWE implementation path. Project eligibility comes from
+the existing project manifest rather than a second persistent Antigravity allowlist.
 
 The Agent is deliberately **not** the delivery owner. It may edit only the isolated workspace and is
 instructed not to commit, change branches, push, alter remotes, or open a PR. ForgeFlow then:
@@ -359,34 +362,25 @@ Sol reviewer with zero current-head findings, then merged as `8ea49eae8a72328c10
 `deploy/gcp-dev/run-pr-review-gate.py` now provides the reusable authenticated loopback gate for
 future exact-head reviewer acceptance without exposing the local auth secret on the command line.
 
-Initial rollout rules remain:
+The Phase 3 rollout started deliberately disabled while the attempt ledger, failure classifier, cancellation path, and repair ownership boundary were still incomplete. Those gates are now complete. Production keeps the same conservative order: Open SWE is the p10 primary implementation runtime and Antigravity ACP is the p20 fallback for classified route-availability failures only. Official review remains the Open SWE reviewer path.
 
-- route feature flag off by default;
-- project allowlist empty by default;
-- only explicit canary/manual selection;
-- only `IMPLEMENT`/`REPAIR`;
-- official review remains the current Open SWE Sol reviewer;
-- no automatic fallback to ACP until the attempt ledger and failure classifier exist.
-
-**Gate:** complete — isolated Agent execution, normalized evidence, GitHub delivery, CI, and
-independent exact-head Sol review are all proven. The long-running route remains disabled by default
-until Phase 4 adds auditable ordered routing and attempt accounting.
+**Gate:** complete — isolated Agent execution, normalized evidence, GitHub delivery, CI, exact-head review, durable attempt accounting, cancellation, cross-runtime fallback, and same-PR repair recovery are all proven.
 
 ### Phase 4 — ordered role routing
 
 The ordered-routing foundation is now implemented: a validated role/priority `RouteRegistry`, a
-private append-only `AttemptLedger`, and deployed defaults that still select the current Open SWE
-chain while Antigravity remains scheduler-disabled. New policy runs now snapshot the selected
+private append-only `AttemptLedger`, and deployed defaults that select the current Open SWE chain at
+p10 while keeping Antigravity eligible at p20. New policy runs now snapshot the selected
 `implementation_route_id` and runtime before child-thread creation. An `EXTERNAL_ACP` initial
 implementation is executed as its own durable `external_agent` LangGraph child graph, which returns a
 normalized PR reference and then rejoins the same authoritative GitHub CI/review path used by Open
 SWE. Historical in-flight states without routing fields are migrated to `openswe-current / OPEN_SWE`.
 
-The route-availability fallback state machine is implemented but remains **disabled by default** behind
-`FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED=false`. When the gate is eventually enabled, only a
-terminal failure code reclassified by ForgeFlow policy as `ROUTE_AVAILABILITY` may exclude the failed
-route and select the next eligible numeric priority; task/policy failures stay on the engineering or
-fail-closed path, and route exhaustion escalates instead of looping back.
+The route-availability fallback state machine is **enabled in production by default** behind
+`FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED=true`. Only a terminal failure code reclassified by
+ForgeFlow policy as `ROUTE_AVAILABILITY` may exclude the failed route and select the next eligible
+numeric priority; task/policy failures stay on the engineering or fail-closed path, and route
+exhaustion escalates instead of looping back.
 
 Open SWE implementation and repair operations now use the same private append-only attempt ledger as
 external-agent routes. STARTED is keyed by stable route + operation provenance and is recovered
@@ -432,8 +426,17 @@ unavailable Antigravity Docker runtime closed its attempt as `ROUTE_AVAILABILITY
 operation fell through to `openswe-current`, and the Open SWE attempt reached `SUCCEEDED`, repository
 CI passed, exact-head review reported zero findings, and policy reached `READY`. A separate direct
 Antigravity-primary policy canary also completed the full `NEW -> IMPLEMENTING -> VERIFYING ->
-WAITING_FOR_CI -> REVIEWING -> READY` lifecycle. The canary PRs were closed without merge. Permanent
-production enablement still waits for cancellation and external-to-Open-SWE repair handoff acceptance.
+WAITING_FOR_CI -> REVIEWING -> READY` lifecycle. The canary PRs were closed without merge.
+
+The final production gates also passed. A real external-child cancellation canary recovered the
+durable Antigravity run, issued LangGraph `interrupt`, terminated the ACP/Antigravity execution,
+removed the disposable workspace, and closed the external attempt as
+`FINISHED/BLOCKED + EXTERNAL_AGENT_CANCELLED` with no process residue. A separate same-PR repair
+canary then delivered through Antigravity, injected a controlled CI failure on that exact external
+branch, entered `REPAIRING`, handed ownership to `openswe-current`, repaired the **same PR and branch**
+from the rejected exact head, produced a repair operation trailer, passed repository CI and exact-head
+review with zero findings, and reached `READY`. The canary PR was closed without merge. These gates
+justify production enablement of Antigravity p20 plus automatic route-availability fallback.
 
 The first safe production shape is conservative:
 

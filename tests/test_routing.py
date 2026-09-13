@@ -33,10 +33,15 @@ def test_default_routes_preserve_current_openswe_policy() -> None:
         ("openswe-reviewer", 10, "openai:gpt-5.6-sol"),
         ("openswe-reviewer-glm53", 20, "fireworks:accounts/fireworks/models/glm-5p3"),
     ]
+    implement_routes = registry.eligible("IMPLEMENT")
+    assert [(route.id, route.priority, route.runtime) for route in implement_routes] == [
+        ("openswe-current", 10, "OPEN_SWE"),
+        ("antigravity-account-primary", 20, "EXTERNAL_ACP"),
+    ]
     anti = registry.get("antigravity-account-primary")
     assert anti.priority == 20
     assert anti.runtime == "EXTERNAL_ACP"
-    assert anti.enabled is False
+    assert anti.enabled is True
 
 
 def test_priority_alone_selects_between_enabled_eligible_routes() -> None:

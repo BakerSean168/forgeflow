@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy/gcp-dev"
@@ -17,21 +18,24 @@ def test_pr_review_gate_is_exact_head_and_keeps_auth_internal() -> None:
 def test_route_registry_and_attempt_ledger_are_deployed_fail_closed() -> None:
     install = (DEPLOY / "install.sh").read_text(encoding="utf-8")
     start = (DEPLOY / "start-forgeflow-policy.sh").read_text(encoding="utf-8")
-    default_routes = (DEPLOY / "routes.default.json").read_text(encoding="utf-8")
+    default_routes = json.loads((DEPLOY / "routes.default.json").read_text(encoding="utf-8"))
     canary = (DEPLOY / "run-external-agent-project-canary.py").read_text(encoding="utf-8")
     assert "routes.default.json" in install
     assert "forgeflow.routing validate" in install
     assert "FORGEFLOW_ROUTE_CONFIG_FILE" in start
     assert "FORGEFLOW_ATTEMPT_LEDGER_FILE" in start
-    assert '"enabled": false' in default_routes
-    assert '"id": "openswe-current"' in default_routes
+    routes = {route["id"]: route for route in default_routes["routes"]}
+    assert routes["openswe-current"]["enabled"] is True
+    assert routes["openswe-current"]["priority"] == 10
+    assert routes["openswe-current"]["runtime"] == "OPEN_SWE"
+    assert routes["antigravity-account-primary"]["enabled"] is True
+    assert routes["antigravity-account-primary"]["priority"] == 20
+    assert routes["antigravity-account-primary"]["runtime"] == "EXTERNAL_ACP"
     assert "AttemptLedger" in canary
     assert "classify_failure_code" in canary
 
 
 def test_external_agent_graph_is_registered_without_becoming_an_openswe_graph_alias() -> None:
-    import json
-
     root = DEPLOY.parents[1]
     config = json.loads((root / "langgraph.json").read_text(encoding="utf-8"))
     assert config["graphs"]["external_agent"] == (
@@ -42,16 +46,18 @@ def test_external_agent_graph_is_registered_without_becoming_an_openswe_graph_al
     assert "$state_dir/external-agent-workspaces" in installer
 
 
-def test_automatic_route_fallback_is_disabled_by_default() -> None:
+def test_external_agent_route_and_availability_fallback_are_enabled_by_default() -> None:
     start = (DEPLOY / "start-forgeflow-policy.sh").read_text(encoding="utf-8")
     assert (
-        'FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED="${FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED:-false}"'
+        'FORGEFLOW_ANTIGRAVITY_ACP_ENABLED="${FORGEFLOW_ANTIGRAVITY_ACP_ENABLED:-true}"'
+        in start
+    )
+    assert (
+        'FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED="${FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED:-true}"'
         in start
     )
 
 
 def test_example_project_manifest_documents_external_agent_validation_command() -> None:
-    import json
-
     payload = json.loads(Path("deploy/gcp-dev/projects.example.json").read_text(encoding="utf-8"))
     assert payload[0]["external_agent_test_command"] == ["uv", "run", "pytest", "-q"]
