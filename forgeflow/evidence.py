@@ -366,8 +366,13 @@ def _review_findings_for_head(findings, *, expected_head_sha: str):
         if status == "open":
             current.append(item)
             continue
-        if confirmed is None or confirmed == expected_head_sha:
-            current.append(item)
+        if status in {"resolved", "dismissed"}:
+            if confirmed is None or confirmed == expected_head_sha:
+                current.append(item)
+            continue
+        # Preserve unknown statuses so review_decision() can reject malformed
+        # durable evidence instead of silently treating it as historical.
+        current.append(item)
     return tuple(current)
 
 

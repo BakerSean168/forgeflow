@@ -10,7 +10,11 @@ from pathlib import Path
 
 from langgraph_sdk import get_client
 
-from forgeflow.adapters.openswe import OpenSweReviewerRuntime, reviewer_thread_id
+from forgeflow.adapters.openswe import (
+    OpenSweReviewerRuntime,
+    ReviewerSupersededError,
+    reviewer_thread_id,
+)
 
 
 class DiagnosticError(RuntimeError):
@@ -88,7 +92,7 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     try:
         asyncio.run(_run(_parser().parse_args()))
-    except (DiagnosticError, OSError, ValueError) as exc:
+    except (DiagnosticError, ReviewerSupersededError, OSError, ValueError) as exc:
         code = str(exc).split(":", 1)[0] or type(exc).__name__
         print(json.dumps({"status": "BLOCKED", "failure_code": code}, sort_keys=True))
         raise SystemExit(2) from None

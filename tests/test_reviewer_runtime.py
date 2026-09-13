@@ -290,6 +290,25 @@ def test_current_head_and_legacy_findings_remain_actionable() -> None:
     assert [finding.id for finding in decision.findings] == ["current", "legacy"]
 
 
+def test_unknown_historical_finding_status_fails_closed() -> None:
+    snapshot = ReviewerSnapshot(
+        thread_id="rt",
+        run_id="rr",
+        run_status="success",
+        last_reviewed_sha=HEAD,
+        findings=(
+            {
+                "id": "malformed-old",
+                "severity": "high",
+                "status": "pending",
+                "last_confirmed_sha": "b" * 40,
+            },
+        ),
+    )
+    with pytest.raises(EvidenceViolation, match="unknown status"):
+        review_decision(snapshot, expected_head_sha=HEAD)
+
+
 def test_invalid_explicit_last_confirmed_sha_fails_closed() -> None:
     snapshot = ReviewerSnapshot(
         thread_id="rt",
