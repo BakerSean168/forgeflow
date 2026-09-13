@@ -382,6 +382,13 @@ ForgeFlow policy as `ROUTE_AVAILABILITY` may exclude the failed route and select
 numeric priority; task/policy failures stay on the engineering or fail-closed path, and route
 exhaustion escalates instead of looping back.
 
+Existing deployments are upgraded conservatively. The installer recognizes only the exact untouched
+route document shipped immediately before production enablement and flips that managed
+`antigravity-account-primary.enabled` field to `true` atomically. Any semantic customization of the
+route document is treated as an operator override and preserved unchanged; an explicit
+`FORGEFLOW_POLICY_ROUTES_SOURCE` remains authoritative. This prevents a fresh-install-only rollout
+while avoiding silent replacement of custom priorities, health states, targets, or extra routes.
+
 Open SWE implementation and repair operations now use the same private append-only attempt ledger as
 external-agent routes. STARTED is keyed by stable route + operation provenance and is recovered
 idempotently after a crash; FAILED/BLOCKED closes at terminal failure, while SUCCEEDED is not recorded

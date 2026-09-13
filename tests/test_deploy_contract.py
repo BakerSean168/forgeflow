@@ -21,6 +21,9 @@ def test_route_registry_and_attempt_ledger_are_deployed_fail_closed() -> None:
     default_routes = json.loads((DEPLOY / "routes.default.json").read_text(encoding="utf-8"))
     canary = (DEPLOY / "run-external-agent-project-canary.py").read_text(encoding="utf-8")
     assert "routes.default.json" in install
+    assert "migrate_route_defaults.py" in install
+    assert '--current "$config_dir/routes.json"' in install
+    assert '--target-default "$root/deploy/gcp-dev/routes.default.json"' in install
     assert "forgeflow.routing validate" in install
     assert "FORGEFLOW_ROUTE_CONFIG_FILE" in start
     assert "FORGEFLOW_ATTEMPT_LEDGER_FILE" in start
