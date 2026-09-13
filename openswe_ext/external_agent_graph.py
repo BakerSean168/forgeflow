@@ -16,6 +16,7 @@ from langgraph.graph import END, START, StateGraph
 
 from forgeflow.adapters.external_delivery import GitHubExternalAgentDelivery
 from forgeflow.attempts import AttemptHandle, AttemptLedger
+from forgeflow.concurrency import cancellation_safe_to_thread
 from forgeflow.external_agents.execution import ExternalAgentExecutionRequest
 from forgeflow.projects import load_external_agent_project_config
 from forgeflow.routing import classify_failure_code, load_route_registry
@@ -120,6 +121,7 @@ class DefaultExternalAgentGraphServices:
         result: ExternalAgentGraphResult | None = None
         cancel_exc: asyncio.CancelledError | None = None
         cleanup_failed = False
+        unexpected_exc: Exception | None = None
         ledger = AttemptLedger(Path(ledger_path))
         route = None
 
@@ -134,7 +136,7 @@ class DefaultExternalAgentGraphServices:
             ):
                 raise RuntimeError("EXTERNAL_AGENT_ROUTE_NOT_ELIGIBLE")
 
-            attempt_status = await _cancellation_safe_to_thread(
+            attempt_status = await cancellation_safe_to_thread(
                 ledger.ensure_started,
                 role=route.role,
                 route_id=route.id,
@@ -158,7 +160,7 @@ class DefaultExternalAgentGraphServices:
                 raise RuntimeError("EXTERNAL_AGENT_PROJECT_CONFIG_MISSING")
             root = Path(workspace_root).expanduser()
             await asyncio.to_thread(_ensure_private_directory, root)
-            prepared = await _cancellation_safe_to_thread(
+            prepared = await cancellation_safe_to_thread(
                 prepare_external_workspace,
                 source_repo=project.cwd,
                 base_ref=request["base_ref"],
@@ -225,10 +227,19 @@ class DefaultExternalAgentGraphServices:
                 attempt_id=attempt.attempt_id if attempt is not None else None,
                 source_revision=source_revision,
             )
+        except Exception as exc:  # noqa: BLE001 - terminalize durable attempt, then re-raise
+            unexpected_exc = exc
+            result = ExternalAgentGraphResult(
+                external_status="BLOCKED",
+                failure_code="EXTERNAL_AGENT_UNEXPECTED_FAILURE",
+                failure_class="UNCLASSIFIED",
+                attempt_id=attempt.attempt_id if attempt is not None else None,
+                source_revision=source_revision,
+            )
         finally:
             if workspace is not None:
                 try:
-                    await _cancellation_safe_to_thread(cleanup_external_workspace, workspace)
+                    await cancellation_safe_to_thread(cleanup_external_workspace, workspace)
                 except asyncio.CancelledError as exc:
                     cancel_exc = cancel_exc or exc
                 except (ExternalAgentWorkspaceError, OSError):
@@ -278,7 +289,7 @@ class DefaultExternalAgentGraphServices:
                 session_id = None
                 conversation_id = None
             try:
-                await _cancellation_safe_to_thread(
+                await cancellation_safe_to_thread(
                     ledger.finish_operation,
                     route_id=attempt.route_id,
                     operation_key=attempt.operation_key,
@@ -306,6 +317,8 @@ class DefaultExternalAgentGraphServices:
 
         if cancel_exc is not None:
             raise cancel_exc
+        if unexpected_exc is not None:
+            raise unexpected_exc
         if result is None:
             return ExternalAgentGraphResult(
                 "BLOCKED",
@@ -315,23 +328,6 @@ class DefaultExternalAgentGraphServices:
                 source_revision=source_revision,
             )
         return result
-
-
-async def _cancellation_safe_to_thread(
-    func, /, *args, cancel_cleanup=None, **kwargs
-):
-    """Finish a side-effecting worker before propagating task cancellation."""
-    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError as cancel_exc:
-        try:
-            result = await worker
-            if cancel_cleanup is not None:
-                await asyncio.to_thread(cancel_cleanup, result)
-        except Exception as worker_exc:
-            raise cancel_exc from worker_exc
-        raise
 
 
 def _close_cancelled_attempt(ledger: AttemptLedger, status, *, source_revision: str | None) -> None:

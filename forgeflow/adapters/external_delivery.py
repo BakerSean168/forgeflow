@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 import re
@@ -15,6 +14,7 @@ from pathlib import Path
 import httpx2
 
 from forgeflow.adapters.github import _repository_token
+from forgeflow.concurrency import cancellation_safe_to_thread
 from forgeflow.external_agents.execution import (
     ExternalAgentExecutionEvidence,
     ExternalAgentExecutionRequest,
@@ -82,6 +82,64 @@ def _status_paths(workspace: Path) -> tuple[str, ...]:
             path = path.split(" -> ", 1)[1]
         paths.append(path)
     return tuple(sorted(dict.fromkeys(paths)))
+
+
+def _prepare_local_delivery(
+    request: ExternalAgentExecutionRequest,
+    evidence: ExternalAgentExecutionEvidence,
+    base_ref: str,
+    commit_subject: str,
+) -> tuple[Path, str, str]:
+    """Validate, stage, and commit the verified workspace entirely off the event loop."""
+    workspace = request.workspace.resolve(strict=True)
+    current_head = _git(workspace, "rev-parse", "HEAD").stdout.decode().strip()
+    if current_head != evidence.source_revision:
+        raise ExternalAgentDeliveryError("EXTERNAL_AGENT_SOURCE_REVISION_DRIFT")
+    status_paths = _status_paths(workspace)
+    if status_paths != evidence.changed_files:
+        raise ExternalAgentDeliveryError("EXTERNAL_AGENT_DELIVERY_DIFF_DRIFT")
+    if not base_ref.strip():
+        raise ExternalAgentDeliveryError("EXTERNAL_AGENT_BASE_REF_EMPTY")
+    if not commit_subject.strip():
+        raise ExternalAgentDeliveryError("EXTERNAL_AGENT_COMMIT_SUBJECT_EMPTY")
+
+    branch = delivery_branch_name(request.operation_key)
+    if (
+        _git(workspace, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode
+        == 0
+    ):
+        raise ExternalAgentDeliveryError("EXTERNAL_AGENT_LOCAL_BRANCH_EXISTS")
+    _git(workspace, "switch", "-c", branch)
+    _git(workspace, "add", "--", *evidence.changed_files)
+    staged = tuple(
+        sorted(
+            line
+            for line in _git(workspace, "diff", "--cached", "--name-only")
+            .stdout.decode()
+            .splitlines()
+            if line
+        )
+    )
+    if staged != evidence.changed_files:
+        raise ExternalAgentDeliveryError("EXTERNAL_AGENT_STAGED_DIFF_DRIFT")
+    _git(
+        workspace,
+        "-c",
+        "user.name=ForgeFlow",
+        "-c",
+        "user.email=forgeflow@users.noreply.github.com",
+        "commit",
+        "-m",
+        commit_subject.strip(),
+        "-m",
+        operation_trailer(request.operation_key),
+    )
+    head_sha = _git(workspace, "rev-parse", "HEAD").stdout.decode().strip()
+    if head_sha == evidence.source_revision:
+        raise ExternalAgentDeliveryError("EXTERNAL_AGENT_DELIVERY_NO_COMMIT")
+    if _git(workspace, "status", "--porcelain").stdout.strip():
+        raise ExternalAgentDeliveryError("EXTERNAL_AGENT_DELIVERY_WORKSPACE_DIRTY")
+    return workspace, branch, head_sha
 
 
 async def _write_token(owner: str, repo: str) -> str | None:
@@ -241,59 +299,14 @@ class GitHubExternalAgentDelivery:
         pr_title: str,
         pr_body: str,
     ) -> ExternalAgentPullRequestDelivery:
-        workspace = request.workspace.resolve(strict=True)
-        current_head = _git(workspace, "rev-parse", "HEAD").stdout.decode().strip()
-        if current_head != evidence.source_revision:
-            raise ExternalAgentDeliveryError("EXTERNAL_AGENT_SOURCE_REVISION_DRIFT")
-        status_paths = _status_paths(workspace)
-        if status_paths != evidence.changed_files:
-            raise ExternalAgentDeliveryError("EXTERNAL_AGENT_DELIVERY_DIFF_DRIFT")
-        if not base_ref.strip():
-            raise ExternalAgentDeliveryError("EXTERNAL_AGENT_BASE_REF_EMPTY")
-        if not commit_subject.strip():
-            raise ExternalAgentDeliveryError("EXTERNAL_AGENT_COMMIT_SUBJECT_EMPTY")
-
-        branch = delivery_branch_name(request.operation_key)
-        if (
-            _git(workspace, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode
-            == 0
-        ):
-            raise ExternalAgentDeliveryError("EXTERNAL_AGENT_LOCAL_BRANCH_EXISTS")
-        _git(workspace, "switch", "-c", branch)
-        _git(workspace, "add", "--", *evidence.changed_files)
-        staged = tuple(
-            sorted(
-                line
-                for line in _git(workspace, "diff", "--cached", "--name-only")
-                .stdout.decode()
-                .splitlines()
-                if line
-            )
+        workspace, branch, head_sha = await cancellation_safe_to_thread(
+            _prepare_local_delivery, request, evidence, base_ref, commit_subject
         )
-        if staged != evidence.changed_files:
-            raise ExternalAgentDeliveryError("EXTERNAL_AGENT_STAGED_DIFF_DRIFT")
-        _git(
-            workspace,
-            "-c",
-            "user.name=ForgeFlow",
-            "-c",
-            "user.email=forgeflow@users.noreply.github.com",
-            "commit",
-            "-m",
-            commit_subject.strip(),
-            "-m",
-            operation_trailer(request.operation_key),
-        )
-        head_sha = _git(workspace, "rev-parse", "HEAD").stdout.decode().strip()
-        if head_sha == evidence.source_revision:
-            raise ExternalAgentDeliveryError("EXTERNAL_AGENT_DELIVERY_NO_COMMIT")
-        if _git(workspace, "status", "--porcelain").stdout.strip():
-            raise ExternalAgentDeliveryError("EXTERNAL_AGENT_DELIVERY_WORKSPACE_DIRTY")
 
         token = await self._token_provider(request.owner, request.repo)
         if not token:
             raise ExternalAgentDeliveryError("EXTERNAL_AGENT_GITHUB_WRITE_TOKEN_UNAVAILABLE")
-        await asyncio.to_thread(
+        await cancellation_safe_to_thread(
             self._push,
             workspace,
             request.owner,
@@ -313,6 +326,7 @@ class GitHubExternalAgentDelivery:
         if delivered.head_sha != head_sha:
             raise ExternalAgentDeliveryError("EXTERNAL_AGENT_PR_HEAD_MISMATCH")
         return delivered
+
 
 
 __all__ = [
