@@ -321,10 +321,13 @@ async def _cancellation_safe_to_thread(
     worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
     try:
         return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        result = await worker
-        if cancel_cleanup is not None:
-            await asyncio.to_thread(cancel_cleanup, result)
+    except asyncio.CancelledError as cancel_exc:
+        try:
+            result = await worker
+            if cancel_cleanup is not None:
+                await asyncio.to_thread(cancel_cleanup, result)
+        except Exception as worker_exc:
+            raise cancel_exc from worker_exc
         raise
 
 

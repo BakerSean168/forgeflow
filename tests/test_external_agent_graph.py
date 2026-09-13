@@ -730,3 +730,63 @@ def test_cleanup_cancellation_after_delivery_preserves_success_terminalization(
     assert rows[-1]["external_conversation_id"] == "conversation"
     assert rows[-1]["failure_class"] is None
     assert rows[-1]["fallback_reason"] is None
+
+
+def test_graph_thread_boundary_keeps_cancellation_authoritative_when_worker_fails() -> None:
+    import threading
+
+    import pytest
+
+    import openswe_ext.external_agent_graph as module
+    from openswe_ext.external_agent_workspace import ExternalAgentWorkspaceError
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def failing_worker() -> None:
+        entered.set()
+        release.wait(timeout=5)
+        raise ExternalAgentWorkspaceError("cleanup failed")
+
+    async def scenario() -> None:
+        task = asyncio.create_task(module._cancellation_safe_to_thread(failing_worker))
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await task
+        assert isinstance(exc_info.value.__cause__, ExternalAgentWorkspaceError)
+
+    asyncio.run(scenario())
+
+
+def test_graph_thread_boundary_keeps_cancellation_authoritative_when_cancel_cleanup_fails() -> None:
+    import threading
+
+    import pytest
+
+    import openswe_ext.external_agent_graph as module
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def worker() -> str:
+        entered.set()
+        release.wait(timeout=5)
+        return "prepared"
+
+    def failing_cleanup(_result: str) -> None:
+        raise OSError("compensating cleanup failed")
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            module._cancellation_safe_to_thread(worker, cancel_cleanup=failing_cleanup)
+        )
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await task
+        assert isinstance(exc_info.value.__cause__, OSError)
+
+    asyncio.run(scenario())
