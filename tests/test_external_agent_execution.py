@@ -139,3 +139,28 @@ def test_execution_moves_git_hashing_and_tests_off_event_loop(tmp_path: Path, mo
     assert evidence.changed_files == ("a.txt",)
     assert git_threads and all(thread_id != caller for thread_id in git_threads)
     assert test_threads and all(thread_id != caller for thread_id in test_threads)
+
+@pytest.mark.asyncio
+async def test_cancellation_safe_to_thread_keeps_cancellation_authoritative_when_worker_fails() -> None:
+    import asyncio
+    import subprocess
+    import threading
+
+    from openswe_ext.external_agent_execution import _cancellation_safe_to_thread
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def failing_worker() -> None:
+        started.set()
+        release.wait(timeout=5)
+        raise subprocess.TimeoutExpired(cmd=("git", "status"), timeout=1)
+
+    task = asyncio.create_task(_cancellation_safe_to_thread(failing_worker))
+    assert await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await task
+    assert isinstance(exc_info.value.__cause__, subprocess.TimeoutExpired)
