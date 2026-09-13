@@ -57,8 +57,13 @@ if [[ -n "$routes_source" ]]; then
   install -m 0600 "$routes_source" "$config_dir/routes.json"
 elif [[ ! -f "$config_dir/routes.json" ]]; then
   install -m 0600 "$root/deploy/gcp-dev/routes.default.json" "$config_dir/routes.json"
+else
+  python3 "$root/deploy/gcp-dev/migrate_route_defaults.py" \
+    --current "$config_dir/routes.json" \
+    --target-default "$root/deploy/gcp-dev/routes.default.json"
 fi
 python3 -m json.tool "$config_dir/routes.json" >/dev/null
+chmod 600 "$config_dir/routes.json"
 
 cd "$root"
 "$HOME/.local/bin/uv" sync --locked --python 3.14

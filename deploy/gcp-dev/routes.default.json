@@ -17,7 +17,7 @@
       "runtime": "EXTERNAL_ACP",
       "adapter": "antigravity",
       "target": "google-account",
-      "enabled": false,
+      "enabled": true,
       "health": "READY"
     },
     {

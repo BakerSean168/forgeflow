@@ -48,11 +48,11 @@ export FIREWORKS_API_BASE="${FORGEFLOW_LITELLM_BASE_URL:-https://oracle.taile92a
 export FIREWORKS_API_KEY="$(<"$litellm_glm53_key")"
 unset LLM_FALLBACK_MODEL_ID
 
-# External-agent routing is opt-in. These defaults configure the ACP bridge but
-# do not alter Open SWE's current model routing until the scheduler explicitly
-# selects an external route. `agy` uses its own authenticated Google account state.
-export FORGEFLOW_ANTIGRAVITY_ACP_ENABLED="${FORGEFLOW_ANTIGRAVITY_ACP_ENABLED:-false}"
-export FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED="${FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED:-false}"
+# External-agent routing is a production availability fallback. Open SWE remains
+# the priority-10 implementation route; Antigravity is only selected at priority 20
+# after a classified route-availability failure. `agy` owns its Google account state.
+export FORGEFLOW_ANTIGRAVITY_ACP_ENABLED="${FORGEFLOW_ANTIGRAVITY_ACP_ENABLED:-true}"
+export FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED="${FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED:-true}"
 export FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS="${FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS:-}"
 export FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT="${FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT:-$HOME/.local/share/forgeflow-policy/external-agent-workspaces}"
 export FORGEFLOW_ANTIGRAVITY_BIN="${FORGEFLOW_ANTIGRAVITY_BIN:-$HOME/.local/bin/agy}"
