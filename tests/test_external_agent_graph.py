@@ -752,7 +752,7 @@ def test_graph_thread_boundary_keeps_cancellation_authoritative_when_worker_fail
 
     import pytest
 
-    import openswe_ext.external_agent_graph as module
+    from forgeflow.concurrency import cancellation_safe_to_thread
     from openswe_ext.external_agent_workspace import ExternalAgentWorkspaceError
 
     entered = threading.Event()
@@ -764,7 +764,7 @@ def test_graph_thread_boundary_keeps_cancellation_authoritative_when_worker_fail
         raise ExternalAgentWorkspaceError("cleanup failed")
 
     async def scenario() -> None:
-        task = asyncio.create_task(module._cancellation_safe_to_thread(failing_worker))
+        task = asyncio.create_task(cancellation_safe_to_thread(failing_worker))
         assert await asyncio.to_thread(entered.wait, 5)
         task.cancel()
         release.set()
@@ -780,7 +780,7 @@ def test_graph_thread_boundary_keeps_cancellation_authoritative_when_cancel_clea
 
     import pytest
 
-    import openswe_ext.external_agent_graph as module
+    from forgeflow.concurrency import cancellation_safe_to_thread
 
     entered = threading.Event()
     release = threading.Event()
@@ -795,7 +795,7 @@ def test_graph_thread_boundary_keeps_cancellation_authoritative_when_cancel_clea
 
     async def scenario() -> None:
         task = asyncio.create_task(
-            module._cancellation_safe_to_thread(worker, cancel_cleanup=failing_cleanup)
+            cancellation_safe_to_thread(worker, cancel_cleanup=failing_cleanup)
         )
         assert await asyncio.to_thread(entered.wait, 5)
         task.cancel()

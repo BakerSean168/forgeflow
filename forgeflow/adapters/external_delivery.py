@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 import re
@@ -15,6 +14,7 @@ from pathlib import Path
 import httpx2
 
 from forgeflow.adapters.github import _repository_token
+from forgeflow.concurrency import cancellation_safe_to_thread
 from forgeflow.external_agents.execution import (
     ExternalAgentExecutionEvidence,
     ExternalAgentExecutionRequest,
@@ -82,19 +82,6 @@ def _status_paths(workspace: Path) -> tuple[str, ...]:
             path = path.split(" -> ", 1)[1]
         paths.append(path)
     return tuple(sorted(dict.fromkeys(paths)))
-
-
-async def _cancellation_safe_to_thread(func, /, *args):
-    """Drain one side-effecting worker before preserving caller cancellation."""
-    worker = asyncio.create_task(asyncio.to_thread(func, *args))
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError as cancel_exc:
-        try:
-            await worker
-        except BaseException as worker_exc:
-            raise cancel_exc from worker_exc
-        raise
 
 
 def _prepare_local_delivery(
@@ -312,14 +299,14 @@ class GitHubExternalAgentDelivery:
         pr_title: str,
         pr_body: str,
     ) -> ExternalAgentPullRequestDelivery:
-        workspace, branch, head_sha = await _cancellation_safe_to_thread(
+        workspace, branch, head_sha = await cancellation_safe_to_thread(
             _prepare_local_delivery, request, evidence, base_ref, commit_subject
         )
 
         token = await self._token_provider(request.owner, request.repo)
         if not token:
             raise ExternalAgentDeliveryError("EXTERNAL_AGENT_GITHUB_WRITE_TOKEN_UNAVAILABLE")
-        await _cancellation_safe_to_thread(
+        await cancellation_safe_to_thread(
             self._push,
             workspace,
             request.owner,
