@@ -377,6 +377,27 @@ ForgeFlow sets Open SWE's existing per-run configurable model fields. It does no
 
 Fallback uses Open SWE's existing model-fallback middleware. Implementation keeps GLM 5.3 -> Luna. Review reads the ordered ForgeFlow `REASONING` routes: Sol is priority 10 and the promotional GLM 5.3 route is priority 20 until its explicit expiry. The fallback middleware only reacts to transient provider failures, so an independent review finding never changes models.
 
+### GLM 5.3 context and run-budget policy
+
+ForgeFlow separates the model's **physical context capability** from the Agent's **operational working set**. The private LiteLLM GLM 5.3 route is exposed to Open SWE as a `ChatFireworks` model with `max_input_tokens=1,048,576`, but the Agent does not wait for 85% of that window before compacting. `openswe_ext.context_policy` installs the following narrow runtime policy before Open SWE graphs are imported:
+
+| Control | Default | Purpose |
+| --- | ---: | --- |
+| physical context window | 1,048,576 tokens | truthful model capability / overflow headroom |
+| automatic compaction trigger | 65,536 tokens **or** 120 messages | keep normal coding loops well below the physical limit |
+| post-compaction retained tail | 16,384 tokens | preserve the most recent implementation/test state |
+| old tool-argument truncation trigger | 32,768 tokens | reduce repeated historical tool-call payload |
+| retained tool-argument tail | 12,288 tokens | keep recent actionable context |
+| tool-argument max text | 2,000 chars | bound stale edit/write arguments |
+| run input-token warning | 5,000,000 approximate tokens | tell the Agent to converge the current coherent slice |
+| run input-token hard checkpoint | 10,000,000 approximate tokens | allow one final checkpoint call, then end without another paid model request |
+
+The input-token budget deliberately uses local approximate request counting rather than provider usage metadata because some OpenAI-compatible streaming relays omit usage fields. The warning and hard limits can be overridden per deployment with `FORGEFLOW_GLM53_RUN_INPUT_WARN_TOKENS` and `FORGEFLOW_GLM53_RUN_INPUT_HARD_TOKENS`; the hard limit must remain greater than the warning limit.
+
+At the warning boundary the Agent is instructed not to start another feature slice. At the hard boundary it receives one final paid call limited to focused verification, commit/push/PR checkpointing, and a remaining-work summary; the next model call is short-circuited. ForgeFlow still owns authoritative completion: a budget-ended child run without the expected PR/head evidence is not accepted as READY and remains subject to normal no-progress/retry policy.
+
+This policy exists specifically to prevent long durable coding threads from multiplying a large prompt across hundreds of model calls. Large objectives should still be expressed as durable ForgeFlow plans with coherent implementation slices rather than relying on a single Open SWE invocation to consume the model's entire physical context window.
+
 ## 11. Evidence-owned completion
 
 The defining ForgeFlow invariant is:

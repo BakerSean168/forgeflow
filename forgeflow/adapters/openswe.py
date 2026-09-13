@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 import httpx2
 
+from openswe_ext.context_policy import install_agent_context_policy
 from openswe_ext.model_policy import (
     IMPLEMENTATION_EFFORT,
     IMPLEMENTATION_MODEL_ID,
@@ -22,6 +23,7 @@ from openswe_ext.reviewer_fallback import install_reviewer_fallback_overlay
 
 install_provider_fallback_overlay()
 install_forgeflow_model_policy()
+install_agent_context_policy()
 install_reviewer_fallback_overlay()
 
 from agent.dashboard.team_settings import get_team_default_model_pair
