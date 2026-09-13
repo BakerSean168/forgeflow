@@ -35,6 +35,9 @@ class FakeRuns:
     async def list(self, thread_id, limit=100):
         return [value for (tid, _), value in self.records.items() if tid == thread_id][:limit]
 
+    async def join(self, thread_id, run_id):
+        return self.records[(thread_id, run_id)].get("joined", {})
+
 
 @dataclass
 class FakeClient:
@@ -158,11 +161,44 @@ async def test_failed_run_with_current_provider_error_is_route_availability_fail
     from agent.utils.errors import LAST_MODEL_ERROR_KEY
 
     client = FakeClient()
-    client.runs.records[("t", "r")] = {"status": "error"}
+    client.runs.records[("t", "r")] = {
+        "status": "error",
+        "joined": {"__error__": {"error": "APITimeoutError", "message": "scrubbed"}},
+    }
     client.threads.records["t"] = {
         "status": "idle",
-        "metadata": {LAST_MODEL_ERROR_KEY: {"run_id": "r", "code": "provider_timeout"}},
+        "metadata": {
+            LAST_MODEL_ERROR_KEY: {
+                "run_id": "r",
+                "code": "provider_timeout",
+                "error_type": "APITimeoutError",
+            }
+        },
     }
     snapshot = await OpenSweChildRuntime(client).read_run(thread_id="t", run_id="r")
     assert snapshot.status == "error"
     assert snapshot.failure_code == "OPENSWE_PROVIDER_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_recovered_provider_error_does_not_reclassify_later_tool_failure() -> None:
+    from agent.utils.errors import LAST_MODEL_ERROR_KEY
+
+    client = FakeClient()
+    client.runs.records[("t", "r")] = {
+        "status": "error",
+        "joined": {"__error__": {"error": "ValueError", "message": "tool failed"}},
+    }
+    client.threads.records["t"] = {
+        "status": "idle",
+        "metadata": {
+            LAST_MODEL_ERROR_KEY: {
+                "run_id": "r",
+                "code": "provider_timeout",
+                "error_type": "APITimeoutError",
+            }
+        },
+    }
+    snapshot = await OpenSweChildRuntime(client).read_run(thread_id="t", run_id="r")
+    assert snapshot.status == "error"
+    assert snapshot.failure_code is None

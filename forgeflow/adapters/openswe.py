@@ -172,16 +172,30 @@ _OPENSWE_PROVIDER_FAILURE_CODES = frozenset(
 )
 
 
-def _provider_failure_for_run(metadata: Any, run_id: str) -> str | None:
+def _provider_failure_for_run(
+    metadata: Any, run_id: str, *, terminal_error_type: str | None = None
+) -> str | None:
     if not isinstance(metadata, Mapping):
         return None
     raw = metadata.get(LAST_MODEL_ERROR_KEY)
     if not isinstance(raw, Mapping) or raw.get("run_id") != run_id:
         return None
+    if terminal_error_type is not None and raw.get("error_type") != terminal_error_type:
+        return None
     code = raw.get("code")
     if not isinstance(code, str) or code not in _OPENSWE_PROVIDER_FAILURE_CODES:
         return None
     return code
+
+
+def _terminal_error_type(joined: Any) -> str | None:
+    if not isinstance(joined, Mapping):
+        return None
+    error = joined.get("__error__")
+    if not isinstance(error, Mapping):
+        return None
+    error_type = error.get("error")
+    return error_type if isinstance(error_type, str) and error_type else None
 
 
 def _message_text(message: Any) -> str | None:
@@ -330,12 +344,18 @@ class OpenSweChildRuntime:
         metadata = thread.get("metadata") if isinstance(thread, Mapping) else None
         provider_failure = _provider_failure_for_run(metadata, run_id)
         if provider_failure is not None and status == "error":
-            return ChildRunSnapshot(
-                thread_id=thread_id,
-                run_id=run_id,
-                status="error",
-                failure_code="OPENSWE_PROVIDER_UNAVAILABLE",
+            joined = await self._client.runs.join(thread_id, run_id)
+            terminal_error_type = _terminal_error_type(joined)
+            provider_failure = _provider_failure_for_run(
+                metadata, run_id, terminal_error_type=terminal_error_type
             )
+            if provider_failure is not None:
+                return ChildRunSnapshot(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    status="error",
+                    failure_code="OPENSWE_PROVIDER_UNAVAILABLE",
+                )
         if provider_failure is not None and status == "success":
             state = await self._client.threads.get_state(thread_id)
             if _state_ends_with_model_outage(state):
