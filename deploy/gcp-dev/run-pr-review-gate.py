@@ -6,21 +6,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import shlex
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
 from langgraph_sdk import get_client
-from langgraph_sdk.errors import NotFoundError
-
-from forgeflow.adapters.openswe import (
-    OpenSweReviewerRuntime,
-    ReviewerSnapshot,
-    ReviewerSupersededError,
-    reviewer_thread_id,
-)
-from forgeflow.evidence import EvidenceViolation, review_decision
 
 _PENDING = frozenset({"pending", "running"})
 _BLOCKING = frozenset({"critical", "high", "medium"})
@@ -28,6 +21,43 @@ _BLOCKING = frozenset({"critical", "high", "medium"})
 
 class ReviewGateError(RuntimeError):
     pass
+
+_GITHUB_APP_ENV_KEYS = frozenset(
+    {"GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_INSTALLATION_ID"}
+)
+
+
+def _load_github_app_env(config_dir: Path) -> None:
+    """Load only the GitHub App fields reviewer baseline resolution requires.
+
+    The long-running service receives these through systemd, but this operator
+    gate is a separate process. Load the same deployment-owned env file before
+    importing Open SWE so its module-level GitHub App settings are initialized
+    consistently. Never print or return the values.
+    """
+    env_file = config_dir / "github-app.env"
+    if not env_file.is_file():
+        raise ReviewGateError("REVIEW_GATE_GITHUB_APP_ENV_MISSING")
+    loaded: set[str] = set()
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, sep, raw_value = line.partition("=")
+        if not sep or key not in _GITHUB_APP_ENV_KEYS:
+            continue
+        try:
+            parts = shlex.split(raw_value, posix=True)
+        except ValueError as exc:
+            raise ReviewGateError("REVIEW_GATE_GITHUB_APP_ENV_INVALID") from exc
+        if len(parts) != 1 or not parts[0]:
+            raise ReviewGateError("REVIEW_GATE_GITHUB_APP_ENV_INVALID")
+        os.environ[key] = parts[0]
+        loaded.add(key)
+    if loaded != _GITHUB_APP_ENV_KEYS:
+        raise ReviewGateError("REVIEW_GATE_GITHUB_APP_ENV_INCOMPLETE")
 
 
 def _github_pr(repository: str, pr_number: int) -> dict[str, Any]:
@@ -79,6 +109,10 @@ async def _adopt_current_exact_head(
     pr_number: int,
     head_sha: str,
 ) -> tuple[str, str] | None:
+    from langgraph_sdk.errors import NotFoundError
+
+    from forgeflow.adapters.openswe import reviewer_thread_id
+
     thread_id = reviewer_thread_id(owner, repo, pr_number)
     try:
         thread = await client.threads.get(thread_id)
@@ -89,10 +123,26 @@ async def _adopt_current_exact_head(
     current = metadata.get("current_reviewer_run_id")
     if metadata.get("head_sha") != head_sha or not isinstance(current, str) or not current:
         return None
+    try:
+        run = await client.runs.get(thread_id, current)
+    except NotFoundError:
+        return None
+    run_metadata = run.get("metadata") if isinstance(run, dict) else None
+    run_metadata = run_metadata if isinstance(run_metadata, dict) else {}
+    run_head = run_metadata.get("head_sha")
+    if not isinstance(run_head, str) or not run_head:
+        kwargs = run.get("kwargs") if isinstance(run, dict) else None
+        config = kwargs.get("config") if isinstance(kwargs, dict) else None
+        configurable = config.get("configurable") if isinstance(config, dict) else None
+        run_head = configurable.get("head_sha") if isinstance(configurable, dict) else None
+    if run_head != head_sha:
+        return None
     return thread_id, current
 
 
-def _decision_payload(snapshot: ReviewerSnapshot, *, head_sha: str) -> tuple[int, dict[str, Any]]:
+def _decision_payload(snapshot: Any, *, head_sha: str) -> tuple[int, dict[str, Any]]:
+    from forgeflow.evidence import review_decision
+
     decision = review_decision(snapshot, expected_head_sha=head_sha)
     blocking = [
         {"id": finding.id, "severity": finding.severity}
@@ -118,6 +168,8 @@ def _decision_payload(snapshot: ReviewerSnapshot, *, head_sha: str) -> tuple[int
 
 
 async def _run(args: argparse.Namespace) -> int:
+    from forgeflow.adapters.openswe import OpenSweReviewerRuntime
+
     config_dir = Path(args.config_dir).expanduser().resolve(strict=True)
     auth_file = config_dir / "local-auth.secret"
     if not auth_file.is_file():
@@ -216,14 +268,27 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _blocked_exit(exc: BaseException) -> None:
+    code = str(exc).split(":", 1)[0] or type(exc).__name__
+    print(json.dumps({"status": "BLOCKED", "failure_code": code}, sort_keys=True))
+    raise SystemExit(2) from None
+
+
 def main() -> None:
     args = _parser().parse_args()
     try:
+        config_dir = Path(args.config_dir).expanduser().resolve(strict=True)
+        _load_github_app_env(config_dir)
+    except (ReviewGateError, OSError, ValueError) as exc:
+        _blocked_exit(exc)
+
+    from forgeflow.adapters.openswe import ReviewerSupersededError
+    from forgeflow.evidence import EvidenceViolation
+
+    try:
         raise SystemExit(asyncio.run(_run(args)))
     except (ReviewGateError, EvidenceViolation, ReviewerSupersededError, OSError, ValueError) as exc:
-        code = str(exc).split(":", 1)[0] or type(exc).__name__
-        print(json.dumps({"status": "BLOCKED", "failure_code": code}, sort_keys=True))
-        raise SystemExit(2) from None
+        _blocked_exit(exc)
 
 
 if __name__ == "__main__":

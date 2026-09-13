@@ -528,6 +528,7 @@ class OpenSweReviewerRuntime:
             assistant_id="reviewer",
             metadata={
                 "kind": "forgeflow_review",
+                "head_sha": head_sha,
                 "forgeflow_review_operation_key": operation_key,
             },
             client=self._client,
