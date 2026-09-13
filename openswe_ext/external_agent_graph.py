@@ -176,7 +176,10 @@ class DefaultExternalAgentGraphServices:
                 phase=request["phase"],
                 test_command=project.test_command,
             )
-            evidence = await AntigravityExternalAgentExecution().execute(execution_request)
+            allowed_project = f"{request["owner"]}/{request["repo"]}"
+            evidence = await AntigravityExternalAgentExecution(
+                allowed_projects=frozenset({allowed_project})
+            ).execute(execution_request)
             if evidence.source_revision != source_revision:
                 raise RuntimeError("EXTERNAL_AGENT_SOURCE_REVISION_MISMATCH")
             title = _summary(request["objective"])

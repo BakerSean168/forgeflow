@@ -62,6 +62,22 @@ def test_antigravity_execution_is_disabled_and_unallowlisted_by_default(tmp_path
         asyncio.run(route.execute(_request(workspace)))
 
 
+
+def test_explicit_project_allowlist_overrides_empty_environment(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    workspace = root / "work"
+    workspace.mkdir(parents=True)
+    route = AntigravityExternalAgentExecution(
+        env={
+            "HOME": str(tmp_path),
+            "FORGEFLOW_ANTIGRAVITY_ACP_ENABLED": "true",
+            "FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT": str(root),
+            "FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX": "docker",
+        },
+        allowed_projects=frozenset({"o/r"}),
+    )
+    assert route._gate.validate(_request(workspace)) == workspace
+
 def test_antigravity_requires_outer_docker(tmp_path: Path) -> None:
     with pytest.raises(ExternalAgentRouteRejected, match="OUTER_SANDBOX_REQUIRED"):
         AntigravityExternalAgentExecution(

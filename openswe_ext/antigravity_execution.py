@@ -26,7 +26,12 @@ def _projects(value: str | None) -> frozenset[str]:
 class AntigravityExternalAgentExecution:
     """Explicit-only Antigravity route; this class never performs automatic fallback."""
 
-    def __init__(self, *, env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        env: dict[str, str] | None = None,
+        allowed_projects: frozenset[str] | None = None,
+    ) -> None:
         values = os.environ if env is None else env
         root = Path(
             values.get(
@@ -36,7 +41,11 @@ class AntigravityExternalAgentExecution:
         ).expanduser()
         self._gate = ExternalAgentRouteGate(
             enabled=_enabled(values.get("FORGEFLOW_ANTIGRAVITY_ACP_ENABLED")),
-            allowed_projects=_projects(values.get("FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS")),
+            allowed_projects=(
+                allowed_projects
+                if allowed_projects is not None
+                else _projects(values.get("FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS"))
+            ),
             workspace_root=root,
         )
         outer = values.get("FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX", "docker").strip()
