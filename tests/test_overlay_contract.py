@@ -6,7 +6,15 @@ from forgeflow.adapters.github import PullRequestEvidence
 from forgeflow.adapters.openswe import GRAPH_ENTRIES, implementation_config, reviewer_config
 
 REPO = Path(__file__).resolve().parents[1]
-EXPECTED_GRAPHS = {"agent", "reviewer", "analyzer", "chat", "scheduler", "external_agent", "forgeflow"}
+EXPECTED_GRAPHS = {
+    "agent",
+    "reviewer",
+    "analyzer",
+    "chat",
+    "scheduler",
+    "external_agent",
+    "forgeflow",
+}
 
 
 def _resolve(spec: str):
@@ -18,6 +26,8 @@ def test_one_langgraph_deployment_exposes_upstream_and_policy_graphs() -> None:
     config = json.loads((REPO / "langgraph.json").read_text(encoding="utf-8"))
     assert set(config["graphs"]) == EXPECTED_GRAPHS
     assert config["http"]["app"] == "openswe_ext.webapp:app"
+    graphs_extension = (REPO / "openswe_ext/graphs.py").read_text(encoding="utf-8")
+    assert "install_agent_context_policy()" in graphs_extension
     extension = (REPO / "openswe_ext/webapp.py").read_text(encoding="utf-8")
     assert "from agent.webapp import app" in extension
     assert "FastAPI(" not in extension

@@ -115,3 +115,28 @@ def test_deep_agent_wrapper_injects_one_budget_guard(monkeypatch: pytest.MonkeyP
     middleware = captured["middleware"]
     assert isinstance(middleware, list)
     assert sum(isinstance(item, ForgeFlowRunInputBudgetMiddleware) for item in middleware) == 1
+
+
+def test_glm53_internal_summarization_inherits_model_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents.backends.state import StateBackend
+
+    from openswe_ext import context_policy
+
+    primary = _glm_model()
+    fallback = ChatFireworks(
+        model="accounts/fireworks/models/fallback-test",
+        api_key="test-only",
+    )
+    monkeypatch.setattr(context_policy, "_summary_fallback_model", lambda: fallback)
+
+    middleware = context_policy.create_summarization_middleware_with_forgeflow_fallback(
+        primary,
+        StateBackend(),
+    )
+
+    retrying = middleware._lc_helper._summary_model
+    composite = retrying.bound
+    assert composite.runnable is primary
+    assert list(composite.fallbacks) == [fallback]
