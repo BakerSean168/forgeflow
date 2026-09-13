@@ -1,0 +1,57 @@
+[
+  {
+    "project_key": "digital-biome",
+    "cwd": "/home/dev/projects/digital-biome",
+    "name": "Digital Biome",
+    "repo": "BakerSean168/digital-biome",
+    "ci_required": true,
+    "required_checks": ["Type Check"],
+    "sandbox_read_repositories": ["BakerSean168/thought-forest"]
+  },
+  {
+    "project_key": "forgeflow",
+    "cwd": "/home/dev/projects/forgeflow",
+    "name": "ForgeFlow",
+    "repo": "BakerSean168/forgeflow",
+    "ci_required": true,
+    "required_checks": ["verify"],
+    "sandbox_read_repositories": [],
+    "external_agent_test_command": ["uv", "run", "pytest", "-q"]
+  },
+  {
+    "project_key": "memoflow",
+    "cwd": "/home/dev/projects/memoflow",
+    "name": "MemoFlow",
+    "repo": "BakerSean168/memoflow",
+    "ci_required": true,
+    "required_checks": [
+      "Governance Oracle",
+      "Validate Oracle",
+      "Boundary Oracle",
+      "Integration Oracle",
+      "Web Flow Oracle",
+      "Coverage Oracle",
+      "Performance Oracle",
+      "Delivery Observation"
+    ],
+    "sandbox_read_repositories": [],
+    "external_agent_test_command": ["pnpm", "test"]
+  },
+  {
+    "project_key": "bodysense",
+    "cwd": "/home/dev/projects/bodysense-vnext-refactor",
+    "name": "BodySense vNext",
+    "repo": "BakerSean168/BodySense",
+    "ci_required": true,
+    "required_checks": [
+      "commit-lint",
+      "Governance Oracle",
+      "Quality Oracle",
+      "Database Oracle",
+      "Experience Oracle",
+      "Delivery Observation"
+    ],
+    "sandbox_read_repositories": [],
+    "external_agent_test_command": ["pnpm", "test"]
+  }
+]
