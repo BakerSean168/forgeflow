@@ -289,3 +289,109 @@ def test_invalid_explicit_last_confirmed_sha_fails_closed() -> None:
 
     with pytest.raises(EvidenceViolation, match="last_confirmed_sha"):
         review_decision(snapshot, expected_head_sha=HEAD)
+
+@pytest.mark.asyncio
+async def test_reviewer_uses_incremental_range_only_when_previous_head_is_ancestor() -> None:
+    client = FakeClient()
+    thread_id = reviewer_thread_id("o", "r", 1)
+    previous = "c" * 40
+    client.threads.records[thread_id] = {
+        "status": "idle",
+        "metadata": {"last_reviewed_sha": previous},
+    }
+    calls = []
+    ancestry_calls = []
+
+    async def ancestry(owner, repo, previous_sha, head_sha):
+        ancestry_calls.append((owner, repo, previous_sha, head_sha))
+        return True
+
+    async def dispatch(thread_id, content, configurable, **kwargs):
+        calls.append(configurable)
+        return {"run_id": "incremental-review"}
+
+    runtime = OpenSweReviewerRuntime(client, dispatch=dispatch, ancestry_checker=ancestry)
+    await runtime.trigger_review(
+        owner="o",
+        repo="r",
+        pr_number=1,
+        pr_url=PR,
+        head_sha=HEAD,
+        head_ref="feature",
+        base_sha="b" * 40,
+        base_ref="main",
+        operation_key="review:ancestor",
+    )
+
+    assert ancestry_calls == [("o", "r", previous, HEAD)]
+    assert calls[0]["re_review"] is True
+    assert calls[0]["last_reviewed_sha"] == previous
+
+
+@pytest.mark.asyncio
+async def test_force_pushed_reviewer_falls_back_to_fresh_base_to_head_review() -> None:
+    client = FakeClient()
+    thread_id = reviewer_thread_id("o", "r", 1)
+    previous = "c" * 40
+    client.threads.records[thread_id] = {
+        "status": "idle",
+        "metadata": {"last_reviewed_sha": previous},
+    }
+    calls = []
+
+    async def diverged(_owner, _repo, _previous_sha, _head_sha):
+        return False
+
+    async def dispatch(thread_id, content, configurable, **kwargs):
+        calls.append(configurable)
+        return {"run_id": "fresh-review"}
+
+    runtime = OpenSweReviewerRuntime(client, dispatch=dispatch, ancestry_checker=diverged)
+    await runtime.trigger_review(
+        owner="o",
+        repo="r",
+        pr_number=1,
+        pr_url=PR,
+        head_sha=HEAD,
+        head_ref="feature",
+        base_sha="b" * 40,
+        base_ref="main",
+        operation_key="review:force-push",
+    )
+
+    assert calls[0]["re_review"] is False
+    assert calls[0]["last_reviewed_sha"] is None
+
+
+@pytest.mark.asyncio
+async def test_same_head_retry_never_builds_empty_incremental_diff() -> None:
+    client = FakeClient()
+    thread_id = reviewer_thread_id("o", "r", 1)
+    client.threads.records[thread_id] = {
+        "status": "idle",
+        "metadata": {"last_reviewed_sha": HEAD},
+    }
+    calls = []
+
+    async def ancestry(*_args):
+        raise AssertionError("same head must not query ancestry")
+
+    async def dispatch(thread_id, content, configurable, **kwargs):
+        calls.append(configurable)
+        return {"run_id": "same-head-fresh-review"}
+
+    runtime = OpenSweReviewerRuntime(client, dispatch=dispatch, ancestry_checker=ancestry)
+    await runtime.trigger_review(
+        owner="o",
+        repo="r",
+        pr_number=1,
+        pr_url=PR,
+        head_sha=HEAD,
+        head_ref="feature",
+        base_sha="b" * 40,
+        base_ref="main",
+        operation_key="review:same-head-retry",
+    )
+
+    assert calls[0]["re_review"] is False
+    assert calls[0]["last_reviewed_sha"] is None

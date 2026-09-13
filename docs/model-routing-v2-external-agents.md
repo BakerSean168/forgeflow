@@ -430,6 +430,12 @@ run. Only transient provider failures such as rate limits, timeouts, connection 
 denials, and other task failures do **not** cause a model fallback. Exact-head review evidence remains
 mandatory after either model path.
 
+Reviewer re-runs are also force-push safe. ForgeFlow uses GitHub compare evidence before enabling
+Open SWE's incremental `last_reviewed_sha..head` range. Only a previous reviewed SHA proven to be
+an ancestor of the current head is used incrementally; diverged, identical, unavailable, or otherwise
+unproven baselines fall back to a fresh authoritative `base...head` review. This prevents a rebase from
+turning a successful reviewer run into an empty-diff, stale-evidence result.
+
 ### Phase 5 — additional external agents
 
 Only after the Antigravity route is stable, reuse the **same generic ACP client** for other complete

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+import httpx2
+
 from openswe_ext.model_policy import (
     IMPLEMENTATION_EFFORT,
     IMPLEMENTATION_MODEL_ID,
@@ -56,6 +58,7 @@ GRAPH_ENTRIES: Mapping[str, Callable[..., Any]] = {
 DispatchFn = Callable[..., Awaitable[Mapping[str, Any]]]
 FindingsReader = Callable[[str], Awaitable[list[dict[str, Any]]]]
 ReviewTrigger = Callable[..., Awaitable[dict[str, Any]]]
+ReviewAncestryChecker = Callable[[str, str, str, str], Awaitable[bool]]
 
 
 class OpenSweAdapterError(RuntimeError):
@@ -312,6 +315,48 @@ class ReviewerSnapshot:
     findings: tuple[dict[str, Any], ...]
 
 
+async def _github_review_baseline_is_ancestor(
+    owner: str, repo: str, previous_sha: str, head_sha: str
+) -> bool:
+    """Return true only when GitHub proves ``previous_sha`` is behind ``head_sha``.
+
+    Re-reviewing a force-pushed PR from an unreachable historical SHA produces
+    an empty reviewer diff upstream. Falling back to a fresh base-to-head review
+    is safer than trusting an uncertain incremental baseline, so every unavailable
+    or non-ahead comparison returns false.
+    """
+    if not all((owner, repo, previous_sha, head_sha)) or previous_sha == head_sha:
+        return False
+    installation_id = await get_github_app_installation_id_for_repo(owner, repo)
+    if installation_id is None:
+        return False
+    token = await get_github_app_installation_token(
+        installation_id=installation_id,
+        repositories=[repo],
+        permissions={"contents": "read"},
+        log_errors=False,
+    )
+    if not token:
+        return False
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        async with httpx2.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/compare/{previous_sha}...{head_sha}",
+                headers=headers,
+            )
+        if response.status_code != 200:
+            return False
+        payload = response.json()
+    except (httpx2.TransportError, ValueError):
+        return False
+    return isinstance(payload, Mapping) and payload.get("status") == "ahead"
+
+
 class OpenSweReviewerRuntime:
     """Thin dispatcher for the official Open SWE reviewer graph."""
 
@@ -321,10 +366,12 @@ class OpenSweReviewerRuntime:
         *,
         dispatch: DispatchFn = dispatch_agent_run,
         findings_reader: FindingsReader | None = None,
+        ancestry_checker: ReviewAncestryChecker = _github_review_baseline_is_ancestor,
     ) -> None:
         self._client = client
         self._dispatch = dispatch
         self._findings_reader = findings_reader or self._read_findings_from_client
+        self._ancestry_checker = ancestry_checker
 
     async def _read_findings_from_client(self, thread_id: str) -> list[dict[str, Any]]:
         thread = await self._client.threads.get(thread_id)
@@ -424,6 +471,17 @@ class OpenSweReviewerRuntime:
                 "head_sha": head_sha,
             },
         )
+        previous_reviewed_sha = existing_meta.get("last_reviewed_sha")
+        can_incremental_review = False
+        if (
+            isinstance(previous_reviewed_sha, str)
+            and previous_reviewed_sha
+            and previous_reviewed_sha != head_sha
+        ):
+            can_incremental_review = await self._ancestry_checker(
+                owner, repo, previous_reviewed_sha, head_sha
+            )
+
         configurable = reviewer_config(reviewer_thread_id=thread_id)
         configurable.update(
             {
@@ -436,7 +494,10 @@ class OpenSweReviewerRuntime:
                 "base_sha": base_sha,
                 "branch_name": head_ref,
                 "review_requested": True,
-                "re_review": bool(existing_meta.get("last_reviewed_sha")),
+                "re_review": can_incremental_review,
+                "last_reviewed_sha": (
+                    previous_reviewed_sha if can_incremental_review else None
+                ),
             }
         )
         run = await self._dispatch(
