@@ -430,6 +430,19 @@ run. Only transient provider failures such as rate limits, timeouts, connection 
 denials, and other task failures do **not** cause a model fallback. Exact-head review evidence remains
 mandatory after either model path.
 
+Reviewer re-runs are also force-push safe. ForgeFlow preserves re-review finding reconciliation
+semantics, but separates them from the diff baseline. A previous reviewed SHA proven by GitHub compare
+to be an ancestor of the current head remains the incremental baseline. After a force-push/rebase (or a
+same-head operator retry), the run stays a re-review so historical findings must be resolved or
+re-confirmed, while the diff baseline is reset to GitHub's authoritative merge-base for the current
+`base...head` PR. If that merge-base cannot be proven, review dispatch fails closed instead of silently
+dropping prior finding evidence or accepting an empty diff.
+
+Exact-head normalization also follows Open SWE's re-review no-op semantics: an open finding that the
+reviewer leaves unchanged stays blocking even when its `last_confirmed_sha` points to an older commit.
+Only an explicit `resolved` or `dismissed` transition removes it from the current gate. The confirmation
+SHA remains audit metadata; it is not an implicit expiry mechanism for open review evidence.
+
 ### Phase 5 — additional external agents
 
 Only after the Antigravity route is stable, reuse the **same generic ACP client** for other complete
