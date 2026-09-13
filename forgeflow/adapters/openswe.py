@@ -15,8 +15,10 @@ from openswe_ext.model_policy import (
     install_forgeflow_model_policy,
     review_model_id,
 )
+from openswe_ext.reviewer_fallback import install_reviewer_fallback_overlay
 
 install_forgeflow_model_policy()
+install_reviewer_fallback_overlay()
 
 from agent.dashboard.team_settings import get_team_default_model_pair
 from agent.dispatch import dispatch_agent_run

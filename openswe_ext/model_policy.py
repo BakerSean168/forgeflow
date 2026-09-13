@@ -74,14 +74,10 @@ def fallback_model_id_for(primary_model_id: str) -> str | None:
     if primary_model_id == IMPLEMENTATION_FALLBACK_MODEL_ID:
         return None
 
-    review_primary, review_fallback = reasoning_model_ids()
-    if primary_model_id == review_primary:
-        return review_fallback
-    if review_fallback is not None and primary_model_id == review_fallback:
-        return None
+    # Reviewer fallback is installed only inside the dedicated reviewer graph.
+    # Keeping Sol out of this global hook prevents a regular agent that happens
+    # to use Sol from inheriting the REASONING route by accident.
     if primary_model_id == REVIEW_MODEL_ID:
-        # A non-default route config may deliberately remove Sol. Do not route
-        # an explicitly requested stale Sol reviewer outside that registry.
         return None
     return _original_fallback_model_id_for(primary_model_id)
 

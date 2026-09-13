@@ -27,7 +27,7 @@ def test_glm_implementation_falls_back_only_to_luna(monkeypatch: pytest.MonkeyPa
 def test_reasoning_registry_selects_sol_then_glm53(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(DEFAULT_ROUTES))
     assert reasoning_model_ids() == (REVIEW_MODEL_ID, REVIEW_FALLBACK_MODEL_ID)
-    assert fallback_model_id_for(REVIEW_MODEL_ID) == REVIEW_FALLBACK_MODEL_ID
+    assert fallback_model_id_for(REVIEW_MODEL_ID) is None
 
 
 def test_expired_reasoning_fallback_is_not_used(
