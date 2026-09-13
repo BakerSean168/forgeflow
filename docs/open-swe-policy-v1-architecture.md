@@ -364,12 +364,12 @@ Default V1 role policy:
 | --- | --- | --- | --- |
 | Implementation | Open SWE `agent` | `fireworks:accounts/fireworks/models/glm-5p3` via private LiteLLM | `max` |
 | Repair | same Open SWE `agent` thread | `fireworks:accounts/fireworks/models/glm-5p3` via private LiteLLM | `max` |
-| Review | Open SWE `reviewer` | `openai:gpt-5.6-sol` | `medium` |
-| Reviewer subagent | reviewer subagent | `openai:gpt-5.6-sol` | `medium` |
+| Review | Open SWE `reviewer` | `openai:gpt-5.6-sol` primary; GLM 5.3 via private LiteLLM on transient provider failure | `medium` primary |
+| Reviewer subagent | reviewer subagent | same REASONING route pair as reviewer | `medium` primary |
 
 ForgeFlow sets Open SWE's existing per-run configurable model fields. It does not add another provider client or model router.
 
-Fallback uses Open SWE's existing model-fallback middleware. The current deployment keeps fallback inside the available OpenAI/Codex path rather than silently requiring Anthropic credentials.
+Fallback uses Open SWE's existing model-fallback middleware. Implementation keeps GLM 5.3 -> Luna. Review reads the ordered ForgeFlow `REASONING` routes: Sol is priority 10 and the promotional GLM 5.3 route is priority 20 until its explicit expiry. The fallback middleware only reacts to transient provider failures, so an independent review finding never changes models.
 
 ## 11. Evidence-owned completion
 

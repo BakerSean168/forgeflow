@@ -13,6 +13,7 @@ from openswe_ext.model_policy import (
     IMPLEMENTATION_EFFORT,
     IMPLEMENTATION_MODEL_ID,
     install_forgeflow_model_policy,
+    review_model_id,
 )
 
 install_forgeflow_model_policy()
@@ -135,17 +136,19 @@ def implementation_config(
 def reviewer_config(
     *,
     reviewer_thread_id: str,
-    model_id: str = "openai:gpt-5.6-sol",
+    model_id: str | None = None,
     effort: str = "medium",
-    subagent_model_id: str = "openai:gpt-5.6-sol",
+    subagent_model_id: str | None = None,
     subagent_effort: str = "medium",
 ) -> dict[str, Any]:
     """Build the model overrides ForgeFlow expects the official reviewer to inherit."""
+    selected_model_id = model_id or review_model_id()
+    selected_subagent_model_id = subagent_model_id or selected_model_id
     config = {
         "reviewer_thread_id": reviewer_thread_id,
-        "reviewer_model_id": model_id,
+        "reviewer_model_id": selected_model_id,
         "reviewer_reasoning_effort": effort,
-        "reviewer_subagent_model_id": subagent_model_id,
+        "reviewer_subagent_model_id": selected_subagent_model_id,
         "reviewer_subagent_reasoning_effort": subagent_effort,
     }
     return RunConfig.parse(config).dump()

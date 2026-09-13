@@ -416,11 +416,19 @@ IMPLEMENT
   20 Antigravity ACP (account-native)
 
 REASONING
-  10 current Open SWE reviewer/reasoning path
+  10 Open SWE reviewer -> `openai:gpt-5.6-sol`
+  20 Open SWE reviewer fallback -> `fireworks:accounts/fireworks/models/glm-5p3`
+     expires with the OpenAI Next promotional resource on 2026-09-23T16:00:00Z
 ```
 
 Priority can be reversed later based on measured cost, quality, latency, and account quota policy.
 The important property is that it is explicit and auditable.
+
+The reasoning pair is consumed by Open SWE's native model-fallback middleware inside one reviewer
+run. Only transient provider failures such as rate limits, timeouts, connection errors, and retryable
+5xx responses can switch from Sol to GLM 5.3. Review findings, stale evidence, GitHub failures, policy
+denials, and other task failures do **not** cause a model fallback. Exact-head review evidence remains
+mandatory after either model path.
 
 ### Phase 5 — additional external agents
 

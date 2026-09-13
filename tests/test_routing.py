@@ -22,11 +22,17 @@ def test_default_routes_preserve_current_openswe_policy() -> None:
         "current-model-policy",
     )
     assert reasoning is not None
-    assert (reasoning.id, reasoning.priority, reasoning.runtime) == (
+    assert (reasoning.id, reasoning.priority, reasoning.runtime, reasoning.target) == (
         "openswe-reviewer",
         10,
         "OPEN_SWE",
+        "openai:gpt-5.6-sol",
     )
+    reasoning_routes = registry.eligible("REASONING")
+    assert [(route.id, route.priority, route.target) for route in reasoning_routes] == [
+        ("openswe-reviewer", 10, "openai:gpt-5.6-sol"),
+        ("openswe-reviewer-glm53", 20, "fireworks:accounts/fireworks/models/glm-5p3"),
+    ]
     anti = registry.get("antigravity-account-primary")
     assert anti.priority == 20
     assert anti.runtime == "EXTERNAL_ACP"
