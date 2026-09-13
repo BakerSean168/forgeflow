@@ -92,6 +92,7 @@ def test_review_repair_rereview_reaches_ready_only_on_new_exact_head() -> None:
         pr_url=PR, rejected_head_sha=HEAD1, findings=findings, operation_key="repair:test"
     )
     assert "f1" in prompt and HEAD1 in prompt and "existing branch and PR" in prompt
+    assert "check out its existing head branch at the rejected exact head" in prompt
     assert "ForgeFlow-Operation: repair:test" in prompt
 
     state = mark_repair_dispatched(state)

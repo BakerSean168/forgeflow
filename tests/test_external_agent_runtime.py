@@ -30,6 +30,7 @@ class FakeThreads:
 @dataclass
 class FakeRuns:
     records: dict[tuple[str, str], dict] = field(default_factory=dict)
+    cancelled: list[tuple[str, str, bool, str]] = field(default_factory=list)
     next_id: str = "run-1"
 
     async def create(self, thread_id, assistant_id, **kwargs):
@@ -47,6 +48,9 @@ class FakeRuns:
 
     async def get(self, thread_id, run_id):
         return self.records[(thread_id, run_id)]
+
+    async def cancel(self, thread_id, run_id, *, wait, action):
+        self.cancelled.append((thread_id, run_id, wait, action))
 
 
 class FakeClient:
@@ -128,3 +132,13 @@ async def test_external_runtime_maps_blocked_graph_result_to_child_failure() -> 
     assert snapshot.status == "error"
     assert snapshot.failure_code == "ANTIGRAVITY_TIMEOUT"
     assert snapshot.failure_class == "ROUTE_AVAILABILITY"
+
+
+@pytest.mark.asyncio
+async def test_external_runtime_cancels_langgraph_child_with_interrupt() -> None:
+    client = FakeClient()
+    runtime = ExternalAgentChildRuntime(client)
+    await runtime.cancel_run(thread_id="external-thread", run_id="external-run")
+    assert client.runs.cancelled == [
+        ("external-thread", "external-run", False, "interrupt")
+    ]

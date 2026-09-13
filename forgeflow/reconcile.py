@@ -92,6 +92,8 @@ class PolicyServices(Protocol):
         self, *, exclude_ids: frozenset[str] = frozenset()
     ) -> RouteDefinition | None: ...
 
+    def select_repair_route(self) -> RouteDefinition | None: ...
+
     def automatic_route_fallback_enabled(self) -> bool: ...
 
     async def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str: ...
@@ -262,6 +264,15 @@ class DefaultPolicyServices:
         if not path:
             raise ReconcileError("FORGEFLOW_ROUTE_CONFIG_FILE is required")
         return load_route_registry(Path(path)).select("IMPLEMENT", exclude_ids=exclude_ids)
+
+    def select_repair_route(self) -> RouteDefinition | None:
+        path = os.environ.get("FORGEFLOW_ROUTE_CONFIG_FILE", "").strip()
+        if not path:
+            raise ReconcileError("FORGEFLOW_ROUTE_CONFIG_FILE is required")
+        for route in load_route_registry(Path(path)).eligible("IMPLEMENT"):
+            if route.runtime == "OPEN_SWE":
+                return route
+        return None
 
     def automatic_route_fallback_enabled(self) -> bool:
         value = os.environ.get("FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED", "false").strip().lower()
@@ -459,7 +470,7 @@ class DefaultPolicyServices:
     ) -> str:
         del route_id
         if runtime != "OPEN_SWE":
-            raise ReconcileError("external-agent repair routing is not enabled yet")
+            raise ReconcileError("repair dispatch requires an Open SWE runtime")
         return await self.child.dispatch_repair(
             thread_id=thread_id,
             prompt=prompt,
@@ -483,9 +494,13 @@ class DefaultPolicyServices:
         self, *, thread_id: str, run_id: str, route_id: str, runtime: str
     ) -> None:
         del route_id
-        if runtime != "OPEN_SWE":
-            raise ReconcileError("external-agent cancellation is not enabled yet")
-        await self.client.runs.cancel(thread_id, run_id, wait=False, action="interrupt")
+        if runtime == "OPEN_SWE":
+            await self.client.runs.cancel(thread_id, run_id, wait=False, action="interrupt")
+            return
+        if runtime == "EXTERNAL_ACP":
+            await self.external.cancel_run(thread_id=thread_id, run_id=run_id)
+            return
+        raise ReconcileError(f"unsupported implementation runtime: {runtime}")
 
     async def read_implementation_thread(
         self, thread_id: str, *, route_id: str, runtime: str
@@ -601,7 +616,7 @@ async def _reconcile_cancel_request(
     operation_key = _cancel_recovery_operation_key(state, policy_thread_id=policy_thread_id)
     attempt_status = "MISSING"
 
-    if runtime == "OPEN_SWE" and route_id and operation_key:
+    if runtime in {"OPEN_SWE", "EXTERNAL_ACP"} and route_id and operation_key:
         if thread_id and run_id is None:
             run_id = await services.find_child_run(
                 thread_id=thread_id,
@@ -609,42 +624,44 @@ async def _reconcile_cancel_request(
                 route_id=route_id,
                 runtime=runtime,
             )
-        attempt_status = await services.openswe_attempt_status(
-            route_id=route_id, operation_key=operation_key
+        if runtime == "OPEN_SWE":
+            attempt_status = await services.openswe_attempt_status(
+                route_id=route_id, operation_key=operation_key
+            )
+            if run_id is not None or attempt_status != "MISSING":
+                accounting_state = deepcopy(state)
+                accounting_state["implementation_operation_key"] = operation_key
+                accounting_state["implementation_run_id"] = run_id
+                if state["status"] == "REPAIRING":
+                    accounting_state["implementation_phase"] = "REPAIR"
+
+    if runtime in {"OPEN_SWE", "EXTERNAL_ACP"} and route_id and thread_id and run_id:
+        snapshot = await services.read_child_run(
+            thread_id=thread_id,
+            run_id=run_id,
+            route_id=route_id,
+            runtime=runtime,
         )
-        if run_id is not None or attempt_status != "MISSING":
-            accounting_state = deepcopy(state)
-            accounting_state["implementation_operation_key"] = operation_key
-            accounting_state["implementation_run_id"] = run_id
-            if state["status"] == "REPAIRING":
-                accounting_state["implementation_phase"] = "REPAIR"
+        if snapshot.status in _PENDING_RUN_STATUSES:
+            await services.cancel_child_run(
+                thread_id=thread_id,
+                run_id=run_id,
+                route_id=route_id,
+                runtime=runtime,
+            )
 
     if (
         accounting_state.get("implementation_runtime") == "OPEN_SWE"
         and accounting_state.get("implementation_operation_key")
+        and attempt_status != "FINISHED"
     ):
-        if thread_id and run_id:
-            snapshot = await services.read_child_run(
-                thread_id=thread_id,
-                run_id=run_id,
-                route_id=_required(accounting_state, "implementation_route_id"),
-                runtime="OPEN_SWE",
-            )
-            if snapshot.status in _PENDING_RUN_STATUSES:
-                await services.cancel_child_run(
-                    thread_id=thread_id,
-                    run_id=run_id,
-                    route_id=_required(accounting_state, "implementation_route_id"),
-                    runtime="OPEN_SWE",
-                )
-        if attempt_status != "FINISHED":
-            await _finish_openswe_attempt_for_state(
-                accounting_state,
-                services,
-                outcome="BLOCKED",
-                failure_code="POLICY_CANCELLED",
-                failure_class="POLICY_DENIED",
-            )
+        await _finish_openswe_attempt_for_state(
+            accounting_state,
+            services,
+            outcome="BLOCKED",
+            failure_code="POLICY_CANCELLED",
+            failure_class="POLICY_DENIED",
+        )
 
     result = cancel(state)
     result["cancel_requested"] = False
@@ -1100,15 +1117,52 @@ async def _reconcile_ready(state: ForgeFlowState, services: PolicyServices) -> F
 async def _reconcile_repair(
     state: ForgeFlowState, policy_thread_id: str, services: PolicyServices
 ) -> ForgeFlowState:
-    thread_id = state.get("implementation_thread_id")
     pr_url = state.get("pr_url")
     rejected_head = state.get("observed_head_sha")
-    if not thread_id or not pr_url or not rejected_head:
+    if not pr_url or not rejected_head:
         return escalate(state, "REPAIR_IDENTITY_MISSING")
+
     route_id = _required(state, "implementation_route_id")
     runtime = _required(state, "implementation_runtime")
     if runtime != "OPEN_SWE":
-        return escalate(state, "EXTERNAL_AGENT_REPAIR_NOT_ENABLED")
+        current_pr = await services.fetch_pr(pr_url)
+        if current_pr is None:
+            result = deepcopy(state)
+            result["last_failure_code"] = "PR_EVIDENCE_UNAVAILABLE"
+            return result
+        target_failure = pull_request_target_failure(state, current_pr)
+        if target_failure:
+            return escalate(state, target_failure)
+        if current_pr.head_sha != rejected_head:
+            return observe_external_head(state, current_pr.head_sha)
+
+        repair_route = services.select_repair_route()
+        if repair_route is None or repair_route.runtime != "OPEN_SWE":
+            return escalate(state, "REPAIR_ROUTE_UNAVAILABLE")
+        result = deepcopy(state)
+        result["implementation_route_id"] = repair_route.id
+        result["implementation_runtime"] = "OPEN_SWE"
+        result["implementation_thread_id"] = None
+        result["implementation_run_id"] = None
+        result["implementation_operation_key"] = None
+        result["implementation_phase"] = "REPAIR"
+        result["workspace_path"] = None
+        result["run_retry_count"] = 0
+        return result
+
+    thread_id = state.get("implementation_thread_id")
+    if not thread_id:
+        thread_id = await services.ensure_implementation_thread(
+            policy_thread_id=policy_thread_id,
+            route_id=route_id,
+            runtime=runtime,
+            repo_owner=_required(state, "repo_owner"),
+            repo_name=_required(state, "repo_name"),
+            objective=f"Repair existing PR for: {_required(state, 'objective')}",
+        )
+        result = deepcopy(state)
+        result["implementation_thread_id"] = thread_id
+        return result
 
     run_id = state.get("implementation_run_id")
     if not run_id:
