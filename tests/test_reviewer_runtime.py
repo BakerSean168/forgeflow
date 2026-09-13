@@ -81,6 +81,7 @@ async def test_official_reviewer_dispatch_is_sol_medium_and_operation_keyed() ->
     assert configurable["reviewer_subagent_model_id"] == "openai:gpt-5.6-sol"
     assert configurable["reviewer_subagent_reasoning_effort"] == "medium"
     assert kwargs["assistant_id"] == "reviewer"
+    assert kwargs["metadata"]["head_sha"] == HEAD
     assert kwargs["metadata"]["forgeflow_review_operation_key"] == "review:head:retry:0"
 
 

@@ -49,6 +49,7 @@ def test_load_github_app_env_is_minimal_and_handles_shell_quotes(tmp_path: Path,
     for key in gate._GITHUB_APP_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("GITHUB_APP_CLIENT_SECRET", raising=False)
+    monkeypatch.setenv("GITHUB_APP_ID", "stale-ambient")
     (tmp_path / "github-app.env").write_text(
         "GITHUB_APP_ID=123\n"
         "GITHUB_APP_CLIENT_SECRET=do-not-load-this\n"
@@ -97,6 +98,31 @@ async def test_adopt_rejects_stale_run_even_when_thread_head_was_updated() -> No
 
     assert adopted is None
     assert client.runs.requested
+
+
+@pytest.mark.asyncio
+async def test_adopt_accepts_upstream_run_head_from_persisted_configurable() -> None:
+    gate = _load_gate()
+    head = "a" * 40
+    client = FakeClient(
+        threads=FakeThreads(
+            {"metadata": {"head_sha": head, "current_reviewer_run_id": "upstream-run"}}
+        ),
+        runs=FakeRuns(
+            {
+                "metadata": {"kind": "reviewer"},
+                "kwargs": {"config": {"configurable": {"head_sha": head}}},
+                "status": "running",
+            }
+        ),
+    )
+
+    adopted = await gate._adopt_current_exact_head(
+        client, owner="o", repo="r", pr_number=1, head_sha=head
+    )
+
+    assert adopted is not None
+    assert adopted[1] == "upstream-run"
 
 
 @pytest.mark.asyncio

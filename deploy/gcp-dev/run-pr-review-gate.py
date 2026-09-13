@@ -54,11 +54,9 @@ def _load_github_app_env(config_dir: Path) -> None:
             raise ReviewGateError("REVIEW_GATE_GITHUB_APP_ENV_INVALID") from exc
         if len(parts) != 1 or not parts[0]:
             raise ReviewGateError("REVIEW_GATE_GITHUB_APP_ENV_INVALID")
-        os.environ.setdefault(key, parts[0])
+        os.environ[key] = parts[0]
         loaded.add(key)
-    if loaded != _GITHUB_APP_ENV_KEYS and any(
-        not os.environ.get(key) for key in _GITHUB_APP_ENV_KEYS
-    ):
+    if loaded != _GITHUB_APP_ENV_KEYS:
         raise ReviewGateError("REVIEW_GATE_GITHUB_APP_ENV_INCOMPLETE")
 
 
@@ -131,7 +129,13 @@ async def _adopt_current_exact_head(
         return None
     run_metadata = run.get("metadata") if isinstance(run, dict) else None
     run_metadata = run_metadata if isinstance(run_metadata, dict) else {}
-    if run_metadata.get("head_sha") != head_sha:
+    run_head = run_metadata.get("head_sha")
+    if not isinstance(run_head, str) or not run_head:
+        kwargs = run.get("kwargs") if isinstance(run, dict) else None
+        config = kwargs.get("config") if isinstance(kwargs, dict) else None
+        configurable = config.get("configurable") if isinstance(config, dict) else None
+        run_head = configurable.get("head_sha") if isinstance(configurable, dict) else None
+    if run_head != head_sha:
         return None
     return thread_id, current
 
