@@ -58,7 +58,7 @@ GRAPH_ENTRIES: Mapping[str, Callable[..., Any]] = {
 DispatchFn = Callable[..., Awaitable[Mapping[str, Any]]]
 FindingsReader = Callable[[str], Awaitable[list[dict[str, Any]]]]
 ReviewTrigger = Callable[..., Awaitable[dict[str, Any]]]
-ReviewAncestryChecker = Callable[[str, str, str, str], Awaitable[bool]]
+ReviewBaselineResolver = Callable[[str, str, str, str, str], Awaitable[str]]
 
 
 class OpenSweAdapterError(RuntimeError):
@@ -315,29 +315,9 @@ class ReviewerSnapshot:
     findings: tuple[dict[str, Any], ...]
 
 
-async def _github_review_baseline_is_ancestor(
-    owner: str, repo: str, previous_sha: str, head_sha: str
-) -> bool:
-    """Return true only when GitHub proves ``previous_sha`` is behind ``head_sha``.
-
-    Re-reviewing a force-pushed PR from an unreachable historical SHA produces
-    an empty reviewer diff upstream. Falling back to a fresh base-to-head review
-    is safer than trusting an uncertain incremental baseline, so every unavailable
-    or non-ahead comparison returns false.
-    """
-    if not all((owner, repo, previous_sha, head_sha)) or previous_sha == head_sha:
-        return False
-    installation_id = await get_github_app_installation_id_for_repo(owner, repo)
-    if installation_id is None:
-        return False
-    token = await get_github_app_installation_token(
-        installation_id=installation_id,
-        repositories=[repo],
-        permissions={"contents": "read"},
-        log_errors=False,
-    )
-    if not token:
-        return False
+async def _github_compare(
+    owner: str, repo: str, base_sha: str, head_sha: str, token: str
+) -> Mapping[str, Any] | None:
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
@@ -346,15 +326,54 @@ async def _github_review_baseline_is_ancestor(
     try:
         async with httpx2.AsyncClient(timeout=15) as client:
             response = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}/compare/{previous_sha}...{head_sha}",
+                f"https://api.github.com/repos/{owner}/{repo}/compare/{base_sha}...{head_sha}",
                 headers=headers,
             )
         if response.status_code != 200:
-            return False
+            return None
         payload = response.json()
-    except (httpx2.TransportError, ValueError):
-        return False
-    return isinstance(payload, Mapping) and payload.get("status") == "ahead"
+    except (httpx2.RequestError, ValueError):
+        return None
+    return payload if isinstance(payload, Mapping) else None
+
+
+async def _github_review_diff_baseline(
+    owner: str, repo: str, base_sha: str, previous_sha: str, head_sha: str
+) -> str:
+    """Resolve a safe diff baseline while preserving re-review finding context.
+
+    A linear push can review only the delta since the prior reviewed SHA. A
+    force-push/rebase must keep re-review semantics so historical findings are
+    reconciled, but the old SHA is not a valid incremental range. In that case
+    reset only the *diff* baseline to GitHub's authoritative merge-base for the
+    current PR. If GitHub cannot prove that baseline, fail closed rather than
+    silently dropping prior finding evidence.
+    """
+    installation_id = await get_github_app_installation_id_for_repo(owner, repo)
+    if installation_id is None:
+        raise OpenSweAdapterError("REVIEW_DIFF_BASELINE_UNAVAILABLE")
+    token = await get_github_app_installation_token(
+        installation_id=installation_id,
+        repositories=[repo],
+        permissions={"contents": "read"},
+        log_errors=False,
+    )
+    if not token:
+        raise OpenSweAdapterError("REVIEW_DIFF_BASELINE_UNAVAILABLE")
+
+    if previous_sha != head_sha:
+        previous_compare = await _github_compare(owner, repo, previous_sha, head_sha, token)
+        if previous_compare is not None and previous_compare.get("status") == "ahead":
+            return previous_sha
+
+    current_compare = await _github_compare(owner, repo, base_sha, head_sha, token)
+    if current_compare is None:
+        raise OpenSweAdapterError("REVIEW_DIFF_BASELINE_UNAVAILABLE")
+    merge_base = current_compare.get("merge_base_commit")
+    merge_base_sha = merge_base.get("sha") if isinstance(merge_base, Mapping) else None
+    if not isinstance(merge_base_sha, str) or len(merge_base_sha) != 40:
+        raise OpenSweAdapterError("REVIEW_DIFF_BASELINE_INVALID")
+    return merge_base_sha
 
 
 class OpenSweReviewerRuntime:
@@ -366,12 +385,12 @@ class OpenSweReviewerRuntime:
         *,
         dispatch: DispatchFn = dispatch_agent_run,
         findings_reader: FindingsReader | None = None,
-        ancestry_checker: ReviewAncestryChecker = _github_review_baseline_is_ancestor,
+        baseline_resolver: ReviewBaselineResolver = _github_review_diff_baseline,
     ) -> None:
         self._client = client
         self._dispatch = dispatch
         self._findings_reader = findings_reader or self._read_findings_from_client
-        self._ancestry_checker = ancestry_checker
+        self._baseline_resolver = baseline_resolver
 
     async def _read_findings_from_client(self, thread_id: str) -> list[dict[str, Any]]:
         thread = await self._client.threads.get(thread_id)
@@ -472,15 +491,12 @@ class OpenSweReviewerRuntime:
             },
         )
         previous_reviewed_sha = existing_meta.get("last_reviewed_sha")
-        can_incremental_review = False
-        if (
-            isinstance(previous_reviewed_sha, str)
-            and previous_reviewed_sha
-            and previous_reviewed_sha != head_sha
-        ):
-            can_incremental_review = await self._ancestry_checker(
-                owner, repo, previous_reviewed_sha, head_sha
+        review_diff_baseline: str | None = None
+        if isinstance(previous_reviewed_sha, str) and previous_reviewed_sha:
+            review_diff_baseline = await self._baseline_resolver(
+                owner, repo, base_sha, previous_reviewed_sha, head_sha
             )
+        is_re_review = review_diff_baseline is not None
 
         configurable = reviewer_config(reviewer_thread_id=thread_id)
         configurable.update(
@@ -494,15 +510,19 @@ class OpenSweReviewerRuntime:
                 "base_sha": base_sha,
                 "branch_name": head_ref,
                 "review_requested": True,
-                "re_review": can_incremental_review,
-                "last_reviewed_sha": (
-                    previous_reviewed_sha if can_incremental_review else None
-                ),
+                "re_review": is_re_review,
+                "last_reviewed_sha": review_diff_baseline,
             }
+        )
+        review_request = (
+            "Please re-review this GitHub pull request against the complete current PR diff. "
+            "Reconcile every existing finding before publishing only concrete current-head findings."
+            if is_re_review and review_diff_baseline != previous_reviewed_sha
+            else "Please review this GitHub pull request. Submit only concrete findings."
         )
         run = await self._dispatch(
             thread_id,
-            "Please review this GitHub pull request. Submit only concrete findings.",
+            review_request,
             configurable,
             source="forgeflow",
             assistant_id="reviewer",

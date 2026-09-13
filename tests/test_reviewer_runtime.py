@@ -290,8 +290,9 @@ def test_invalid_explicit_last_confirmed_sha_fails_closed() -> None:
     with pytest.raises(EvidenceViolation, match="last_confirmed_sha"):
         review_decision(snapshot, expected_head_sha=HEAD)
 
+
 @pytest.mark.asyncio
-async def test_reviewer_uses_incremental_range_only_when_previous_head_is_ancestor() -> None:
+async def test_reviewer_uses_previous_sha_as_incremental_diff_baseline() -> None:
     client = FakeClient()
     thread_id = reviewer_thread_id("o", "r", 1)
     previous = "c" * 40
@@ -300,17 +301,17 @@ async def test_reviewer_uses_incremental_range_only_when_previous_head_is_ancest
         "metadata": {"last_reviewed_sha": previous},
     }
     calls = []
-    ancestry_calls = []
+    baseline_calls = []
 
-    async def ancestry(owner, repo, previous_sha, head_sha):
-        ancestry_calls.append((owner, repo, previous_sha, head_sha))
-        return True
+    async def baseline(owner, repo, base_sha, previous_sha, head_sha):
+        baseline_calls.append((owner, repo, base_sha, previous_sha, head_sha))
+        return previous_sha
 
     async def dispatch(thread_id, content, configurable, **kwargs):
-        calls.append(configurable)
+        calls.append((content, configurable))
         return {"run_id": "incremental-review"}
 
-    runtime = OpenSweReviewerRuntime(client, dispatch=dispatch, ancestry_checker=ancestry)
+    runtime = OpenSweReviewerRuntime(client, dispatch=dispatch, baseline_resolver=baseline)
     await runtime.trigger_review(
         owner="o",
         repo="r",
@@ -323,30 +324,33 @@ async def test_reviewer_uses_incremental_range_only_when_previous_head_is_ancest
         operation_key="review:ancestor",
     )
 
-    assert ancestry_calls == [("o", "r", previous, HEAD)]
-    assert calls[0]["re_review"] is True
-    assert calls[0]["last_reviewed_sha"] == previous
+    assert baseline_calls == [("o", "r", "b" * 40, previous, HEAD)]
+    assert calls[0][1]["re_review"] is True
+    assert calls[0][1]["last_reviewed_sha"] == previous
 
 
 @pytest.mark.asyncio
-async def test_force_pushed_reviewer_falls_back_to_fresh_base_to_head_review() -> None:
+async def test_force_push_keeps_rereview_context_but_resets_diff_to_merge_base() -> None:
     client = FakeClient()
     thread_id = reviewer_thread_id("o", "r", 1)
     previous = "c" * 40
+    merge_base = "d" * 40
     client.threads.records[thread_id] = {
         "status": "idle",
         "metadata": {"last_reviewed_sha": previous},
     }
     calls = []
 
-    async def diverged(_owner, _repo, _previous_sha, _head_sha):
-        return False
+    async def reset_baseline(_owner, _repo, _base_sha, _previous_sha, _head_sha):
+        return merge_base
 
     async def dispatch(thread_id, content, configurable, **kwargs):
-        calls.append(configurable)
-        return {"run_id": "fresh-review"}
+        calls.append((content, configurable))
+        return {"run_id": "force-push-review"}
 
-    runtime = OpenSweReviewerRuntime(client, dispatch=dispatch, ancestry_checker=diverged)
+    runtime = OpenSweReviewerRuntime(
+        client, dispatch=dispatch, baseline_resolver=reset_baseline
+    )
     await runtime.trigger_review(
         owner="o",
         repo="r",
@@ -359,28 +363,34 @@ async def test_force_pushed_reviewer_falls_back_to_fresh_base_to_head_review() -
         operation_key="review:force-push",
     )
 
-    assert calls[0]["re_review"] is False
-    assert calls[0]["last_reviewed_sha"] is None
+    content, configurable = calls[0]
+    assert configurable["re_review"] is True
+    assert configurable["last_reviewed_sha"] == merge_base
+    assert "Reconcile every existing finding" in content
 
 
 @pytest.mark.asyncio
-async def test_same_head_retry_never_builds_empty_incremental_diff() -> None:
+async def test_same_head_retry_resets_to_full_diff_baseline_instead_of_head_to_head() -> None:
     client = FakeClient()
     thread_id = reviewer_thread_id("o", "r", 1)
+    merge_base = "d" * 40
     client.threads.records[thread_id] = {
         "status": "idle",
         "metadata": {"last_reviewed_sha": HEAD},
     }
     calls = []
 
-    async def ancestry(*_args):
-        raise AssertionError("same head must not query ancestry")
+    async def reset_baseline(_owner, _repo, _base_sha, previous_sha, head_sha):
+        assert previous_sha == head_sha == HEAD
+        return merge_base
 
     async def dispatch(thread_id, content, configurable, **kwargs):
         calls.append(configurable)
-        return {"run_id": "same-head-fresh-review"}
+        return {"run_id": "same-head-full-review"}
 
-    runtime = OpenSweReviewerRuntime(client, dispatch=dispatch, ancestry_checker=ancestry)
+    runtime = OpenSweReviewerRuntime(
+        client, dispatch=dispatch, baseline_resolver=reset_baseline
+    )
     await runtime.trigger_review(
         owner="o",
         repo="r",
@@ -393,5 +403,84 @@ async def test_same_head_retry_never_builds_empty_incremental_diff() -> None:
         operation_key="review:same-head-retry",
     )
 
-    assert calls[0]["re_review"] is False
-    assert calls[0]["last_reviewed_sha"] is None
+    assert calls[0]["re_review"] is True
+    assert calls[0]["last_reviewed_sha"] == merge_base
+
+@pytest.mark.asyncio
+async def test_github_compare_decode_error_is_treated_as_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx2
+
+    import forgeflow.adapters.openswe as module
+
+    class BrokenClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, *args, **kwargs):
+            raise httpx2.DecodingError("invalid content encoding")
+
+    monkeypatch.setattr(module.httpx2, "AsyncClient", lambda **kwargs: BrokenClient())
+    assert await module._github_compare("o", "r", "a" * 40, "b" * 40, "token") is None
+
+
+@pytest.mark.asyncio
+async def test_force_push_baseline_resolver_uses_current_pr_merge_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import forgeflow.adapters.openswe as module
+
+    previous = "a" * 40
+    base = "b" * 40
+    head = "c" * 40
+    merge_base = "d" * 40
+    calls = []
+
+    async def installation(_owner, _repo):
+        return 1
+
+    async def token(**kwargs):
+        return "fake-token"
+
+    async def compare(owner, repo, from_sha, to_sha, _token):
+        calls.append((from_sha, to_sha))
+        if from_sha == previous:
+            return {"status": "diverged"}
+        return {"status": "ahead", "merge_base_commit": {"sha": merge_base}}
+
+    monkeypatch.setattr(module, "get_github_app_installation_id_for_repo", installation)
+    monkeypatch.setattr(module, "get_github_app_installation_token", token)
+    monkeypatch.setattr(module, "_github_compare", compare)
+
+    resolved = await module._github_review_diff_baseline("o", "r", base, previous, head)
+    assert resolved == merge_base
+    assert calls == [(previous, head), (base, head)]
+
+
+@pytest.mark.asyncio
+async def test_unprovable_force_push_baseline_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import forgeflow.adapters.openswe as module
+
+    async def installation(_owner, _repo):
+        return 1
+
+    async def token(**kwargs):
+        return "fake-token"
+
+    async def unavailable(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(module, "get_github_app_installation_id_for_repo", installation)
+    monkeypatch.setattr(module, "get_github_app_installation_token", token)
+    monkeypatch.setattr(module, "_github_compare", unavailable)
+
+    with pytest.raises(module.OpenSweAdapterError, match="REVIEW_DIFF_BASELINE_UNAVAILABLE"):
+        await module._github_review_diff_baseline(
+            "o", "r", "b" * 40, "a" * 40, "c" * 40
+        )

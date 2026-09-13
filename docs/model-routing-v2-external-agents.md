@@ -430,11 +430,13 @@ run. Only transient provider failures such as rate limits, timeouts, connection 
 denials, and other task failures do **not** cause a model fallback. Exact-head review evidence remains
 mandatory after either model path.
 
-Reviewer re-runs are also force-push safe. ForgeFlow uses GitHub compare evidence before enabling
-Open SWE's incremental `last_reviewed_sha..head` range. Only a previous reviewed SHA proven to be
-an ancestor of the current head is used incrementally; diverged, identical, unavailable, or otherwise
-unproven baselines fall back to a fresh authoritative `base...head` review. This prevents a rebase from
-turning a successful reviewer run into an empty-diff, stale-evidence result.
+Reviewer re-runs are also force-push safe. ForgeFlow preserves re-review finding reconciliation
+semantics, but separates them from the diff baseline. A previous reviewed SHA proven by GitHub compare
+to be an ancestor of the current head remains the incremental baseline. After a force-push/rebase (or a
+same-head operator retry), the run stays a re-review so historical findings must be resolved or
+re-confirmed, while the diff baseline is reset to GitHub's authoritative merge-base for the current
+`base...head` PR. If that merge-base cannot be proven, review dispatch fails closed instead of silently
+dropping prior finding evidence or accepting an empty diff.
 
 ### Phase 5 — additional external agents
 
