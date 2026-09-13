@@ -394,6 +394,8 @@ ForgeFlow separates the model's **physical context capability** from the Agent's
 
 The input-token budget deliberately uses local approximate request counting rather than provider usage metadata because some OpenAI-compatible streaming relays omit usage fields. The warning and hard limits can be overridden per deployment with `FORGEFLOW_GLM53_RUN_INPUT_WARN_TOKENS` and `FORGEFLOW_GLM53_RUN_INPUT_HARD_TOKENS`; the hard limit must remain greater than the warning limit.
 
+Deep Agents generates compaction summaries through an internal model call that bypasses Open SWE's normal `ModelFallbackMiddleware`. ForgeFlow therefore wraps the summarization factory as well: GLM 5.3 remains the primary summary model, while the currently configured Open SWE implementation fallback (Luna in V1) is attached to the internal summary runnable. This prevents an exhausted GLM route from blocking compaction before the main Agent can reach its own fallback path.
+
 At the warning boundary the Agent is instructed not to start another feature slice. At the hard boundary it receives one final paid call limited to focused verification, commit/push/PR checkpointing, and a remaining-work summary; the next model call is short-circuited. ForgeFlow still owns authoritative completion: a budget-ended child run without the expected PR/head evidence is not accepted as READY and remains subject to normal no-progress/retry policy.
 
 This policy exists specifically to prevent long durable coding threads from multiplying a large prompt across hundreds of model calls. Large objectives should still be expressed as durable ForgeFlow plans with coherent implementation slices rather than relying on a single Open SWE invocation to consume the model's entire physical context window.

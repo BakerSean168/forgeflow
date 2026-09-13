@@ -30,6 +30,7 @@ from typing import Any
 import agent.dashboard.options as upstream_options
 import agent.utils.model as upstream_model
 import deepagents
+import deepagents.graph as upstream_deepagents_graph
 from deepagents.middleware import summarization as upstream_summarization
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
@@ -47,6 +48,8 @@ GLM53_TOOL_ARG_KEEP_TOKENS = 12_288
 GLM53_TOOL_ARG_MAX_CHARS = 2_000
 GLM53_RUN_INPUT_WARN_TOKENS = 5_000_000
 GLM53_RUN_INPUT_HARD_TOKENS = 10_000_000
+GLM53_SUMMARY_FALLBACK_EFFORT = "medium"
+GLM53_SUMMARY_FALLBACK_MAX_TOKENS = 8_192
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,7 @@ _original_compute_summarization_defaults: Callable[[BaseChatModel], Any] = (
     upstream_summarization.compute_summarization_defaults
 )
 _original_create_deep_agent = deepagents.create_deep_agent
+_original_create_summarization_middleware = upstream_summarization.create_summarization_middleware
 _installed = False
 
 
@@ -229,6 +233,54 @@ class ForgeFlowRunInputBudgetMiddleware(AgentMiddleware):
         return await handler(request)
 
 
+def _summary_fallback_model() -> BaseChatModel | None:
+    """Build the configured Open SWE fallback model for internal summary calls."""
+    fallback_model_id = upstream_model.fallback_model_id_for(GLM53_MODEL_ID)
+    if not fallback_model_id or fallback_model_id == GLM53_MODEL_ID:
+        return None
+    kwargs = upstream_model.provider_model_kwargs(
+        fallback_model_id,
+        GLM53_SUMMARY_FALLBACK_EFFORT,
+        max_tokens=GLM53_SUMMARY_FALLBACK_MAX_TOKENS,
+    )
+    try:
+        return upstream_model.make_model(fallback_model_id, use_gateway=None, **kwargs)
+    except Exception:
+        logger.warning(
+            "Could not construct GLM-5.3 summarization fallback model %s",
+            fallback_model_id,
+            exc_info=True,
+        )
+        return None
+
+
+def create_summarization_middleware_with_forgeflow_fallback(
+    model: BaseChatModel,
+    backend: Any,
+    **kwargs: Any,
+) -> Any:
+    """Give Deep Agents' internal GLM summary call the same availability escape hatch.
+
+    Summarization invokes its model directly and therefore sits outside Open SWE's
+    ``ModelFallbackMiddleware``. Without this wrapper an exhausted GLM route can
+    fail a run *before* the main model has a chance to fall back to Luna.
+    """
+    middleware = _original_create_summarization_middleware(model, backend, **kwargs)
+    if _model_name(model) != GLM53_PROVIDER_MODEL_NAME:
+        return middleware
+
+    fallback = _summary_fallback_model()
+    if fallback is None:
+        return middleware
+
+    # Replace the upstream primary-only retry runnable with a composite that
+    # tries GLM once, then Luna. If both fail, the composite itself retains the
+    # upstream retry behavior. ``middleware.model`` remains GLM so token/profile
+    # accounting and context-limit calculations stay truthful to the primary.
+    middleware._lc_helper._summary_model = model.with_fallbacks([fallback]).with_retry()
+    return middleware
+
+
 def create_deep_agent_with_forgeflow_budget(*args: Any, **kwargs: Any) -> Any:
     """Inject one GLM-aware run-budget middleware into each Deep Agent graph."""
     middleware = list(kwargs.pop("middleware", ()) or ())
@@ -253,6 +305,16 @@ def install_agent_context_policy() -> None:
     # time, so replacing it here affects main agents and Deep Agents subagents.
     upstream_summarization.compute_summarization_defaults = compute_summarization_defaults
 
+    # Deep Agents imports this factory by value in graph.py, while its manual
+    # compact tool resolves the module global. Patch both references so internal
+    # summary generation inherits GLM -> Luna availability fallback everywhere.
+    upstream_summarization.create_summarization_middleware = (
+        create_summarization_middleware_with_forgeflow_fallback
+    )
+    upstream_deepagents_graph.create_summarization_middleware = (
+        create_summarization_middleware_with_forgeflow_fallback
+    )
+
     # Open SWE imports ``create_deep_agent`` from the package after this overlay
     # is installed, so this wrapper injects the run-budget guard without forking
     # agent.server. The middleware itself is a no-op for non-GLM models.
@@ -272,12 +334,15 @@ __all__ = [
     "GLM53_PROVIDER_MODEL_NAME",
     "GLM53_RUN_INPUT_HARD_TOKENS",
     "GLM53_RUN_INPUT_WARN_TOKENS",
+    "GLM53_SUMMARY_FALLBACK_EFFORT",
+    "GLM53_SUMMARY_FALLBACK_MAX_TOKENS",
     "GLM53_TOOL_ARG_KEEP_TOKENS",
     "GLM53_TOOL_ARG_MAX_CHARS",
     "GLM53_TOOL_ARG_TRUNCATE_TOKENS",
     "ForgeFlowRunInputBudgetMiddleware",
     "compute_summarization_defaults",
     "create_deep_agent_with_forgeflow_budget",
+    "create_summarization_middleware_with_forgeflow_fallback",
     "install_agent_context_policy",
     "model_profile_with_context_override",
 ]
