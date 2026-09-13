@@ -17,7 +17,11 @@ def _resolve(spec: str):
 def test_one_langgraph_deployment_exposes_upstream_and_policy_graphs() -> None:
     config = json.loads((REPO / "langgraph.json").read_text(encoding="utf-8"))
     assert set(config["graphs"]) == EXPECTED_GRAPHS
-    assert config["http"]["app"] == "agent.webapp:app"
+    assert config["http"]["app"] == "openswe_ext.webapp:app"
+    extension = (REPO / "openswe_ext/webapp.py").read_text(encoding="utf-8")
+    assert "from agent.webapp import app" in extension
+    assert "FastAPI(" not in extension
+    assert "include_router" in extension
     for spec in config["graphs"].values():
         assert callable(_resolve(spec))
 

@@ -17,8 +17,10 @@ from openswe_ext.model_policy import (
     install_forgeflow_model_policy,
     review_model_id,
 )
+from openswe_ext.provider_fallback import install_provider_fallback_overlay
 from openswe_ext.reviewer_fallback import install_reviewer_fallback_overlay
 
+install_provider_fallback_overlay()
 install_forgeflow_model_policy()
 install_reviewer_fallback_overlay()
 
@@ -167,6 +169,7 @@ _OPENSWE_PROVIDER_FAILURE_CODES = frozenset(
         "provider_overloaded",
         "provider_unavailable",
         "provider_timeout",
+        "provider_quota_exhausted",
         "model_unavailable",
     }
 )

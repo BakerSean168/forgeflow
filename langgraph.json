@@ -15,7 +15,7 @@
     "."
   ],
   "http": {
-    "app": "agent.webapp:app"
+    "app": "openswe_ext.webapp:app"
   },
   "checkpointer": {
     "ttl": {

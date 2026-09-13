@@ -46,10 +46,14 @@ if [[ -n "$projects_source" ]]; then
   python3 -m json.tool "$projects_source" >/dev/null
   install -m 0600 "$projects_source" "$config_dir/projects.json"
 elif [[ ! -f "$config_dir/projects.json" ]]; then
-  printf '[]\n' >"$config_dir/projects.json"
-  chmod 600 "$config_dir/projects.json"
+  install -m 0600 "$root/deploy/gcp-dev/projects.default.json" "$config_dir/projects.json"
+else
+  python3 "$root/deploy/gcp-dev/migrate_project_defaults.py" \
+    --current "$config_dir/projects.json" \
+    --target-default "$root/deploy/gcp-dev/projects.default.json"
 fi
 python3 -m json.tool "$config_dir/projects.json" >/dev/null
+chmod 600 "$config_dir/projects.json"
 
 if [[ -n "$routes_source" ]]; then
   [[ -r "$routes_source" ]] || { echo "routes source is not readable: $routes_source" >&2; exit 2; }

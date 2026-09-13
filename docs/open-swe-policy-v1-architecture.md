@@ -127,6 +127,12 @@ The bakeoff also established the policy requirement ForgeFlow must retain: **a r
 7. Escalation when autonomous closure is unsafe or exhausted.
 8. A small observable policy state for Hermes/operator use.
 
+### Hermes/operator observability
+
+ForgeFlow exposes a deliberately small `/forgeflow/api/v1/*` facade for Hermes and human operators. The facade is mounted into the **same** upstream `agent.webapp` FastAPI application used by the LangGraph deployment; it does not create a second service, scheduler, or workflow database. A Policy V1 LangGraph thread is the durable objective identity (`planId == threadId` for Hermes compatibility), and status/detail views are projections of that thread state plus the existing project and route registries.
+
+The facade may create, read, reconcile, or cancel a Policy V1 objective and expose bounded project/route summaries. Browser-facing Hermes dashboards proxy these read-only summaries server-side so the ForgeFlow bearer token is never delivered to the browser.
+
 ### Open SWE owns
 
 1. Agent loop.

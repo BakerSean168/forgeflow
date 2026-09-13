@@ -20,6 +20,10 @@ def test_route_registry_and_attempt_ledger_are_deployed_fail_closed() -> None:
     start = (DEPLOY / "start-forgeflow-policy.sh").read_text(encoding="utf-8")
     default_routes = json.loads((DEPLOY / "routes.default.json").read_text(encoding="utf-8"))
     canary = (DEPLOY / "run-external-agent-project-canary.py").read_text(encoding="utf-8")
+    assert "projects.default.json" in install
+    assert "migrate_project_defaults.py" in install
+    assert '--current "$config_dir/projects.json"' in install
+    assert '--target-default "$root/deploy/gcp-dev/projects.default.json"' in install
     assert "routes.default.json" in install
     assert "migrate_route_defaults.py" in install
     assert '--current "$config_dir/routes.json"' in install
@@ -64,3 +68,13 @@ def test_external_agent_route_and_availability_fallback_are_enabled_by_default()
 def test_example_project_manifest_documents_external_agent_validation_command() -> None:
     payload = json.loads(Path("deploy/gcp-dev/projects.example.json").read_text(encoding="utf-8"))
     assert payload[0]["external_agent_test_command"] == ["uv", "run", "pytest", "-q"]
+
+
+def test_operator_api_is_mounted_inside_the_existing_openswe_webapp() -> None:
+    root = DEPLOY.parents[1]
+    config = json.loads((root / "langgraph.json").read_text(encoding="utf-8"))
+    assert config["http"]["app"] == "openswe_ext.webapp:app"
+    extension = (root / "openswe_ext/webapp.py").read_text(encoding="utf-8")
+    assert "from agent.webapp import app" in extension
+    assert "include_router" in extension
+    assert "8420" not in extension
