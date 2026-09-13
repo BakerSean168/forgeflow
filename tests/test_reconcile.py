@@ -808,6 +808,59 @@ async def test_route_availability_failure_falls_through_to_next_eligible_route()
 
 
 @pytest.mark.asyncio
+async def test_openswe_provider_outage_falls_through_to_external_agent_route() -> None:
+    openswe = RouteDefinition(
+        "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+    )
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        20,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    services = FakeServices(
+        cron_id="cron-1",
+        implementation_thread="openswe-thread",
+        selected_route=openswe,
+        fallback_route=external,
+        route_fallback_enabled=True,
+    )
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id=openswe.id,
+        implementation_runtime=openswe.runtime,
+        implementation_thread_id="openswe-thread",
+        implementation_run_id="openswe-run",
+        implementation_operation_key="op:openswe-provider-outage",
+    )
+    services.child_status["openswe-run"] = "error"
+    services.child_failure_code["openswe-run"] = "OPENSWE_PROVIDER_UNAVAILABLE"
+
+    fallback = await reconcile_once(
+        state, policy_thread_id="policy-openswe-provider-outage", services=services
+    )
+
+    assert fallback["status"] == "IMPLEMENTING"
+    assert fallback["implementation_failed_route_ids"] == [openswe.id]
+    assert fallback["implementation_route_id"] == external.id
+    assert fallback["implementation_runtime"] == "EXTERNAL_ACP"
+    assert fallback["implementation_thread_id"] is None
+    assert fallback["implementation_run_id"] is None
+    assert fallback["last_failure_code"] == "OPENSWE_PROVIDER_UNAVAILABLE"
+    assert services.attempt_finish_calls[-1]["route_id"] == openswe.id
+    assert services.attempt_finish_calls[-1]["outcome"] == "FAILED"
+    assert services.attempt_finish_calls[-1]["failure_class"] == "ROUTE_AVAILABILITY"
+    assert services.attempt_finish_calls[-1]["failure_code"] == "OPENSWE_PROVIDER_UNAVAILABLE"
+
+    threaded = await reconcile_once(
+        fallback, policy_thread_id="policy-openswe-provider-outage", services=services
+    )
+    assert threaded["implementation_thread_id"] == "implementation-thread-antigravity-account-primary"
+
+
+@pytest.mark.asyncio
 async def test_task_failure_does_not_switch_routes() -> None:
     external = RouteDefinition(
         "antigravity-account-primary",

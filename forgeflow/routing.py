@@ -184,6 +184,7 @@ def classify_failure_code(code: str) -> FailureClass:
         "ANTIGRAVITY_EVENT_TOO_LARGE",
         "ANTIGRAVITY_RESULT_INVALID",
         "EXTERNAL_AGENT_DOCKER_COMMAND_FAILED",
+        "OPENSWE_PROVIDER_UNAVAILABLE",
     }:
         return "ROUTE_AVAILABILITY"
     if normalized in {

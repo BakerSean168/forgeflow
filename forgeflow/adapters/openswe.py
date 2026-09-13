@@ -39,10 +39,12 @@ from agent.graphs.analyzer import traced_analyzer
 from agent.graphs.chat import traced_chat_agent
 from agent.graphs.reviewer import traced_reviewer_agent
 from agent.graphs.scheduler import get_scheduler
+from agent.middleware.model_fallback import MODEL_OUTAGE_MESSAGE
 from agent.review.findings import coerce_findings, list_findings
 from agent.run_config import RunConfig
 from agent.slack.client import GitHubPrRef, parse_github_pr_url
 from agent.thread_ids import reviewer_thread_id
+from agent.utils.errors import LAST_MODEL_ERROR_KEY
 from agent.webapp import app as open_swe_webapp
 from agent.webhooks.common import fetch_github_pr_metadata
 from langgraph_sdk.errors import NotFoundError
@@ -159,6 +161,78 @@ def reviewer_config(
     return RunConfig.parse(config).dump()
 
 
+_OPENSWE_PROVIDER_FAILURE_CODES = frozenset(
+    {
+        "provider_rate_limited",
+        "provider_overloaded",
+        "provider_unavailable",
+        "provider_timeout",
+        "model_unavailable",
+    }
+)
+
+
+def _provider_failure_for_run(
+    metadata: Any, run_id: str, *, terminal_error_type: str | None = None
+) -> str | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    raw = metadata.get(LAST_MODEL_ERROR_KEY)
+    if not isinstance(raw, Mapping) or raw.get("run_id") != run_id:
+        return None
+    if terminal_error_type is not None and raw.get("error_type") != terminal_error_type:
+        return None
+    code = raw.get("code")
+    if not isinstance(code, str) or code not in _OPENSWE_PROVIDER_FAILURE_CODES:
+        return None
+    return code
+
+
+def _terminal_error_type(joined: Any) -> str | None:
+    if not isinstance(joined, Mapping):
+        return None
+    error = joined.get("__error__")
+    if not isinstance(error, Mapping):
+        return None
+    error_type = error.get("error")
+    return error_type if isinstance(error_type, str) and error_type else None
+
+
+def _message_text(message: Any) -> str | None:
+    if not isinstance(message, Mapping) or message.get("type") != "ai":
+        return None
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return None
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, Mapping):
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts).strip() if parts else None
+
+
+def _state_ends_with_model_outage(state: Any) -> bool:
+    if not isinstance(state, Mapping):
+        return False
+    values = state.get("values")
+    if not isinstance(values, Mapping):
+        return False
+    messages = values.get("messages")
+    if not isinstance(messages, list):
+        return False
+    for message in reversed(messages):
+        text = _message_text(message)
+        if text is not None:
+            return text == MODEL_OUTAGE_MESSAGE
+    return False
+
+
 class OpenSweChildRuntime:
     """Thin child-thread/run adapter; LangGraph remains the runtime owner."""
 
@@ -263,6 +337,34 @@ class OpenSweChildRuntime:
         status = run.get("status") if isinstance(run, Mapping) else None
         if not isinstance(status, str):
             raise OpenSweAdapterError("Open SWE run has no status")
+        if status not in {"success", "error"}:
+            return ChildRunSnapshot(thread_id=thread_id, run_id=run_id, status=status)
+
+        thread = await self._client.threads.get(thread_id)
+        metadata = thread.get("metadata") if isinstance(thread, Mapping) else None
+        provider_failure = _provider_failure_for_run(metadata, run_id)
+        if provider_failure is not None and status == "error":
+            joined = await self._client.runs.join(thread_id, run_id)
+            terminal_error_type = _terminal_error_type(joined)
+            provider_failure = _provider_failure_for_run(
+                metadata, run_id, terminal_error_type=terminal_error_type
+            )
+            if provider_failure is not None:
+                return ChildRunSnapshot(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    status="error",
+                    failure_code="OPENSWE_PROVIDER_UNAVAILABLE",
+                )
+        if provider_failure is not None and status == "success":
+            state = await self._client.threads.get_state(thread_id)
+            if _state_ends_with_model_outage(state):
+                return ChildRunSnapshot(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    status="error",
+                    failure_code="OPENSWE_PROVIDER_UNAVAILABLE",
+                )
         return ChildRunSnapshot(thread_id=thread_id, run_id=run_id, status=status)
 
     async def read_thread(self, thread_id: str) -> ThreadSnapshot:

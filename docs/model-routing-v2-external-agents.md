@@ -508,3 +508,8 @@ provider-specific LiteLLM route while ZCode remains the coding agent.
 
 The local implementation is intentionally narrower than either upstream surface. Only capabilities
 needed for a safe ForgeFlow execution route are enabled.
+
+
+### Open SWE runtime availability boundary
+
+ForgeFlow treats `OPENSWE_PROVIDER_UNAVAILABLE` as `ROUTE_AVAILABILITY` only when the exact Open SWE child run carries a structured current-run provider error and either (a) the LangGraph run's terminal exception class matches the recorded model error class, or (b) a successful LangGraph run ends in Open SWE's canonical exhausted-provider outage message. A primary provider failure followed by a successful model fallback—or by a later unrelated tool/sandbox failure—remains on the same route.

@@ -90,6 +90,7 @@ def test_failure_classifier_only_marks_route_availability_for_provider_runtime_f
     assert classify_failure_code("ANTIGRAVITY_PROCESS_EXITED") == "ROUTE_AVAILABILITY"
     assert classify_failure_code("ANTIGRAVITY_TIMEOUT") == "ROUTE_AVAILABILITY"
     assert classify_failure_code("EXTERNAL_AGENT_DOCKER_COMMAND_FAILED:timeout") == "ROUTE_AVAILABILITY"
+    assert classify_failure_code("OPENSWE_PROVIDER_UNAVAILABLE") == "ROUTE_AVAILABILITY"
     assert classify_failure_code("ANTIGRAVITY_TOOL_PERMISSION_DENIED") == "POLICY_DENIED"
     assert classify_failure_code("ANTIGRAVITY_WORKSPACE_NOT_ALLOWED") == "POLICY_DENIED"
     assert classify_failure_code("ANTIGRAVITY_PROMPT_INVALID") == "POLICY_DENIED"

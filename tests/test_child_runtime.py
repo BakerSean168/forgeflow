@@ -20,6 +20,10 @@ class FakeThreads:
     async def get(self, thread_id):
         return self.records[thread_id]
 
+    async def get_state(self, thread_id):
+        record = self.records[thread_id]
+        return {"values": record.get("values", {})}
+
 
 @dataclass
 class FakeRuns:
@@ -30,6 +34,9 @@ class FakeRuns:
 
     async def list(self, thread_id, limit=100):
         return [value for (tid, _), value in self.records.items() if tid == thread_id][:limit]
+
+    async def join(self, thread_id, run_id):
+        return self.records[(thread_id, run_id)].get("joined", {})
 
 
 @dataclass
@@ -91,3 +98,107 @@ async def test_read_run_and_thread_are_bounded_snapshots() -> None:
     thread = await runtime.read_thread("t")
     assert run.status == "success"
     assert thread.metadata == {"pr_url": "x"}
+
+
+@pytest.mark.asyncio
+async def test_provider_outage_success_is_normalized_to_route_availability_failure() -> None:
+    from agent.middleware.model_fallback import MODEL_OUTAGE_MESSAGE
+    from agent.utils.errors import LAST_MODEL_ERROR_KEY
+
+    client = FakeClient()
+    client.runs.records[("t", "r")] = {"status": "success"}
+    client.threads.records["t"] = {
+        "status": "idle",
+        "metadata": {
+            LAST_MODEL_ERROR_KEY: {
+                "run_id": "r",
+                "code": "provider_rate_limited",
+                "error_type": "RateLimitError",
+            }
+        },
+        "values": {"messages": [{"type": "ai", "content": MODEL_OUTAGE_MESSAGE}]},
+    }
+    snapshot = await OpenSweChildRuntime(client).read_run(thread_id="t", run_id="r")
+    assert snapshot.status == "error"
+    assert snapshot.failure_code == "OPENSWE_PROVIDER_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_stale_provider_error_does_not_poison_successful_run() -> None:
+    from agent.middleware.model_fallback import MODEL_OUTAGE_MESSAGE
+    from agent.utils.errors import LAST_MODEL_ERROR_KEY
+
+    client = FakeClient()
+    client.runs.records[("t", "r2")] = {"status": "success"}
+    client.threads.records["t"] = {
+        "status": "idle",
+        "metadata": {LAST_MODEL_ERROR_KEY: {"run_id": "r1", "code": "provider_timeout"}},
+        "values": {"messages": [{"type": "ai", "content": MODEL_OUTAGE_MESSAGE}]},
+    }
+    snapshot = await OpenSweChildRuntime(client).read_run(thread_id="t", run_id="r2")
+    assert snapshot.status == "success"
+    assert snapshot.failure_code is None
+
+
+@pytest.mark.asyncio
+async def test_recovered_fallback_model_success_is_not_cross_runtime_fallback() -> None:
+    from agent.utils.errors import LAST_MODEL_ERROR_KEY
+
+    client = FakeClient()
+    client.runs.records[("t", "r")] = {"status": "success"}
+    client.threads.records["t"] = {
+        "status": "idle",
+        "metadata": {LAST_MODEL_ERROR_KEY: {"run_id": "r", "code": "provider_unavailable"}},
+        "values": {"messages": [{"type": "ai", "content": "implemented the requested change"}]},
+    }
+    snapshot = await OpenSweChildRuntime(client).read_run(thread_id="t", run_id="r")
+    assert snapshot.status == "success"
+    assert snapshot.failure_code is None
+
+
+@pytest.mark.asyncio
+async def test_failed_run_with_current_provider_error_is_route_availability_failure() -> None:
+    from agent.utils.errors import LAST_MODEL_ERROR_KEY
+
+    client = FakeClient()
+    client.runs.records[("t", "r")] = {
+        "status": "error",
+        "joined": {"__error__": {"error": "APITimeoutError", "message": "scrubbed"}},
+    }
+    client.threads.records["t"] = {
+        "status": "idle",
+        "metadata": {
+            LAST_MODEL_ERROR_KEY: {
+                "run_id": "r",
+                "code": "provider_timeout",
+                "error_type": "APITimeoutError",
+            }
+        },
+    }
+    snapshot = await OpenSweChildRuntime(client).read_run(thread_id="t", run_id="r")
+    assert snapshot.status == "error"
+    assert snapshot.failure_code == "OPENSWE_PROVIDER_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_recovered_provider_error_does_not_reclassify_later_tool_failure() -> None:
+    from agent.utils.errors import LAST_MODEL_ERROR_KEY
+
+    client = FakeClient()
+    client.runs.records[("t", "r")] = {
+        "status": "error",
+        "joined": {"__error__": {"error": "ValueError", "message": "tool failed"}},
+    }
+    client.threads.records["t"] = {
+        "status": "idle",
+        "metadata": {
+            LAST_MODEL_ERROR_KEY: {
+                "run_id": "r",
+                "code": "provider_timeout",
+                "error_type": "APITimeoutError",
+            }
+        },
+    }
+    snapshot = await OpenSweChildRuntime(client).read_run(thread_id="t", run_id="r")
+    assert snapshot.status == "error"
+    assert snapshot.failure_code is None
