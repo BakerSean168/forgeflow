@@ -1,31 +1,83 @@
 """ForgeFlow-specific Open SWE model routing policy.
 
-Keep provider selection outside upstream Open SWE. ForgeFlow uses the short-lived
-GLM 5.3 promotional resource for implementation/repair, falls back to Luna only
-for that role, and keeps the independent Sol reviewer on its existing OAuth path.
+Implementation/repair keeps its existing GLM 5.3 -> Luna policy. Reviewer
+reasoning is sourced from ForgeFlow's REASONING route registry so the official
+Open SWE reviewer can keep Sol as the primary while using the promotional GLM
+5.3 resource only for transient provider failures.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 import agent.utils.model as upstream_model
+
+from forgeflow.routing import load_route_registry
 
 IMPLEMENTATION_MODEL_ID = "fireworks:accounts/fireworks/models/glm-5p3"
 IMPLEMENTATION_EFFORT = "max"
 IMPLEMENTATION_FALLBACK_MODEL_ID = "openai:gpt-5.6-luna"
 REVIEW_MODEL_ID = "openai:gpt-5.6-sol"
+REVIEW_FALLBACK_MODEL_ID = IMPLEMENTATION_MODEL_ID
 
 _original_fallback_model_id_for: Callable[[str], str | None] = upstream_model.fallback_model_id_for
 _installed = False
 
 
+class ModelPolicyError(RuntimeError):
+    """The configured model route cannot be represented by the Open SWE runtime."""
+
+
+def reasoning_model_ids(route_config_path: Path | None = None) -> tuple[str, str | None]:
+    """Return the eligible ordered Open SWE model pair for the REASONING role.
+
+    The deployed service always provides ``FORGEFLOW_ROUTE_CONFIG_FILE``. The
+    constant pair is retained only for isolated library/tests that intentionally
+    construct Open SWE without the ForgeFlow deployment environment.
+    """
+    configured = route_config_path
+    if configured is None:
+        raw = os.environ.get("FORGEFLOW_ROUTE_CONFIG_FILE", "").strip()
+        configured = Path(raw) if raw else None
+    if configured is None:
+        return REVIEW_MODEL_ID, REVIEW_FALLBACK_MODEL_ID
+
+    registry = load_route_registry(configured)
+    eligible = registry.eligible("REASONING")
+    if not eligible:
+        raise ModelPolicyError("REASONING_ROUTE_EXHAUSTED")
+    unsupported = [route.id for route in eligible if route.runtime != "OPEN_SWE"]
+    if unsupported:
+        raise ModelPolicyError(
+            "REASONING_ROUTE_RUNTIME_UNSUPPORTED:" + ",".join(unsupported)
+        )
+    models = tuple(route.target for route in eligible)
+    if len(models) > 2:
+        raise ModelPolicyError("REASONING_ROUTE_COUNT_UNSUPPORTED")
+    primary = models[0]
+    fallback = models[1] if len(models) > 1 else None
+    return primary, fallback
+
+
+def review_model_id() -> str:
+    """Current primary reviewer model selected from the REASONING registry."""
+    return reasoning_model_ids()[0]
+
+
 def fallback_model_id_for(primary_model_id: str) -> str | None:
-    """Return ForgeFlow's role-safe fallback without crossing reviewer boundaries."""
+    """Return role-safe model fallback for Open SWE's native fallback middleware."""
     if primary_model_id == IMPLEMENTATION_MODEL_ID:
         return IMPLEMENTATION_FALLBACK_MODEL_ID
-    if primary_model_id in {IMPLEMENTATION_FALLBACK_MODEL_ID, REVIEW_MODEL_ID}:
+    if primary_model_id == IMPLEMENTATION_FALLBACK_MODEL_ID:
+        return None
+
+    # Reviewer fallback is installed only inside the dedicated reviewer graph.
+    # Keeping Sol out of this global hook prevents a regular agent that happens
+    # to use Sol from inheriting the REASONING route by accident.
+    if primary_model_id == REVIEW_MODEL_ID:
         return None
     return _original_fallback_model_id_for(primary_model_id)
 
@@ -46,7 +98,11 @@ __all__ = [
     "IMPLEMENTATION_EFFORT",
     "IMPLEMENTATION_FALLBACK_MODEL_ID",
     "IMPLEMENTATION_MODEL_ID",
+    "REVIEW_FALLBACK_MODEL_ID",
     "REVIEW_MODEL_ID",
+    "ModelPolicyError",
     "fallback_model_id_for",
     "install_forgeflow_model_policy",
+    "reasoning_model_ids",
+    "review_model_id",
 ]
