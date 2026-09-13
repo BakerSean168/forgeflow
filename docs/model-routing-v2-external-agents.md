@@ -438,6 +438,11 @@ re-confirmed, while the diff baseline is reset to GitHub's authoritative merge-b
 `base...head` PR. If that merge-base cannot be proven, review dispatch fails closed instead of silently
 dropping prior finding evidence or accepting an empty diff.
 
+Exact-head normalization also follows Open SWE's re-review no-op semantics: an open finding that the
+reviewer leaves unchanged stays blocking even when its `last_confirmed_sha` points to an older commit.
+Only an explicit `resolved` or `dismissed` transition removes it from the current gate. The confirmation
+SHA remains audit metadata; it is not an implicit expiry mechanism for open review evidence.
+
 ### Phase 5 — additional external agents
 
 Only after the Antigravity route is stable, reuse the **same generic ACP client** for other complete

@@ -344,27 +344,30 @@ def blocking_repair_findings(snapshot, *, expected_head_sha: str):
 
 
 def _review_findings_for_head(findings, *, expected_head_sha: str):
-    """Return only findings attributable to one exact reviewed head.
+    """Return findings that remain actionable after an exact-head review.
 
-    Open SWE keeps historical findings on the durable reviewer thread. A re-review can
-    complete for a new head while an older still-open finding remains in thread metadata
-    with ``last_confirmed_sha`` pointing at the previous revision. That finding is
-    historical evidence, not a blocker for the newly reviewed head.
+    Open SWE's re-review contract deliberately treats an unchanged open finding as a
+    no-op: the reviewer does not call ``update_finding`` merely to refresh
+    ``last_confirmed_sha``. Therefore an older confirmation SHA cannot mean that an
+    open finding is historical or inactive. Once the reviewer successfully publishes
+    the current head, every still-open finding remains current blocking evidence until
+    it is explicitly resolved or dismissed.
 
-    Older upstream payloads may omit ``last_confirmed_sha`` entirely. Preserve the
-    previous fail-closed behavior for those entries rather than silently dropping
-    evidence whose revision cannot be attributed.
+    Resolved/dismissed findings from older heads may be omitted from the current-head
+    summary. Legacy findings without ``last_confirmed_sha`` remain fail-closed.
     """
 
     current = []
     for item in findings:
         confirmed = item.get("last_confirmed_sha")
-        if confirmed is not None:
-            if not isinstance(confirmed, str) or not confirmed:
-                raise EvidenceViolation("review finding has invalid last_confirmed_sha")
-            if confirmed != expected_head_sha:
-                continue
-        current.append(item)
+        if confirmed is not None and (not isinstance(confirmed, str) or not confirmed):
+            raise EvidenceViolation("review finding has invalid last_confirmed_sha")
+        status = item.get("status", "open")
+        if status == "open":
+            current.append(item)
+            continue
+        if confirmed is None or confirmed == expected_head_sha:
+            current.append(item)
     return tuple(current)
 
 

@@ -218,7 +218,7 @@ async def test_operation_run_does_not_overwrite_a_different_current_reviewer_run
     assert client.threads.records[thread_id]["metadata"]["current_reviewer_run_id"] == "external-current"
 
 
-def test_explicitly_stale_open_findings_do_not_block_new_exact_head_review() -> None:
+def test_unchanged_open_finding_remains_blocking_after_exact_head_rereview() -> None:
     old_head = "b" * 40
     snapshot = ReviewerSnapshot(
         thread_id="rt",
@@ -227,20 +227,39 @@ def test_explicitly_stale_open_findings_do_not_block_new_exact_head_review() -> 
         last_reviewed_sha=HEAD,
         findings=(
             {
-                "id": "old",
+                "id": "unchanged",
                 "severity": "medium",
                 "status": "open",
                 "last_confirmed_sha": old_head,
-                "title": "Historical finding",
+                "title": "Unchanged finding",
                 "file": "docs/old.md",
-                "description": "This finding belonged to the prior head only.",
+                "description": "The reviewer took no action, so this remains open.",
             },
         ),
     )
 
     decision = review_decision(snapshot, expected_head_sha=HEAD)
-    assert decision.findings == ()
-    assert blocking_repair_findings(snapshot, expected_head_sha=HEAD) == ()
+    assert [finding.id for finding in decision.findings] == ["unchanged"]
+    repairs = blocking_repair_findings(snapshot, expected_head_sha=HEAD)
+    assert [finding.id for finding in repairs] == ["unchanged"]
+
+
+def test_resolved_historical_finding_does_not_reenter_current_head_summary() -> None:
+    snapshot = ReviewerSnapshot(
+        thread_id="rt",
+        run_id="rr",
+        run_status="success",
+        last_reviewed_sha=HEAD,
+        findings=(
+            {
+                "id": "resolved-old",
+                "severity": "high",
+                "status": "resolved",
+                "last_confirmed_sha": "b" * 40,
+            },
+        ),
+    )
+    assert review_decision(snapshot, expected_head_sha=HEAD).findings == ()
 
 
 def test_current_head_and_legacy_findings_remain_actionable() -> None:
