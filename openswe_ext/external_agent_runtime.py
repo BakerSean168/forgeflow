@@ -106,6 +106,9 @@ class ExternalAgentChildRuntime:
             raise ExternalAgentChildRuntimeError("external child dispatch returned no run_id")
         return run_id
 
+    async def cancel_run(self, *, thread_id: str, run_id: str) -> None:
+        await self._client.runs.cancel(thread_id, run_id, wait=False, action="interrupt")
+
     async def read_run(self, *, thread_id: str, run_id: str) -> ChildRunSnapshot:
         run = await self._client.runs.get(thread_id, run_id)
         status = run.get("status") if isinstance(run, Mapping) else None

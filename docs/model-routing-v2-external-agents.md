@@ -405,9 +405,19 @@ GitHub/token/transport unavailability waits and then fails closed without spendi
 ambiguous matches or an unbounded lookup fail closed immediately. This barrier prevents a successful
 delivery from racing best-effort Open SWE telemetry and spawning a duplicate writer.
 
-External-agent same-PR repair is also **not** enabled yet. If an explicitly selected external
-implementation reaches a repair state, policy fails closed instead of silently switching execution
-ownership.
+External-agent implementations now have an explicit same-PR repair ownership boundary. The ACP
+agent is not asked to mutate an already-reviewed PR in place. If CI or review sends an external
+implementation to `REPAIRING`, ForgeFlow first revalidates the authoritative PR exact head, selects
+the first eligible `OPEN_SWE` implementation route from the same RouteRegistry, clears the external
+thread/workspace ownership, and hands the existing PR + rejected head + bounded findings to a stable
+Open SWE repair thread. The repair prompt requires checkout of the existing PR head branch and forbids
+opening a replacement PR. If no Open SWE repair route is eligible, policy fails closed with
+`REPAIR_ROUTE_UNAVAILABLE`.
+
+Cancellation follows the same ownership boundary. A cancellation request recovers an external child
+run by its stable operation key when necessary, interrupts the LangGraph `external_agent` run, and
+lets the external graph perform ACP process-group termination, workspace cleanup, and append-only
+ledger closure. The parent policy never fabricates an external attempt terminal record.
 
 A subsequent controlled cross-runtime fallback canary deliberately promoted Antigravity ahead of Open
 SWE and injected an unavailable external runtime. That canary correctly exposed two external-runtime
@@ -417,8 +427,13 @@ were still running on the LangGraph event loop, and a short-lived checkout clean
 cancellation-safe worker threads, retries checkout cleanup within a bounded window, and converts a
 persistent cleanup failure into `EXTERNAL_AGENT_WORKSPACE_CLEANUP_FAILED / POLICY_DENIED`. Attempt
 terminalization happens after cleanup, so an availability failure can only trigger fallback after its
-workspace is gone and its append-only ledger attempt has a terminal record. The production route and
-fallback gates remain off until this controlled fallback canary is rerun successfully after merge.
+workspace is gone and its append-only ledger attempt has a terminal record. After the hardening merge, the controlled fallback canary was rerun successfully: an intentionally
+unavailable Antigravity Docker runtime closed its attempt as `ROUTE_AVAILABILITY`, the same policy
+operation fell through to `openswe-current`, and the Open SWE attempt reached `SUCCEEDED`, repository
+CI passed, exact-head review reported zero findings, and policy reached `READY`. A separate direct
+Antigravity-primary policy canary also completed the full `NEW -> IMPLEMENTING -> VERIFYING ->
+WAITING_FOR_CI -> REVIEWING -> READY` lifecycle. The canary PRs were closed without merge. Permanent
+production enablement still waits for cancellation and external-to-Open-SWE repair handoff acceptance.
 
 The first safe production shape is conservative:
 

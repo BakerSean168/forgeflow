@@ -85,6 +85,12 @@ class FakeServices:
             return self.fallback_route
         return None
 
+    def select_repair_route(self) -> RouteDefinition | None:
+        for route in (self.selected_route, self.fallback_route):
+            if route is not None and route.runtime == "OPEN_SWE":
+                return route
+        return None
+
     def automatic_route_fallback_enabled(self) -> bool:
         return self.route_fallback_enabled
 
@@ -729,22 +735,86 @@ async def test_new_policy_can_select_external_runtime_without_changing_default_p
 
 
 @pytest.mark.asyncio
-async def test_external_runtime_repair_fails_closed_until_same_pr_repair_is_implemented() -> None:
-    services = FakeServices(cron_id="cron-1", implementation_thread="implementation-thread", pr=_pr())
+async def test_external_runtime_repair_hands_same_pr_to_openswe() -> None:
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        20,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    openswe = RouteDefinition(
+        "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+    )
+    services = FakeServices(
+        cron_id="cron-1", selected_route=external, fallback_route=openswe, pr=_pr()
+    )
     state = _base_state("REPAIRING")
     state.update(
-        implementation_route_id="antigravity-account-primary",
+        implementation_route_id=external.id,
         implementation_runtime="EXTERNAL_ACP",
-        implementation_thread_id="implementation-thread",
+        implementation_thread_id="external-thread",
         implementation_run_id=None,
+        implementation_operation_key="implementation:policy-external:retry:0",
+        workspace_path="/tmp/stale-external-source",
         pr_url=PR,
         observed_head_sha=HEAD1,
         last_failure_code="CHECK_FAILED:tests",
     )
+
+    handed_off = await reconcile_once(
+        state, policy_thread_id="policy-external", services=services
+    )
+    assert handed_off["status"] == "REPAIRING"
+    assert handed_off["implementation_route_id"] == openswe.id
+    assert handed_off["implementation_runtime"] == "OPEN_SWE"
+    assert handed_off["implementation_thread_id"] is None
+    assert handed_off["implementation_run_id"] is None
+    assert handed_off["implementation_operation_key"] is None
+    assert handed_off["workspace_path"] is None
+    assert handed_off["pr_url"] == PR
+    assert handed_off["observed_head_sha"] == HEAD1
+    assert handed_off["repair_round"] == 0
+
+    threaded = await reconcile_once(
+        handed_off, policy_thread_id="policy-external", services=services
+    )
+    assert threaded["implementation_thread_id"] == f"implementation-thread-{openswe.id}"
+
+    dispatched = await reconcile_once(
+        threaded, policy_thread_id="policy-external", services=services
+    )
+    assert dispatched["implementation_phase"] == "REPAIR"
+    assert dispatched["implementation_run_id"] is not None
+    assert dispatched["repair_round"] == 1
+    assert services.attempt_start_calls[-1][0] == openswe.id
+    assert services.attempt_start_calls[-1][2] == HEAD1
+
+
+@pytest.mark.asyncio
+async def test_external_runtime_repair_fails_closed_without_openswe_route() -> None:
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        20,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    services = FakeServices(cron_id="cron-1", selected_route=external, pr=_pr())
+    state = _base_state("REPAIRING")
+    state.update(
+        implementation_route_id=external.id,
+        implementation_runtime="EXTERNAL_ACP",
+        implementation_thread_id="external-thread",
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        last_failure_code="REVIEW_BLOCKED",
+    )
     result = await reconcile_once(state, policy_thread_id="policy-external", services=services)
     assert result["status"] == "ESCALATED"
-    assert result["last_failure_code"] == "EXTERNAL_AGENT_REPAIR_NOT_ENABLED"
-    assert not any(action.startswith("dispatch_child:repair:") for action in services.actions)
+    assert result["last_failure_code"] == "REPAIR_ROUTE_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
@@ -1146,6 +1216,51 @@ async def test_finished_openswe_attempt_without_child_run_fails_closed() -> None
     assert services.child_operations == {}
 
 
+def test_default_services_repair_route_prefers_openswe_even_when_external_is_primary(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    routes = tmp_path / "routes.json"
+    routes.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "antigravity-account-primary",
+                        "role": "IMPLEMENT",
+                        "priority": 5,
+                        "runtime": "EXTERNAL_ACP",
+                        "adapter": "antigravity",
+                        "target": "google-account",
+                        "enabled": True,
+                        "health": "READY",
+                    },
+                    {
+                        "id": "openswe-current",
+                        "role": "IMPLEMENT",
+                        "priority": 10,
+                        "runtime": "OPEN_SWE",
+                        "target": "current-model-policy",
+                        "enabled": True,
+                        "health": "READY",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    services = DefaultPolicyServices(client=object())
+
+    assert services.select_implementation_route().id == "antigravity-account-primary"
+    repair = services.select_repair_route()
+    assert repair is not None
+    assert repair.id == "openswe-current"
+    assert repair.runtime == "OPEN_SWE"
+
+
 @pytest.mark.asyncio
 async def test_default_services_persist_idempotent_openswe_attempts(tmp_path, monkeypatch) -> None:
     import json
@@ -1431,7 +1546,46 @@ async def test_cancel_new_before_any_dispatch_does_not_create_attempt() -> None:
     assert services.child_operations == {}
 
 @pytest.mark.asyncio
-async def test_default_services_cancel_openswe_child_uses_langgraph_interrupt() -> None:
+async def test_cancel_external_child_recovers_uncheckpointed_run_without_parent_ledger_write() -> None:
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        20,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    services = FakeServices(
+        cron_id="cron-1",
+        selected_route=external,
+        implementation_thread="external-thread",
+    )
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id=external.id,
+        implementation_runtime="EXTERNAL_ACP",
+        implementation_thread_id="external-thread",
+        implementation_run_id=None,
+        implementation_operation_key=None,
+        cancel_requested=True,
+    )
+    operation_key = "implementation:cancel-external:retry:0"
+    services.child_operations[operation_key] = "external-run"
+    services.child_status["external-run"] = "running"
+
+    cancelled = await reconcile_once(
+        state, policy_thread_id="cancel-external", services=services
+    )
+
+    assert cancelled["status"] == "CANCELLED"
+    assert "cancel_child:external-run" in services.actions
+    assert services.child_status["external-run"] == "interrupted"
+    assert services.attempt_start_calls == []
+    assert services.attempt_finish_calls == []
+
+
+@pytest.mark.asyncio
+async def test_default_services_cancel_both_child_runtimes_with_langgraph_interrupt() -> None:
     calls = []
 
     class Runs:
@@ -1443,20 +1597,21 @@ async def test_default_services_cancel_openswe_child_uses_langgraph_interrupt() 
 
     services = DefaultPolicyServices(client=Client())
     await services.cancel_child_run(
-        thread_id="thread",
-        run_id="run",
+        thread_id="openswe-thread",
+        run_id="openswe-run",
         route_id="openswe-current",
         runtime="OPEN_SWE",
     )
-    assert calls == [("thread", "run", False, "interrupt")]
-
-    with pytest.raises(Exception, match="external-agent cancellation is not enabled"):
-        await services.cancel_child_run(
-            thread_id="thread",
-            run_id="run",
-            route_id="external",
-            runtime="EXTERNAL_ACP",
-        )
+    await services.cancel_child_run(
+        thread_id="external-thread",
+        run_id="external-run",
+        route_id="antigravity-account-primary",
+        runtime="EXTERNAL_ACP",
+    )
+    assert calls == [
+        ("openswe-thread", "openswe-run", False, "interrupt"),
+        ("external-thread", "external-run", False, "interrupt"),
+    ]
 
 @pytest.mark.asyncio
 async def test_cancel_recovers_uncheckpointed_implementation_retry_dispatch() -> None:
