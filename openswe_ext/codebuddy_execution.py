@@ -159,7 +159,7 @@ def build_codebuddy_docker_args(
         "--permission-mode",
         "bypassPermissions",
         "--subagent-permission-mode",
-        "bypassPermissions",
+        "readOnly",
         "--setting-sources",
         "user",
         "--no-session-persistence",

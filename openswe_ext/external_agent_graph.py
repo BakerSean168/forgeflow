@@ -15,7 +15,7 @@ from httpx2 import RequestError as HttpxRequestError
 from langgraph.graph import END, START, StateGraph
 
 from forgeflow.adapters.external_delivery import GitHubExternalAgentDelivery
-from forgeflow.attempts import AttemptHandle, AttemptLedger
+from forgeflow.attempts import AttemptHandle, AttemptLedger, FailureDiagnostics, WorkspaceCheckpoint
 from forgeflow.concurrency import cancellation_safe_to_thread
 from forgeflow.external_agents.execution import ExternalAgentExecutionRequest
 from forgeflow.projects import load_external_agent_project_config
@@ -23,6 +23,8 @@ from forgeflow.routing import classify_failure_code, load_route_registry
 from openswe_ext.external_agent_adapters import build_external_agent_execution
 from openswe_ext.external_agent_workspace import (
     ExternalAgentWorkspaceError,
+    PreparedExternalWorkspace,
+    adopt_external_workspace,
     cleanup_external_workspace,
     prepare_external_workspace,
 )
@@ -81,14 +83,38 @@ def _failure_code(exc: BaseException) -> str:
         code = data.get("code") if isinstance(data, dict) else None
         if isinstance(code, str) and code.strip():
             return code.split(":", 1)[0].strip().upper()
+        return "EXTERNAL_AGENT_ACP_STREAM_FAILED"
+    if isinstance(exc, ExternalAgentWorkspaceError):
+        return str(exc).split(":", 1)[0].strip().upper()
     if isinstance(exc, subprocess.TimeoutExpired):
         return "EXTERNAL_AGENT_SUBPROCESS_TIMEOUT"
     if isinstance(exc, subprocess.CalledProcessError):
-        return "EXTERNAL_AGENT_SUBPROCESS_FAILED"
+        return "EXTERNAL_AGENT_PROCESS_EXITED"
+    if isinstance(exc, PermissionError):
+        return "EXTERNAL_AGENT_PERMISSION_DENIED"
+    if isinstance(exc, ConnectionResetError):
+        return "EXTERNAL_AGENT_CONNECTION_RESET"
+    if isinstance(exc, BrokenPipeError):
+        return "EXTERNAL_AGENT_BROKEN_PIPE"
     if isinstance(exc, OSError):
-        return "EXTERNAL_AGENT_IO_FAILED"
+        errno_value = getattr(exc, "errno", None)
+        if errno_value in {5, 28, 122}:
+            return f"EXTERNAL_AGENT_FILESYSTEM_IO_FAILED:{errno_value}"
+        return f"EXTERNAL_AGENT_IO_FAILED:{type(exc).__name__}"
     code = str(exc).split(":", 1)[0].strip()
     return code or type(exc).__name__
+
+
+def _failure_diagnostics(exc: BaseException, *, stage: str) -> FailureDiagnostics:
+    cause = getattr(exc, "cause", None)
+    source = cause if isinstance(cause, BaseException) else exc
+    errno_value = getattr(source, "errno", None)
+    return FailureDiagnostics(
+        stage=getattr(exc, "stage", stage),
+        exception_type=type(source).__name__,
+        errno=errno_value if isinstance(errno_value, int) else None,
+        evidence=(str(getattr(exc, "code", "")) or type(source).__name__)[:160],
+    )
 
 
 def _summary(objective: str, *, limit: int = 68) -> str:
@@ -115,6 +141,8 @@ class DefaultExternalAgentGraphServices:
         attempt: AttemptHandle | None = None
         attempt_finished = False
         workspace: Path | None = None
+        prepared: PreparedExternalWorkspace | None = None
+        checkpoint: WorkspaceCheckpoint | None = None
         source_revision: str | None = None
         evidence = None
         delivery = None
@@ -122,6 +150,7 @@ class DefaultExternalAgentGraphServices:
         cancel_exc: asyncio.CancelledError | None = None
         cleanup_failed = False
         unexpected_exc: Exception | None = None
+        diagnostics: FailureDiagnostics | None = None
         ledger = AttemptLedger(Path(ledger_path))
         route = None
 
@@ -160,13 +189,33 @@ class DefaultExternalAgentGraphServices:
                 raise RuntimeError("EXTERNAL_AGENT_PROJECT_CONFIG_MISSING")
             root = Path(workspace_root).expanduser()
             await asyncio.to_thread(_ensure_private_directory, root)
-            prepared = await cancellation_safe_to_thread(
-                prepare_external_workspace,
-                source_repo=project.cwd,
-                base_ref=request["base_ref"],
-                workspace_root=root,
-                cancel_cleanup=lambda prepared: cleanup_external_workspace(prepared.path),
+            recovery_key = request["operation_key"]
+            checkpoint = await asyncio.to_thread(
+                ledger.workspace_checkpoint, recovery_key=recovery_key
             )
+            if checkpoint is not None:
+                try:
+                    prepared = await cancellation_safe_to_thread(
+                        adopt_external_workspace, checkpoint=checkpoint, workspace_root=root
+                    )
+                except ExternalAgentWorkspaceError:
+                    await asyncio.to_thread(
+                        ledger.clean_workspace_checkpoint,
+                        recovery_key=recovery_key,
+                        reason="unsafe-or-stale-workspace",
+                    )
+                    raise
+            else:
+                prepared = await cancellation_safe_to_thread(
+                    prepare_external_workspace,
+                    source_repo=project.cwd,
+                    base_ref=request["base_ref"],
+                    workspace_root=root,
+                    recovery_key=recovery_key,
+                    owner=request["owner"],
+                    repo=request["repo"],
+                    cancel_cleanup=lambda prepared: cleanup_external_workspace(prepared.path),
+                )
             workspace = prepared.path
             source_revision = prepared.source_revision
             execution_request = ExternalAgentExecutionRequest(
@@ -177,6 +226,8 @@ class DefaultExternalAgentGraphServices:
                 operation_key=request["operation_key"],
                 phase=request["phase"],
                 test_command=project.test_command,
+                prepare_command=project.prepare_command,
+                allow_existing_changes=prepared.adopted,
             )
             allowed_project = f"{request["owner"]}/{request["repo"]}"
             # Adapter construction performs strict filesystem path validation
@@ -191,6 +242,23 @@ class DefaultExternalAgentGraphServices:
             evidence = await execution.execute(execution_request)
             if evidence.source_revision != source_revision:
                 raise RuntimeError("EXTERNAL_AGENT_SOURCE_REVISION_MISMATCH")
+            if prepared is not None and not prepared.adopted and prepared.workspace_id:
+                await asyncio.to_thread(
+                    ledger.checkpoint_workspace,
+                    recovery_key=request["operation_key"],
+                    attempt_id=attempt.attempt_id,
+                    route_id=attempt.route_id,
+                    operation_key=attempt.operation_key,
+                    owner=request["owner"],
+                    repo=request["repo"],
+                    base_ref=request["base_ref"],
+                    workspace_id=prepared.workspace_id,
+                    workspace_relpath=prepared.path.relative_to(root).as_posix(),
+                    source_revision=source_revision,
+                    source_origin=prepared.source_origin,
+                    changed_files=evidence.changed_files,
+                    diff_sha256=evidence.diff_sha256,
+                )
             title = _summary(request["objective"])
             delivery = await GitHubExternalAgentDelivery().deliver(
                 request=execution_request,
@@ -226,6 +294,7 @@ class DefaultExternalAgentGraphServices:
             KeyError,
             ExceptionGroup,
         ) as exc:
+            diagnostics = _failure_diagnostics(exc, stage=getattr(exc, "stage", "execution"))
             code = _failure_code(exc)
             result = ExternalAgentGraphResult(
                 external_status="BLOCKED",
@@ -235,6 +304,7 @@ class DefaultExternalAgentGraphServices:
                 source_revision=source_revision,
             )
         except Exception as exc:  # noqa: BLE001 - terminalize durable attempt, then re-raise
+            diagnostics = _failure_diagnostics(exc, stage=getattr(exc, "stage", "execution"))
             unexpected_exc = exc
             result = ExternalAgentGraphResult(
                 external_status="BLOCKED",
@@ -309,6 +379,7 @@ class DefaultExternalAgentGraphServices:
                     result_revision=result_revision,
                     external_session_id=session_id,
                     external_conversation_id=conversation_id,
+                    diagnostics=diagnostics,
                 )
                 attempt_finished = True
             except asyncio.CancelledError as exc:
