@@ -433,3 +433,34 @@ def test_open_attempts_fails_closed_on_corrupt_committed_row(tmp_path: Path) -> 
 
     with pytest.raises(AttemptLedgerError, match="ATTEMPT_LEDGER_INVALID_JSON"):
         ledger.open_attempts()
+
+
+def test_open_attempts_fails_closed_on_mismatched_finish_identity(tmp_path: Path) -> None:
+    from forgeflow.attempts import AttemptLedgerError
+
+    ledger = AttemptLedger(tmp_path / "attempt-ledger.jsonl")
+    handle = ledger.start(
+        role="IMPLEMENT",
+        route_id="route",
+        priority=10,
+        runtime="OPEN_SWE",
+        target="target",
+        operation_key="op:identity",
+        source_revision="a" * 40,
+    )
+    ledger.finish(
+        handle,
+        outcome="BLOCKED",
+        failure_class="UNCLASSIFIED",
+        fallback_reason="STOPPED",
+        source_revision="a" * 40,
+    )
+    rows = [json.loads(line) for line in ledger.path.read_text(encoding="utf-8").splitlines()]
+    rows[-1]["operation_key"] = "op:foreign"
+    ledger.path.write_text(
+        "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AttemptLedgerError, match="ATTEMPT_LEDGER_FINISH_IDENTITY_MISMATCH"):
+        ledger.open_attempts()

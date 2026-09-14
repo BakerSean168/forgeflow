@@ -38,7 +38,22 @@ class FakeThreads:
         return row
 
     async def search(self, **kwargs):
-        return list(self.rows.values())
+        rows = list(self.rows.values())
+        metadata = kwargs.get("metadata")
+        if isinstance(metadata, dict):
+            rows = [
+                row
+                for row in rows
+                if all(row.get("metadata", {}).get(key) == value for key, value in metadata.items())
+            ]
+        if kwargs.get("sort_by") == "updated_at":
+            rows.sort(
+                key=lambda row: str(row.get("updated_at") or ""),
+                reverse=kwargs.get("sort_order") == "desc",
+            )
+        offset = int(kwargs.get("offset", 0))
+        limit = int(kwargs.get("limit", len(rows)))
+        return rows[offset : offset + limit]
 
     async def get(self, thread_id, **kwargs):
         return self.rows[thread_id]
@@ -667,7 +682,7 @@ def test_summary_marks_unattached_observability_unavailable_without_lying(
     class BrokenLedger:
         def route_summaries(self, route_ids):
             del route_ids
-            return {}
+            raise OSError("ledger unavailable")
 
         def open_attempts(self):
             raise OSError("ledger unavailable")
@@ -680,3 +695,154 @@ def test_summary_marks_unattached_observability_unavailable_without_lying(
     assert payload["unattachedExecutionError"] == "ATTEMPT_LEDGER_UNAVAILABLE"
     assert payload["unattachedExecutionCount"] is None
     assert payload["unattachedExecutions"] == []
+    assert payload["routes"][0]["observability"]["attempts"] is None
+    assert "attempt_ledger_unavailable" in payload["routes"][0]["observability"]["reasons"]
+
+
+def test_summary_surfaces_stale_retry_when_current_operation_is_known(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    _write_unattached_test_routes(routes)
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    ledger_path = tmp_path / "attempt-ledger.jsonl"
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger_path))
+    ledger = AttemptLedger(ledger_path)
+    ledger.start(
+        role="IMPLEMENT",
+        route_id="codebuddy-account-primary",
+        priority=30,
+        runtime="EXTERNAL_ACP",
+        target="codebuddy-account",
+        operation_key="implementation:policy-retry:retry:0",
+        source_revision="a" * 40,
+    )
+    ledger.start(
+        role="IMPLEMENT",
+        route_id="codebuddy-account-primary",
+        priority=30,
+        runtime="EXTERNAL_ACP",
+        target="codebuddy-account",
+        operation_key="implementation:policy-retry:retry:1",
+        source_revision="a" * 40,
+    )
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    asyncio.run(
+        client.threads.create(
+            thread_id="policy-retry",
+            graph_id="forgeflow",
+            metadata={"project_key": "memoflow"},
+        )
+    )
+    client.threads.rows["policy-retry"]["values"] = {
+        "repo_owner": "BakerSean168",
+        "repo_name": "memoflow",
+        "objective": "Retry implementation",
+        "status": "IMPLEMENTING",
+        "implementation_route_id": "codebuddy-account-primary",
+        "implementation_runtime": "EXTERNAL_ACP",
+        "implementation_operation_key": "implementation:policy-retry:retry:1",
+    }
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+
+    assert payload["activeObjectiveCount"] == 1
+    assert payload["unattachedExecutionCount"] == 1
+    assert payload["unattachedExecutions"][0]["reason"] == "NO_ACTIVE_POLICY_OBJECTIVE"
+
+
+def test_summary_pages_all_policy_threads_before_declaring_execution_unattached(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    _write_unattached_test_routes(routes)
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    ledger_path = tmp_path / "attempt-ledger.jsonl"
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger_path))
+    operation_key = "implementation:older-active:retry:0"
+    AttemptLedger(ledger_path).start(
+        role="IMPLEMENT",
+        route_id="codebuddy-account-primary",
+        priority=30,
+        runtime="EXTERNAL_ACP",
+        target="codebuddy-account",
+        operation_key=operation_key,
+        source_revision="a" * 40,
+    )
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    for index in range(200):
+        thread_id = f"terminal-{index:03d}"
+        asyncio.run(
+            client.threads.create(
+                thread_id=thread_id,
+                graph_id="forgeflow",
+                metadata={"project_key": "memoflow"},
+            )
+        )
+        client.threads.rows[thread_id]["updated_at"] = f"2026-09-14T12:{index // 60:02d}:{index % 60:02d}+00:00"
+        client.threads.rows[thread_id]["values"] = {
+            "repo_owner": "BakerSean168",
+            "repo_name": "memoflow",
+            "objective": f"Terminal {index}",
+            "status": "DONE",
+        }
+    asyncio.run(
+        client.threads.create(
+            thread_id="older-active",
+            graph_id="forgeflow",
+            metadata={"project_key": "memoflow"},
+        )
+    )
+    client.threads.rows["older-active"]["updated_at"] = "2026-09-13T00:00:00+00:00"
+    client.threads.rows["older-active"]["values"] = {
+        "repo_owner": "BakerSean168",
+        "repo_name": "memoflow",
+        "objective": "Older active objective",
+        "status": "IMPLEMENTING",
+        "implementation_route_id": "codebuddy-account-primary",
+        "implementation_runtime": "EXTERNAL_ACP",
+        "implementation_operation_key": operation_key,
+    }
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+
+    assert payload["activeObjectiveCount"] == 1
+    assert payload["activeObjectives"][0]["planId"] == "older-active"
+    assert payload["unattachedExecutionCount"] == 0
+
+
+def test_resources_still_fail_closed_when_attempt_ledger_is_unavailable(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    _write_unattached_test_routes(routes)
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+
+    class BrokenLedger:
+        def route_summaries(self, route_ids):
+            del route_ids
+            raise OSError("ledger unavailable")
+
+    monkeypatch.setattr(api, "_attempt_ledger", lambda: BrokenLedger())
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(api.list_resources(authorization="Bearer secret"))
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "ForgeFlow attempt ledger is unavailable"
+
+
+def test_resources_marks_unconfigured_attempt_ledger_unavailable(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    _write_unattached_test_routes(routes)
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    monkeypatch.delenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", raising=False)
+
+    payload = asyncio.run(api.list_resources(authorization="Bearer secret"))
+
+    assert payload["attemptLedgerStatus"] == "UNAVAILABLE"
+    assert payload["routes"][0]["observability"]["attempts"] is None
+    assert "attempt_ledger_unavailable" in payload["routes"][0]["observability"]["reasons"]
