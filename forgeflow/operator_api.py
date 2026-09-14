@@ -543,22 +543,25 @@ def _route_view(
     }
 
 
-def _route_attempt_summaries(routes: list[RouteDefinition]) -> dict[str, RouteAttemptSummary]:
+async def _route_attempt_summaries(
+    routes: list[RouteDefinition],
+) -> dict[str, RouteAttemptSummary]:
     ledger = _attempt_ledger()
     if ledger is None:
         return {}
+    route_ids = tuple(route.id for route in routes)
     try:
-        return ledger.route_summaries(route.id for route in routes)
+        return await asyncio.to_thread(ledger.route_summaries, route_ids)
     except AttemptLedgerError as exc:
         raise HTTPException(status_code=503, detail="ForgeFlow attempt ledger is invalid") from exc
 
 
-def _route_probe_records() -> dict[str, Any]:
+async def _route_probe_records() -> dict[str, Any]:
     store = _resource_probe_store()
     if store is None:
         return {}
     try:
-        return store.all()
+        return await asyncio.to_thread(store.all)
     except ResourceProbeStoreError as exc:
         raise HTTPException(status_code=503, detail="ForgeFlow resource probe store is invalid") from exc
 
@@ -570,23 +573,27 @@ async def list_resources(authorization: str | None = Header(default=None)) -> di
     if registry is None:
         return {"routes": []}
     routes = list(registry.routes)
-    attempts = _route_attempt_summaries(routes)
-    probes = _route_probe_records()
+    attempts, probes = await asyncio.gather(
+        _route_attempt_summaries(routes),
+        _route_probe_records(),
+    )
     reasoning = list(registry.eligible("REASONING"))
     next_reasoning: dict[str, str | None] = {}
     for index, route in enumerate(reasoning):
         next_reasoning[route.id] = reasoning[index + 1].target if index + 1 < len(reasoning) else None
-    return {
-        "routes": [
-            _route_view(
+    route_views = await asyncio.gather(
+        *(
+            asyncio.to_thread(
+                _route_view,
                 route,
                 fallback_target=next_reasoning.get(route.id),
                 attempts=attempts.get(route.id),
                 probe=probes.get(route.id),
             )
             for route in routes
-        ]
-    }
+        )
+    )
+    return {"routes": list(route_views)}
 
 
 @router.post("/resources/{route_id}/probe")
@@ -610,7 +617,8 @@ async def probe_resource(
     status, duration_ms, failure_code = await asyncio.to_thread(probe_codebuddy_model, os.environ)
     model = os.environ.get("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4.1-flash").strip() or None
     try:
-        record = store.record(
+        record = await asyncio.to_thread(
+            store.record,
             route_id=route.id,
             status=status,
             model=model,
@@ -619,9 +627,10 @@ async def probe_resource(
         )
     except ResourceProbeStoreError as exc:
         raise HTTPException(status_code=503, detail="ForgeFlow resource probe store is invalid") from exc
-    attempts = _route_attempt_summaries([route]).get(route.id)
+    attempts = (await _route_attempt_summaries([route])).get(route.id)
+    route_view = await asyncio.to_thread(_route_view, route, attempts=attempts, probe=record)
     return {
-        "route": _route_view(route, attempts=attempts, probe=record),
+        "route": route_view,
         "probe": {
             "status": record.status,
             "checkedAt": record.checked_at,
