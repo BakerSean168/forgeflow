@@ -179,7 +179,12 @@ class DefaultExternalAgentGraphServices:
                 test_command=project.test_command,
             )
             allowed_project = f"{request["owner"]}/{request["repo"]}"
-            execution = build_external_agent_execution(
+            # Adapter construction performs strict filesystem path validation
+            # (resolve(strict=True), executable access, auth discovery). It must
+            # not run on the LangGraph event loop or Blockbuster raises before the
+            # external execution can start.
+            execution = await asyncio.to_thread(
+                build_external_agent_execution,
                 route,
                 allowed_projects=frozenset({allowed_project}),
             )

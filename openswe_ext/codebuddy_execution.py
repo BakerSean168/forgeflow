@@ -257,9 +257,16 @@ class CodeBuddyExternalAgentExecution:
         ).strip()
         self._agent_env = _docker_environment(values)
 
-    async def execute(
+    def _build_docker_execution(
         self, request: ExternalAgentExecutionRequest
-    ) -> ExternalAgentExecutionEvidence:
+    ) -> tuple[str, tuple[str, ...]]:
+        """Resolve and validate execution paths, then build the Docker command.
+
+        Workspace, binary, and official-auth paths are resolved with
+        ``strict=True`` and the executable bit is probed. Those filesystem checks
+        block, so callers must run this off the event loop.
+        """
+
         workspace = self._gate.validate(request)
         container_name = f"forgeflow-codebuddy-{uuid.uuid4().hex[:16]}"
         docker_args = build_codebuddy_docker_args(
@@ -271,6 +278,12 @@ class CodeBuddyExternalAgentExecution:
             image=self._image,
             internet_environment=self._internet_environment,
         )
+        return container_name, docker_args
+
+    async def execute(
+        self, request: ExternalAgentExecutionRequest
+    ) -> ExternalAgentExecutionEvidence:
+        container_name, docker_args = await asyncio.to_thread(self._build_docker_execution, request)
         evidence = await AcpWorkspaceExecutionAdapter(
             gate=self._gate,
             agent_command="docker",
