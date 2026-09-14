@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import os
 import stat
@@ -19,7 +20,11 @@ from forgeflow.external_agents.execution import (
 
 
 class ExternalAgentExecutionError(RuntimeError):
-    pass
+    def __init__(self, code: str, *, stage: str = "execution", cause: BaseException | None = None):
+        super().__init__(code)
+        self.code = code
+        self.stage = stage
+        self.cause = cause
 
 
 def _git(workspace: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
@@ -74,24 +79,56 @@ def working_tree_digest(workspace: Path, paths: tuple[str, ...]) -> str:
     return digest.hexdigest()
 
 
+def _prepare(workspace: Path, command: tuple[str, ...] | None) -> None:
+    if command is None:
+        return
+    try:
+        result = subprocess.run(
+            command,
+            cwd=workspace,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=900,
+            text=False,
+            env={"HOME": os.environ.get("HOME", ""), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                 "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "CI": "1", "COREPACK_ENABLE_PROJECT_SPEC": "1"},
+        )
+    except OSError as exc:
+        raise ExternalAgentExecutionError("EXTERNAL_AGENT_PREPARE_IO_FAILED", stage="prepare", cause=exc) from exc
+    if result.returncode != 0:
+        raise ExternalAgentExecutionError(f"EXTERNAL_AGENT_PREPARE_FAILED:{result.returncode}", stage="prepare")
+
+
 def _test(workspace: Path, command: tuple[str, ...]) -> tuple[int, str]:
-    result = subprocess.run(
-        command,
-        cwd=workspace,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-        timeout=900,
-        text=False,
-        env={
-            "HOME": os.environ.get("HOME", ""),
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "LANG": os.environ.get("LANG", "C.UTF-8"),
-            "LC_ALL": "C.UTF-8",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
-    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=workspace,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=900,
+            text=False,
+            env={
+                "HOME": os.environ.get("HOME", ""),
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "LANG": os.environ.get("LANG", "C.UTF-8"),
+                "LC_ALL": "C.UTF-8",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "CI": "1",
+                "COREPACK_ENABLE_PROJECT_SPEC": "1",
+            },
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ExternalAgentExecutionError("EXTERNAL_AGENT_TEST_TIMEOUT", stage="test", cause=exc) from exc
+    except PermissionError as exc:
+        raise ExternalAgentExecutionError("EXTERNAL_AGENT_TEST_PERMISSION_DENIED", stage="test", cause=exc) from exc
+    except OSError as exc:
+        code = "EXTERNAL_AGENT_TEST_COMMAND_NOT_FOUND" if exc.errno == errno.ENOENT else "EXTERNAL_AGENT_TEST_IO_FAILED"
+        raise ExternalAgentExecutionError(code, stage="test", cause=exc) from exc
     return result.returncode, hashlib.sha256(result.stdout).hexdigest()
 
 
@@ -141,8 +178,8 @@ class AcpWorkspaceExecutionAdapter:
     ) -> ExternalAgentExecutionEvidence:
         workspace = await _cancellation_safe_to_thread(self._gate.validate, request)
         status = await _cancellation_safe_to_thread(_git, workspace, "status", "--porcelain")
-        if status.stdout.strip():
-            raise ExternalAgentExecutionError("EXTERNAL_AGENT_WORKSPACE_NOT_CLEAN")
+        if status.stdout.strip() and not request.allow_existing_changes:
+            raise ExternalAgentExecutionError("EXTERNAL_AGENT_WORKSPACE_NOT_CLEAN", stage="workspace")
         source_revision = (
             await _cancellation_safe_to_thread(_git, workspace, "rev-parse", "HEAD")
         ).stdout.decode().strip()
@@ -175,7 +212,9 @@ class AcpWorkspaceExecutionAdapter:
             before_prompt=self._before_prompt,
         )
         if result.stop_reason != "end_turn":
-            raise ExternalAgentExecutionError(f"EXTERNAL_AGENT_STOP_{result.stop_reason.upper()}")
+            raise ExternalAgentExecutionError(
+                f"EXTERNAL_AGENT_STOP_{result.stop_reason.upper()}", stage="acp"
+            )
 
         head_after = (
             await _cancellation_safe_to_thread(_git, workspace, "rev-parse", "HEAD")
@@ -198,13 +237,16 @@ class AcpWorkspaceExecutionAdapter:
 
         paths = await _cancellation_safe_to_thread(changed_files, workspace)
         if not paths:
-            raise ExternalAgentExecutionError("EXTERNAL_AGENT_NO_CHANGES")
+            raise ExternalAgentExecutionError("EXTERNAL_AGENT_NO_CHANGES", stage="evidence")
         diff_sha256 = await _cancellation_safe_to_thread(working_tree_digest, workspace, paths)
+        await _cancellation_safe_to_thread(_prepare, workspace, request.prepare_command)
         test_exit_code, test_output_sha256 = await _cancellation_safe_to_thread(
             _test, workspace, request.test_command
         )
         if test_exit_code != 0:
-            raise ExternalAgentExecutionError(f"EXTERNAL_AGENT_TEST_FAILED:{test_exit_code}")
+            raise ExternalAgentExecutionError(
+                f"EXTERNAL_AGENT_TEST_FAILED:{test_exit_code}", stage="test"
+            )
         post_test_paths = await _cancellation_safe_to_thread(changed_files, workspace)
         post_test_digest = await _cancellation_safe_to_thread(
             working_tree_digest, workspace, post_test_paths
