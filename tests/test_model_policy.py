@@ -10,6 +10,7 @@ from openswe_ext.model_policy import (
     REVIEW_MODEL_ID,
     ModelPolicyError,
     fallback_model_id_for,
+    implementation_model_policy,
     install_forgeflow_model_policy,
     reasoning_model_ids,
 )
@@ -22,6 +23,24 @@ def test_glm_implementation_falls_back_only_to_luna(monkeypatch: pytest.MonkeyPa
     monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
     assert fallback_model_id_for(IMPLEMENTATION_MODEL_ID) == IMPLEMENTATION_FALLBACK_MODEL_ID
     assert fallback_model_id_for(IMPLEMENTATION_FALLBACK_MODEL_ID) is None
+
+
+def test_implementation_policy_allows_explicit_deployment_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FORGEFLOW_IMPLEMENTATION_MODEL_ID", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("FORGEFLOW_IMPLEMENTATION_EFFORT", "xhigh")
+    monkeypatch.setenv("FORGEFLOW_IMPLEMENTATION_FALLBACK_MODEL_ID", "")
+
+    assert implementation_model_policy() == ("openai:gpt-5.6-luna", "xhigh", None)
+    assert fallback_model_id_for("openai:gpt-5.6-luna") is None
+
+
+def test_implementation_policy_rejects_self_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FORGEFLOW_IMPLEMENTATION_MODEL_ID", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("FORGEFLOW_IMPLEMENTATION_FALLBACK_MODEL_ID", "openai:gpt-5.6-luna")
+    with pytest.raises(ModelPolicyError, match="IMPLEMENTATION_FALLBACK_EQUALS_PRIMARY"):
+        implementation_model_policy()
 
 
 def test_reasoning_registry_selects_sol_then_glm53(monkeypatch: pytest.MonkeyPatch) -> None:

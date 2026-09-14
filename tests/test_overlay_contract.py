@@ -59,6 +59,16 @@ def test_default_model_policy_uses_luna_for_build_and_sol_for_review() -> None:
     assert review["reviewer_subagent_reasoning_effort"] == "medium"
 
 
+def test_implementation_config_uses_deployment_model_override(monkeypatch) -> None:
+    monkeypatch.setenv("FORGEFLOW_IMPLEMENTATION_MODEL_ID", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("FORGEFLOW_IMPLEMENTATION_EFFORT", "xhigh")
+    monkeypatch.setenv("FORGEFLOW_IMPLEMENTATION_FALLBACK_MODEL_ID", "")
+
+    impl = implementation_config(thread_id="thread-1", repo_owner="o", repo_name="r")
+    assert impl["agent_model_id"] == "openai:gpt-5.6-luna"
+    assert impl["agent_effort"] == "xhigh"
+
+
 def test_workspace_reference_selects_upstream_desktop_execution_without_owning_it() -> None:
     impl = implementation_config(
         thread_id="thread-1", repo_owner="o", repo_name="r", workspace_path="/tmp/open-swe-worktree"
