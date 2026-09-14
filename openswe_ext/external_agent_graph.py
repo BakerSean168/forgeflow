@@ -20,7 +20,7 @@ from forgeflow.concurrency import cancellation_safe_to_thread
 from forgeflow.external_agents.execution import ExternalAgentExecutionRequest
 from forgeflow.projects import load_external_agent_project_config
 from forgeflow.routing import classify_failure_code, load_route_registry
-from openswe_ext.antigravity_execution import AntigravityExternalAgentExecution
+from openswe_ext.external_agent_adapters import build_external_agent_execution
 from openswe_ext.external_agent_workspace import (
     ExternalAgentWorkspaceError,
     cleanup_external_workspace,
@@ -131,7 +131,7 @@ class DefaultExternalAgentGraphServices:
             if (
                 route.role != "IMPLEMENT"
                 or route.runtime != "EXTERNAL_ACP"
-                or route.adapter != "antigravity"
+                or not route.adapter
                 or not route.eligible(now=datetime.now(UTC))
             ):
                 raise RuntimeError("EXTERNAL_AGENT_ROUTE_NOT_ELIGIBLE")
@@ -179,9 +179,11 @@ class DefaultExternalAgentGraphServices:
                 test_command=project.test_command,
             )
             allowed_project = f"{request["owner"]}/{request["repo"]}"
-            evidence = await AntigravityExternalAgentExecution(
-                allowed_projects=frozenset({allowed_project})
-            ).execute(execution_request)
+            execution = build_external_agent_execution(
+                route,
+                allowed_projects=frozenset({allowed_project}),
+            )
+            evidence = await execution.execute(execution_request)
             if evidence.source_revision != source_revision:
                 raise RuntimeError("EXTERNAL_AGENT_SOURCE_REVISION_MISMATCH")
             title = _summary(request["objective"])

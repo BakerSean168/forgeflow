@@ -19,7 +19,7 @@ from acp.exceptions import RequestError
 from forgeflow.attempts import AttemptHandle, AttemptLedger
 from forgeflow.external_agents.execution import ExternalAgentExecutionRequest
 from forgeflow.routing import classify_failure_code, load_route_registry
-from openswe_ext.antigravity_execution import AntigravityExternalAgentExecution
+from openswe_ext.external_agent_adapters import build_external_agent_execution
 
 
 class ProjectCanaryError(RuntimeError):
@@ -146,11 +146,7 @@ async def _run(args: argparse.Namespace) -> int:
 
         registry = load_route_registry(Path(args.route_config))
         route = registry.get(args.route_id)
-        if (
-            route.role != "IMPLEMENT"
-            or route.runtime != "EXTERNAL_ACP"
-            or route.adapter != "antigravity"
-        ):
+        if route.role != "IMPLEMENT" or route.runtime != "EXTERNAL_ACP" or not route.adapter:
             raise ProjectCanaryError("PROJECT_CANARY_ROUTE_INVALID")
 
         workspace, expected_source = await asyncio.to_thread(
@@ -174,12 +170,16 @@ async def _run(args: argparse.Namespace) -> int:
         route_env = dict(os.environ)
         route_env.update(
             {
-                "FORGEFLOW_ANTIGRAVITY_ACP_ENABLED": "true",
-                "FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS": f"{args.owner}/{args.repo}",
                 "FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT": str(root),
                 "FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX": "docker",
             }
         )
+        if route.adapter == "antigravity":
+            route_env["FORGEFLOW_ANTIGRAVITY_ACP_ENABLED"] = "true"
+        elif route.adapter == "codebuddy":
+            route_env["FORGEFLOW_CODEBUDDY_ACP_ENABLED"] = "true"
+        else:
+            raise ProjectCanaryError(f"PROJECT_CANARY_ADAPTER_UNSUPPORTED:{route.adapter}")
         request = ExternalAgentExecutionRequest(
             owner=args.owner,
             repo=args.repo,
@@ -189,7 +189,11 @@ async def _run(args: argparse.Namespace) -> int:
             phase="IMPLEMENT",
             test_command=tuple(shlex.split(args.test_command)),
         )
-        execution = AntigravityExternalAgentExecution(env=route_env)
+        execution = build_external_agent_execution(
+            route,
+            env=route_env,
+            allowed_projects=frozenset({f"{args.owner}/{args.repo}"}),
+        )
         evidence = await execution.execute(request)
         if evidence.source_revision != expected_source:
             raise ProjectCanaryError("PROJECT_CANARY_SOURCE_REVISION_MISMATCH")

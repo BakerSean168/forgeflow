@@ -48,20 +48,61 @@ def model_view(model_id: str | None, *, effort: str | None = None) -> dict[str, 
     }
 
 
+def _external_implementation_profile(route: RouteDefinition | None) -> dict[str, Any]:
+    adapter = (route.adapter if route is not None else None) or "external-acp"
+    normalized = adapter.casefold()
+    if normalized == "antigravity":
+        model = os.environ.get("FORGEFLOW_ANTIGRAVITY_MODEL", "gemini-3.8-flash-high").strip()
+        effort = os.environ.get("FORGEFLOW_ANTIGRAVITY_EFFORT", "high").strip()
+        provider = {
+            "id": "google-account",
+            "name": "Google Account",
+            "transport": "Antigravity native",
+        }
+        agent = {"id": "antigravity", "name": "Antigravity", "harness": "ACP"}
+        model_name = model
+    elif normalized == "codebuddy":
+        model = os.environ.get("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4-flash").strip()
+        effort = None
+        provider = {
+            "id": "codebuddy-account",
+            "name": "CodeBuddy Account",
+            "transport": "CodeBuddy native ACP",
+        }
+        agent = {"id": "codebuddy", "name": "CodeBuddy", "harness": "ACP"}
+        model_name = (
+            "DeepSeek V4.1 Flash"
+            if model in {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash"}
+            else model
+        )
+    else:
+        model = None
+        effort = None
+        provider = {
+            "id": route.target if route is not None else "external-agent",
+            "name": route.target if route is not None else "External Agent",
+            "transport": "ACP",
+        }
+        agent = {"id": adapter, "name": adapter, "harness": "ACP"}
+        model_name = None
+    return {
+        "role": "IMPLEMENT",
+        "agent": agent,
+        "provider": provider,
+        "model": (
+            None
+            if model is None
+            else {"id": model, "name": model_name, "effort": effort, "provider": provider}
+        ),
+        "fallbackModel": None,
+    }
+
+
 def implementation_profile(route: RouteDefinition | None, runtime: str | None) -> dict[str, Any] | None:
     if not runtime and route is None:
         return None
     if runtime == "EXTERNAL_ACP" or (route is not None and route.runtime == "EXTERNAL_ACP"):
-        model = os.environ.get("FORGEFLOW_ANTIGRAVITY_MODEL", "gemini-3.8-flash-high").strip()
-        effort = os.environ.get("FORGEFLOW_ANTIGRAVITY_EFFORT", "high").strip()
-        provider = {"id": "google-account", "name": "Google Account", "transport": "Antigravity native"}
-        return {
-            "role": "IMPLEMENT",
-            "agent": {"id": "antigravity", "name": "Antigravity", "harness": "ACP"},
-            "provider": provider,
-            "model": {"id": model, "name": model, "effort": effort, "provider": provider},
-            "fallbackModel": None,
-        }
+        return _external_implementation_profile(route)
     return {
         "role": "IMPLEMENT",
         "agent": {"id": "open-swe-agent", "name": "Open SWE Agent", "harness": "Open SWE"},

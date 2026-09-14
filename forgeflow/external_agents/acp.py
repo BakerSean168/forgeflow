@@ -46,6 +46,7 @@ async def run_acp_agent(
     cwd: Path,
     prompt: str,
     env: Mapping[str, str] | None = None,
+    session_cwd: str | None = None,
 ) -> AcpExecutionResult:
     """Spawn one ACP agent, open a session in ``cwd``, and execute one turn.
 
@@ -76,7 +77,10 @@ async def run_acp_agent(
                 version="2.0.2",
             ),
         )
-        session = await connection.new_session(cwd=str(workspace), mcp_servers=[])
+        session = await connection.new_session(
+            cwd=session_cwd or str(workspace),
+            mcp_servers=[],
+        )
         response = await connection.prompt(
             session_id=session.session_id,
             prompt=[text_block(prompt)],

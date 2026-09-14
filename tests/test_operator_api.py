@@ -164,6 +164,7 @@ def test_resources_expose_agent_provider_and_model_profiles(manifest: Path, monk
     routes.write_text(json.dumps({"version": 1, "routes": [
         {"id": "openswe-current", "role": "IMPLEMENT", "priority": 10, "runtime": "OPEN_SWE", "target": "current-model-policy", "enabled": True, "health": "READY"},
         {"id": "antigravity-account-primary", "role": "IMPLEMENT", "priority": 20, "runtime": "EXTERNAL_ACP", "adapter": "antigravity", "target": "google-account", "enabled": True, "health": "READY"},
+        {"id": "codebuddy-account-primary", "role": "IMPLEMENT", "priority": 30, "runtime": "EXTERNAL_ACP", "adapter": "codebuddy", "target": "codebuddy-account", "enabled": False, "health": "READY"},
         {"id": "openswe-reviewer", "role": "REASONING", "priority": 10, "runtime": "OPEN_SWE", "target": "openai:gpt-5.6-sol", "enabled": True, "health": "READY"}
     ]}), encoding="utf-8")
     monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
@@ -175,6 +176,10 @@ def test_resources_expose_agent_provider_and_model_profiles(manifest: Path, monk
     antigravity = next(row for row in payload["routes"] if row["id"] == "antigravity-account-primary")
     assert antigravity["agent"]["name"] == "Antigravity"
     assert antigravity["provider"]["name"] == "Google Account"
+    codebuddy = next(row for row in payload["routes"] if row["id"] == "codebuddy-account-primary")
+    assert codebuddy["agent"]["name"] == "CodeBuddy"
+    assert codebuddy["provider"]["name"] == "CodeBuddy Account"
+    assert codebuddy["model"]["name"] == "DeepSeek V4.1 Flash"
     reviewer = next(row for row in payload["routes"] if row["id"] == "openswe-reviewer")
     assert reviewer["agent"]["name"] == "Open SWE Reviewer"
     assert reviewer["model"]["name"] == "gpt-5.6-sol"
