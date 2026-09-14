@@ -63,10 +63,16 @@ from forgeflow.policy import (
     observe_external_head,
     start_implementation,
 )
-from forgeflow.projects import load_repository_policy
+from forgeflow.projects import load_repository_policy, resolve_project_route
 from forgeflow.prompts.implementation import build_implementation_prompt, operation_trailer
 from forgeflow.prompts.repair import build_ci_repair_prompt, build_review_repair_prompt
-from forgeflow.routing import RouteDefinition, classify_failure_code, load_route_registry
+from forgeflow.routing import (
+    RouteConfigError,
+    RouteDefinition,
+    RouteRegistry,
+    classify_failure_code,
+    load_route_registry,
+)
 from forgeflow.state import DEFAULT_BUDGET, TERMINAL_STATUSES, ForgeFlowState
 from openswe_ext.external_agent_runtime import ExternalAgentChildRuntime
 
@@ -89,7 +95,11 @@ class PolicyServices(Protocol):
     async def preflight_repository(self, state: ForgeFlowState) -> RepositoryPreflight: ...
 
     def select_implementation_route(
-        self, *, exclude_ids: frozenset[str] = frozenset()
+        self,
+        *,
+        owner: str | None = None,
+        repo: str | None = None,
+        exclude_ids: frozenset[str] = frozenset(),
     ) -> RouteDefinition | None: ...
 
     def select_repair_route(self) -> RouteDefinition | None: ...
@@ -257,19 +267,40 @@ class DefaultPolicyServices:
             )
         return github
 
-    def select_implementation_route(
-        self, *, exclude_ids: frozenset[str] = frozenset()
-    ) -> RouteDefinition | None:
+    def _route_registry(self) -> RouteRegistry:
         path = os.environ.get("FORGEFLOW_ROUTE_CONFIG_FILE", "").strip()
         if not path:
             raise ReconcileError("FORGEFLOW_ROUTE_CONFIG_FILE is required")
-        return load_route_registry(Path(path)).select("IMPLEMENT", exclude_ids=exclude_ids)
+        return load_route_registry(Path(path))
+
+    def select_implementation_route(
+        self,
+        *,
+        owner: str | None = None,
+        repo: str | None = None,
+        exclude_ids: frozenset[str] = frozenset(),
+    ) -> RouteDefinition | None:
+        registry = self._route_registry()
+        try:
+            if owner and repo:
+                return resolve_project_route(
+                    registry,
+                    "IMPLEMENT",
+                    owner=owner,
+                    repo=repo,
+                    exclude_ids=exclude_ids,
+                )
+            return registry.select("IMPLEMENT", exclude_ids=exclude_ids)
+        except RouteConfigError as exc:
+            # A malformed per-project preference must never silently fall back to
+            # the global route; fail the policy run closed.
+            raise ReconcileError(f"PROJECT_ROUTE_PREFERENCE_INVALID: {exc}") from exc
 
     def select_repair_route(self) -> RouteDefinition | None:
-        path = os.environ.get("FORGEFLOW_ROUTE_CONFIG_FILE", "").strip()
-        if not path:
-            raise ReconcileError("FORGEFLOW_ROUTE_CONFIG_FILE is required")
-        for route in load_route_registry(Path(path)).eligible("IMPLEMENT"):
+        # Repair inherits the existing external/Open SWE ownership boundary: it
+        # always takes the first eligible Open SWE route and does not apply a
+        # project's initial IMPLEMENT preference.
+        for route in self._route_registry().eligible("IMPLEMENT"):
             if route.runtime == "OPEN_SWE":
                 return route
         return None
@@ -370,11 +401,8 @@ class DefaultPolicyServices:
         return AttemptLedger(Path(path))
 
     def _openswe_route(self, route_id: str) -> RouteDefinition:
-        path = os.environ.get("FORGEFLOW_ROUTE_CONFIG_FILE", "").strip()
-        if not path:
-            raise ReconcileError("FORGEFLOW_ROUTE_CONFIG_FILE is required")
         try:
-            route = load_route_registry(Path(path)).get(route_id)
+            route = self._route_registry().get(route_id)
         except KeyError as exc:
             raise ReconcileError(f"unknown implementation route: {route_id}") from exc
         if route.role != "IMPLEMENT" or route.runtime != "OPEN_SWE":
@@ -713,7 +741,9 @@ async def _reconcile_new(
             services.select_repair_route()
             if state.get("workspace_path")
             else services.select_implementation_route(
-                exclude_ids=frozenset(state.get("implementation_failed_route_ids", []))
+                owner=_required(state, "repo_owner"),
+                repo=_required(state, "repo_name"),
+                exclude_ids=frozenset(state.get("implementation_failed_route_ids", [])),
             )
         )
         if route is None:
@@ -792,7 +822,11 @@ def _fallback_implementation_route(
     state: ForgeFlowState, services: PolicyServices, *, failure_code: str
 ) -> ForgeFlowState:
     failed = list(dict.fromkeys([*state.get("implementation_failed_route_ids", []), _required(state, "implementation_route_id")]))
-    route = services.select_implementation_route(exclude_ids=frozenset(failed))
+    route = services.select_implementation_route(
+        owner=_required(state, "repo_owner"),
+        repo=_required(state, "repo_name"),
+        exclude_ids=frozenset(failed),
+    )
     if route is None:
         return escalate(state, "IMPLEMENTATION_ROUTE_EXHAUSTED")
     result = deepcopy(state)

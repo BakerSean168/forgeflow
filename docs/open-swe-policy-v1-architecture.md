@@ -380,6 +380,24 @@ ForgeFlow sets Open SWE's existing per-run configurable model fields. It does no
 
 Fallback uses Open SWE's existing model-fallback middleware. Implementation keeps GLM 5.3 -> Luna. Review reads the ordered ForgeFlow `REASONING` routes: Sol is priority 10 and the promotional GLM 5.3 route is priority 20 until its explicit expiry. The fallback middleware only reacts to transient provider failures, so an independent review finding never changes models.
 
+### Project-scoped route preferences
+
+Project ownership continues to come from the single Open SWE project manifest
+(`deploy/gcp-dev/projects.default.json` / `projects.example.json` via `OPEN_SWE_LOCAL_PROJECTS_FILE`).
+An entry may carry one optional role-scoped `route_preferences` block naming existing route ids.
+ForgeFlow validates it fail-closed (shape, duplicate role, unknown id, role/id mismatch) and rejects
+an invalid project configuration instead of silently falling back to a global route.
+
+A project without the block keeps the exact global role/priority selection. Selection keeps the
+existing `(priority, id)` eligibility order honoring `enabled`, health, and expiry, then promotes the
+project's preferred eligible route for that project only. A preferred route that is disabled, on
+cooldown, expired, or excluded by a classified `ROUTE_AVAILABILITY` retry is skipped and selection
+deterministically continues with the unmodified global priority order; global priorities are never
+mutated. The reviewer primary follows the same rule, while its model-level fallback remains the next
+eligible `REASONING` route in global order. The operator API surfaces the effective preference and
+selected route per project (`routePreferences` / `selectedRoutes` / `routeConfigurationError`) with
+no secrets.
+
 ### GLM 5.3 context and run-budget policy
 
 ForgeFlow separates the model's **physical context capability** from the Agent's **operational working set**. The private LiteLLM GLM 5.3 route is exposed to Open SWE as a `ChatFireworks` model with `max_input_tokens=1,048,576`, but the Agent does not wait for 85% of that window before compacting. `openswe_ext.context_policy` installs the following narrow runtime policy before Open SWE graphs are imported:

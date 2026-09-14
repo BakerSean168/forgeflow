@@ -35,7 +35,11 @@
       "Delivery Observation"
     ],
     "sandbox_read_repositories": [],
-    "external_agent_test_command": ["pnpm", "test"]
+    "external_agent_test_command": ["pnpm", "test"],
+    "route_preferences": [
+      {"role": "IMPLEMENT", "route_id": "codebuddy-account-primary"},
+      {"role": "REASONING", "route_id": "openswe-reviewer"}
+    ]
   },
   {
     "project_key": "bodysense",

@@ -3,9 +3,17 @@
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from forgeflow.models import RepositoryPolicy
+from forgeflow.routing import (
+    ProjectRoutePreferences,
+    RouteDefinition,
+    RouteRegistry,
+    RouteRole,
+    parse_project_route_preferences,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,8 +85,49 @@ def load_external_agent_project_config(owner: str, repo: str) -> ExternalAgentPr
     )
 
 
+def load_project_route_preferences(
+    registry: RouteRegistry, owner: str, repo: str
+) -> ProjectRoutePreferences:
+    """Read optional role-scoped route preferences from the same project manifest.
+
+    Absent or unconfigured projects yield the empty default and keep the global
+    role/priority selection exactly. Malformed configuration is rejected
+    fail-closed by :func:`forgeflow.routing.parse_project_route_preferences`.
+    """
+    raw = _project_entry(owner, repo)
+    if not isinstance(raw, dict) or "route_preferences" not in raw:
+        return ProjectRoutePreferences()
+    return parse_project_route_preferences(raw["route_preferences"], registry=registry)
+
+
+def resolve_project_route(
+    registry: RouteRegistry,
+    role: RouteRole,
+    *,
+    owner: str,
+    repo: str,
+    now: datetime | None = None,
+    exclude_ids: frozenset[str] = frozenset(),
+) -> RouteDefinition | None:
+    """Select a role route honoring this project's validated preference.
+
+    Eligibility (enabled/health/expiry) is unchanged. When a preferred route is
+    temporarily ineligible or excluded, selection deterministically continues
+    with the unmodified global priority order; global priorities are not mutated.
+    """
+    preferences = load_project_route_preferences(registry, owner, repo)
+    return registry.select(
+        role,
+        now=now,
+        exclude_ids=exclude_ids,
+        preferred_ids=preferences.preferred_ids(role),
+    )
+
+
 __all__ = [
     "ExternalAgentProjectConfig",
     "load_external_agent_project_config",
+    "load_project_route_preferences",
     "load_repository_policy",
+    "resolve_project_route",
 ]

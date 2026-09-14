@@ -156,6 +156,54 @@ The ACP bridge additionally requires one or more `--allowed-root` arguments supp
 The caller must derive them from the selected ForgeFlow project/workspace. They are deliberately not
 a second global project registry.
 
+### 4.1 Project-scoped route preferences
+
+Project ownership stays in the existing `deploy/gcp-dev/projects.default.json` /
+`projects.example.json` manifest (`OPEN_SWE_LOCAL_PROJECTS_FILE`). No second registry, database, or
+scheduler is introduced. A project entry may add one optional `route_preferences` block that names
+*existing* route ids:
+
+```json
+{
+  "repo": "BakerSean168/memoflow",
+  "route_preferences": [
+    {"role": "IMPLEMENT", "route_id": "codebuddy-account-primary"},
+    {"role": "REASONING", "route_id": "openswe-reviewer"}
+  ]
+}
+```
+
+- at most one preference per role, each `{role, route_id}` with no extra fields;
+- `route_id` must exist in the deployed route document and its role must equal `role`;
+- the block is validated fail-closed: a malformed shape, duplicate role, unknown id, or a role/id
+  mismatch rejects the whole project configuration instead of silently using the global route;
+- a project with no `route_preferences` (or absent from the manifest) keeps the unmodified global
+  role/priority selection exactly.
+
+Selection stays deterministic. The eligible `(priority, id)` order is computed unchanged, and then a
+project's preferred eligible route is promoted to the front for that project only. If the preferred
+route is `disabled`, on `COOLDOWN`, expired, or excluded by a classified route-availability retry,
+selection continues with the **unmodified** global priority order; global priorities are never
+mutated or shared between projects.
+
+`REASONING` follows the same rule. The selected reviewer primary is the project's preferred
+REASONING route when eligible (otherwise the global primary), and the model-level fallback is the
+next eligible route in global priority order after the selected primary. A project that prefers the
+global reviewer keeps `Sol -> GLM 5.3`; a project that prefers the promotional GLM 5.3 route selects
+it with no further REASONING fallback. Only transient provider failures trigger that model-level
+fallback.
+
+MemoFlow is the only default project that opts in today (`IMPLEMENT -> codebuddy-account-primary`,
+`REASONING -> openswe-reviewer`). BodySense, Digital Biome, and ForgeFlow retain the global defaults
+unless an operator explicitly configures them.
+
+Operator projections expose the effective policy per project without secrets: `GET /projects`,
+`GET /projects/{key}`, the objective `execution.routePolicy`, and `GET /resources`
+(`projectSelections`) return `routePreferences`, the `selectedRoutes` with a `source` of
+`PREFERENCE` or `GLOBAL`, and a `routeConfigurationError` when a project block is invalid. Only
+route id/role/priority/runtime/target/adapter and the selection source are exposed; credentials and
+provider secrets are never included.
+
 ## 5. Security and ownership invariants
 
 1. **Open SWE model routing stays independent.** Enabling ACP must not rewrite GLM/Luna/Sol policy.

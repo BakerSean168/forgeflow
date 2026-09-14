@@ -25,8 +25,14 @@ from langgraph_sdk.errors import NotFoundError
 from pydantic import BaseModel, Field
 
 from forgeflow.attempts import AttemptLedger, AttemptLedgerError, RouteAttemptSummary
+from forgeflow.projects import load_project_route_preferences
 from forgeflow.resource_probes import ResourceProbeStore, ResourceProbeStoreError
-from forgeflow.routing import RouteConfigError, RouteDefinition, load_route_registry
+from forgeflow.routing import (
+    RouteConfigError,
+    RouteDefinition,
+    RouteRegistry,
+    load_route_registry,
+)
 from openswe_ext.operator_projection import (
     LAST_MODEL_ERROR_KEY,
     implementation_profile,
@@ -285,6 +291,74 @@ def _route_registry():
         raise HTTPException(status_code=503, detail="ForgeFlow route registry is invalid") from exc
 
 
+def _route_summary(route: RouteDefinition, *, source: str) -> dict[str, Any]:
+    """Secrets-free descriptor for one selected route."""
+    return {
+        "id": route.id,
+        "role": route.role,
+        "priority": route.priority,
+        "runtime": route.runtime,
+        "target": route.target,
+        "adapter": route.adapter,
+        "source": source,
+    }
+
+
+def _project_route_policy(
+    registry: RouteRegistry | None, owner: Any, repo: Any
+) -> dict[str, Any]:
+    """Effective per-project route preference and selected route (no secrets).
+
+    Invalid project preferences are surfaced as ``routeConfigurationError`` and
+    never silently replaced by the global selection.
+    """
+    if registry is None or not (isinstance(owner, str) and owner and isinstance(repo, str) and repo):
+        return {"routePreferences": {}, "selectedRoutes": {}, "routeConfigurationError": None}
+    try:
+        preferences = load_project_route_preferences(registry, owner=owner, repo=repo)
+    except RouteConfigError as exc:
+        return {
+            "routePreferences": {},
+            "selectedRoutes": {},
+            "routeConfigurationError": str(exc),
+        }
+    selected: dict[str, Any] = {}
+    for role in ("IMPLEMENT", "REASONING"):
+        preferred = preferences.preferred_ids(role)
+        route = registry.select(role, preferred_ids=preferred)
+        selected[role] = (
+            None
+            if route is None
+            else _route_summary(route, source="PREFERENCE" if route.id in preferred else "GLOBAL")
+        )
+    return {
+        "routePreferences": preferences.as_dict(),
+        "selectedRoutes": selected,
+        "routeConfigurationError": None,
+    }
+
+
+def _project_views() -> list[dict[str, Any]]:
+    projects = _load_projects()
+    registry = _route_registry()
+    for project in projects:
+        project.update(
+            _project_route_policy(registry, project.get("repoOwner"), project.get("repoName"))
+        )
+    return projects
+
+
+def _objective_repository(values: Mapping[str, Any], metadata: Mapping[str, Any]) -> tuple[Any, Any]:
+    owner = values.get("repo_owner")
+    repo = values.get("repo_name")
+    if not (isinstance(owner, str) and isinstance(repo, str)):
+        raw_repo = metadata.get("repo")
+        if isinstance(raw_repo, Mapping):
+            owner = raw_repo.get("owner")
+            repo = raw_repo.get("name")
+    return (owner if isinstance(owner, str) else None, repo if isinstance(repo, str) else None)
+
+
 def _objective_view(thread: Mapping[str, Any], lookup: Mapping[str, str], *, full: bool = False) -> dict[str, Any]:
     values = thread.get("values")
     values = values if isinstance(values, Mapping) else {}
@@ -295,10 +369,13 @@ def _objective_view(thread: Mapping[str, Any], lookup: Mapping[str, str], *, ful
     if not full and len(objective) > 600:
         objective = objective[:597] + "..."
     status = values.get("status") if isinstance(values.get("status"), str) else "NEW"
+    repo_owner, repo_name = _objective_repository(values, metadata)
     return {
         "planId": thread.get("thread_id"),
         "threadId": thread.get("thread_id"),
         "projectKey": _thread_project_key(thread, lookup),
+        "repoOwner": repo_owner,
+        "repoName": repo_name,
         "objective": objective,
         "status": status,
         "active": status in _ACTIVE_STATUSES,
@@ -430,6 +507,9 @@ async def _execution_snapshot(client: Any, objective: Mapping[str, Any]) -> dict
         "runtime": runtime,
         "routeTarget": route.target if route is not None else None,
         "routeHealth": route.health if route is not None else None,
+        "routePolicy": _project_route_policy(
+            registry, objective.get("repoOwner"), objective.get("repoName")
+        ),
         "implementation": implementation,
         "review": review,
         "activeProfile": active_profile,
@@ -465,13 +545,17 @@ async def operator_health(authorization: str | None = Header(default=None)) -> d
 @router.get("/projects")
 async def list_projects(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_operator_auth(authorization)
-    return {"projects": _load_projects()}
+    return {"projects": _project_views()}
 
 
 @router.get("/projects/{project_key}")
 async def get_project(project_key: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_operator_auth(authorization)
-    return _resolve_project(project_key)
+    project = _resolve_project(project_key)
+    project.update(
+        _project_route_policy(_route_registry(), project.get("repoOwner"), project.get("repoName"))
+    )
+    return project
 
 
 @router.post("/objectives", status_code=201)
@@ -669,7 +753,7 @@ async def list_resources(authorization: str | None = Header(default=None)) -> di
     require_operator_auth(authorization)
     registry = _route_registry()
     if registry is None:
-        return {"routes": []}
+        return {"routes": [], "selection": {}, "projectSelections": {}}
     routes = list(registry.routes)
     attempts, probes = await asyncio.gather(
         _route_attempt_summaries(routes),
@@ -691,7 +775,25 @@ async def list_resources(authorization: str | None = Header(default=None)) -> di
             for route in routes
         )
     )
-    return {"routes": list(route_views)}
+    selection: dict[str, Any] = {}
+    for role in ("IMPLEMENT", "REASONING"):
+        route = registry.select(role)
+        selection[role] = None if route is None else _route_summary(route, source="GLOBAL")
+    try:
+        projects = _load_projects()
+    except HTTPException:
+        projects = []
+    project_selections = {
+        project["projectKey"]: _project_route_policy(
+            registry, project.get("repoOwner"), project.get("repoName")
+        )
+        for project in projects
+    }
+    return {
+        "routes": list(route_views),
+        "selection": selection,
+        "projectSelections": project_selections,
+    }
 
 
 @router.post("/resources/{route_id}/probe")
@@ -742,7 +844,7 @@ async def probe_resource(
 @router.get("/summary")
 async def summary(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_operator_auth(authorization)
-    projects = _load_projects()
+    projects = _project_views()
     lookup = _project_lookup(projects)
     client = _client()
     latest: dict[str, dict[str, Any]] = {}

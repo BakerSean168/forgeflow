@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,9 +14,10 @@ RouteRole = Literal["IMPLEMENT", "REASONING"]
 RouteRuntime = Literal["OPEN_SWE", "EXTERNAL_ACP"]
 RouteHealth = Literal["READY", "COOLDOWN", "DISABLED"]
 
-_ROLES = frozenset({"IMPLEMENT", "REASONING"})
+_ROLES: tuple[RouteRole, ...] = ("IMPLEMENT", "REASONING")
 _RUNTIMES = frozenset({"OPEN_SWE", "EXTERNAL_ACP"})
 _HEALTH = frozenset({"READY", "COOLDOWN", "DISABLED"})
+_ROUTE_PREFERENCE_FIELDS = frozenset({"role", "route_id"})
 
 
 class RouteConfigError(ValueError):
@@ -81,11 +83,102 @@ class RouteRegistry:
         *,
         now: datetime | None = None,
         exclude_ids: frozenset[str] = frozenset(),
+        preferred_ids: Sequence[str] = (),
     ) -> RouteDefinition | None:
-        candidates = [
-            route for route in self.eligible(role, now=now) if route.id not in exclude_ids
-        ]
-        return candidates[0] if candidates else None
+        """Select one eligible route for ``role``.
+
+        ``preferred_ids`` is an ordered, already-validated project preference.
+        Preferred eligible routes move to the front of the deterministic
+        ``(priority, id)`` order.  A preferred route that is disabled, on
+        cooldown, expired, or excluded is skipped and selection continues with
+        the unmodified global priority order.  Global route priorities are never
+        mutated.
+        """
+        candidates = self.eligible(role, now=now)
+        if preferred_ids:
+            rank = {route_id: index for index, route_id in enumerate(preferred_ids)}
+            candidates = tuple(
+                sorted(
+                    candidates,
+                    key=lambda route: (rank.get(route.id, len(rank)), route.priority, route.id),
+                )
+            )
+        return next((route for route in candidates if route.id not in exclude_ids), None)
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectRoutePreferences:
+    """Validated, role-scoped preferred routes for one project.
+
+    An empty instance means the project has no explicit preference and must keep
+    the global role/priority selection exactly.
+    """
+
+    by_role: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def empty(self) -> bool:
+        return not self.by_role
+
+    def preferred_ids(self, role: RouteRole) -> tuple[str, ...]:
+        return tuple(route_id for configured_role, route_id in self.by_role if configured_role == role)
+
+    def as_dict(self) -> dict[str, str]:
+        return {role: route_id for role, route_id in self.by_role}
+
+
+def parse_project_route_preferences(
+    raw: object, *, registry: RouteRegistry
+) -> ProjectRoutePreferences:
+    """Validate the explicit ``route_preferences`` block of one project entry.
+
+    Malformed shapes, duplicate roles/routes, unknown route ids, and routes that
+    belong to a different role are rejected fail-closed with ``RouteConfigError``.
+    ``None`` (field absent) yields the empty default and preserves global order.
+    """
+    if raw is None:
+        return ProjectRoutePreferences()
+    if not isinstance(raw, list) or not raw:
+        raise RouteConfigError("project route_preferences must be a non-empty list")
+    parsed: list[tuple[str, str]] = []
+    seen_roles: set[str] = set()
+    seen_routes: set[str] = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            raise RouteConfigError(f"project route_preferences[{index}] must be an object")
+        unknown = set(item) - _ROUTE_PREFERENCE_FIELDS
+        if unknown:
+            raise RouteConfigError(
+                "project route_preferences[{}] has unknown fields: {}".format(
+                    index, ",".join(sorted(str(field) for field in unknown))
+                )
+            )
+        role = item.get("role")
+        route_id = item.get("route_id")
+        if not isinstance(role, str) or role not in _ROLES:
+            raise RouteConfigError(f"project route_preferences[{index}] has invalid role")
+        if not isinstance(route_id, str) or not route_id.strip():
+            raise RouteConfigError(f"project route_preferences[{index}] route_id is required")
+        normalized = route_id.strip()
+        if role in seen_roles:
+            raise RouteConfigError(f"project route_preferences has duplicate role: {role}")
+        if normalized in seen_routes:
+            raise RouteConfigError(f"project route_preferences has duplicate route_id: {normalized}")
+        try:
+            route = registry.get(normalized)
+        except KeyError as exc:
+            raise RouteConfigError(
+                f"project route_preferences[{index}] references unknown route: {normalized}"
+            ) from exc
+        if route.role != role:
+            raise RouteConfigError(
+                f"project route_preferences[{index}] route {normalized} has role "
+                f"{route.role}, not {role}"
+            )
+        seen_roles.add(role)
+        seen_routes.add(normalized)
+        parsed.append((role, normalized))
+    return ProjectRoutePreferences(tuple(parsed))
 
 
 def _parse_datetime(value: object, *, route_id: str) -> datetime | None:
