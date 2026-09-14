@@ -14,6 +14,7 @@ github_env="$config_dir/github-app.env"
 litellm_glm53_key="$config_dir/litellm-glm53.key"
 routes_file="$config_dir/routes.json"
 attempt_ledger_file="$state_dir/attempt-ledger.jsonl"
+resource_probe_file="$state_dir/resource-probes.json"
 langgraph_state_dir="$state_dir/langgraph"
 langgraph_root_link="$root/.langgraph_api"
 
@@ -33,6 +34,7 @@ export OPEN_SWE_LOCAL_WORKTREES_DIR="$state_dir/worktrees"
 export OPEN_SWE_LOCAL_ARTIFACTS_DIR="$state_dir/artifacts"
 export FORGEFLOW_ROUTE_CONFIG_FILE="$routes_file"
 export FORGEFLOW_ATTEMPT_LEDGER_FILE="$attempt_ledger_file"
+export FORGEFLOW_RESOURCE_PROBE_FILE="$resource_probe_file"
 export OPEN_SWE_OPENAI_OAUTH_BROKER_URL="http://127.0.0.1:${broker_port}/token"
 export OPEN_SWE_OPENAI_OAUTH_BROKER_TOKEN="$(<"$broker_secret")"
 
@@ -49,10 +51,9 @@ export FIREWORKS_API_KEY="$(<"$litellm_glm53_key")"
 unset LLM_FALLBACK_MODEL_ID
 
 # External-agent routing is a production availability fallback. Open SWE remains
-# the priority-10 implementation route; Antigravity is priority 20. CodeBuddy is a
-# guarded priority-30 route and stays scheduler-disabled until its account credential
-# and DeepSeek V4.1 Flash canary have passed. Each external agent owns only one bounded
-# ACP turn inside the ForgeFlow Docker/workspace/evidence boundary.
+# the priority-10 implementation route; Antigravity is priority 20 and CodeBuddy is
+# the authenticated priority-30 route. Each external agent owns only one bounded ACP
+# turn inside the ForgeFlow Docker/workspace/evidence boundary.
 export FORGEFLOW_ANTIGRAVITY_ACP_ENABLED="${FORGEFLOW_ANTIGRAVITY_ACP_ENABLED:-true}"
 export FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED="${FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED:-true}"
 export FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS="${FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS:-}"

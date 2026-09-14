@@ -28,8 +28,7 @@ ForgeFlow policy graph -------------------- deterministic quality decisions
 Current GCP Dev runtime components are `forgeflow-policy.service`,
 `open-swe-codex-broker.service`, the Open SWE Docker sandbox network helper, and the hourly sandbox
 GC timer. **There is no OpenHands Agent Server, OpenHands container, long-lived Antigravity worker,
-Node control plane, or ForgeFlow SQLite workflow database in the current runtime.** An experimental,
-disabled-by-default Antigravity ACP bridge exists as an execution-scoped runtime extension. Writable external-agent turns are additionally wrapped in a short-lived Docker sandbox whose bootstrap account mount is detached before the project prompt; the extension does not own workflow state or change the default Open SWE route.
+Node control plane, or ForgeFlow SQLite workflow database in the current runtime.** External implementation fallbacks are execution-scoped ACP extensions: Antigravity at p20 and CodeBuddy/DeepSeek V4.1 Flash at p30, behind the p10 Open SWE route. Writable external-agent turns are wrapped in short-lived Docker sandboxes whose bootstrap account mounts are detached before the project prompt; these extensions do not own workflow state or GitHub delivery credentials.
 
 Delivery ownership is explicit: external agents never receive GitHub delivery credentials; ForgeFlow independently verifies workspace evidence, writes operation provenance into the commit, pushes the branch, and creates the pull request.
 
@@ -132,6 +131,10 @@ The bakeoff also established the policy requirement ForgeFlow must retain: **a r
 ForgeFlow exposes a deliberately small `/forgeflow/api/v1/*` facade for Hermes and human operators. The facade is mounted into the **same** upstream `agent.webapp` FastAPI application used by the LangGraph deployment; it does not create a second service, scheduler, or workflow database. A Policy V1 LangGraph thread is the durable objective identity (`planId == threadId` for Hermes compatibility), and status/detail views are projections of that thread state plus the existing project and route registries.
 
 The facade may create, read, reconcile, or cancel a Policy V1 objective and expose bounded project/route summaries. Browser-facing Hermes dashboards proxy these read-only summaries server-side so the ForgeFlow bearer token is never delivered to the browser. The operator projection also exposes non-secret execution provenance (current Agent/Harness, Provider, primary/fallback model, child/reviewer run status and fallback signals). Concrete runtime/provider presentation labels live in `openswe_ext`, keeping the core policy package free of provider-specific ownership.
+
+`GET /forgeflow/api/v1/resources` and `/summary` are passive: they never call an LLM. Each route includes an `observability` projection backed by the existing append-only attempt ledger. It reports total and last-24-hour attempts, success/failure/block counts, open attempts, last success time, last outcome/failure class, and duration. CodeBuddy additionally reports executable presence and expiry-only official-login health (`lastRefreshAt`, access/refresh expiry and refreshability). Access and refresh token values are never returned, logged, or copied into the probe cache.
+
+Model availability is deliberately explicit to avoid burning account quota through UI polling. `POST /forgeflow/api/v1/resources/{routeId}/probe` is operator-authenticated and currently supported for CodeBuddy. It runs one no-tools, one-turn probe against the configured exact model in a disposable empty directory, with project/local settings and session persistence excluded. Only `AVAILABLE/UNAVAILABLE`, probe time, duration, model id and a bounded failure code are atomically cached in a private `0600` state file; model text is discarded. Subsequent GET requests read that cache without another model request.
 
 ### Open SWE owns
 

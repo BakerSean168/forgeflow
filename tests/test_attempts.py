@@ -1,5 +1,6 @@
 import json
 import stat
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,98 @@ def test_attempt_ledger_is_append_only_and_private(tmp_path: Path) -> None:
     assert rows[1]["outcome"] == "SUCCEEDED"
     assert rows[1]["result_revision"] == "b" * 40
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_route_summaries_report_usage_recent_window_and_last_success(tmp_path: Path) -> None:
+    now = datetime(2026, 9, 14, 3, 0, tzinfo=UTC)
+    path = tmp_path / "attempt-ledger.jsonl"
+    rows = [
+        {
+            "version": 1,
+            "event": "STARTED",
+            "timestamp": (now - timedelta(days=2)).isoformat(),
+            "attempt_id": "old",
+            "role": "IMPLEMENT",
+            "route_id": "codebuddy-account-primary",
+            "priority": 30,
+            "runtime": "EXTERNAL_ACP",
+            "target": "codebuddy-account",
+            "operation_key": "old-op",
+            "source_revision": None,
+        },
+        {
+            "version": 1,
+            "event": "FINISHED",
+            "timestamp": (now - timedelta(days=2) + timedelta(minutes=1)).isoformat(),
+            "attempt_id": "old",
+            "role": "IMPLEMENT",
+            "route_id": "codebuddy-account-primary",
+            "priority": 30,
+            "runtime": "EXTERNAL_ACP",
+            "target": "codebuddy-account",
+            "operation_key": "old-op",
+            "outcome": "SUCCEEDED",
+            "failure_class": None,
+            "fallback_reason": None,
+            "duration_ms": 60_000,
+            "source_revision": None,
+            "result_revision": "a" * 40,
+            "external_session_id": "session-old",
+            "external_conversation_id": None,
+        },
+        {
+            "version": 1,
+            "event": "STARTED",
+            "timestamp": (now - timedelta(hours=2)).isoformat(),
+            "attempt_id": "recent",
+            "role": "IMPLEMENT",
+            "route_id": "codebuddy-account-primary",
+            "priority": 30,
+            "runtime": "EXTERNAL_ACP",
+            "target": "codebuddy-account",
+            "operation_key": "recent-op",
+            "source_revision": None,
+        },
+        {
+            "version": 1,
+            "event": "FINISHED",
+            "timestamp": (now - timedelta(hours=1)).isoformat(),
+            "attempt_id": "recent",
+            "role": "IMPLEMENT",
+            "route_id": "codebuddy-account-primary",
+            "priority": 30,
+            "runtime": "EXTERNAL_ACP",
+            "target": "codebuddy-account",
+            "operation_key": "recent-op",
+            "outcome": "FAILED",
+            "failure_class": "ROUTE_AVAILABILITY",
+            "fallback_reason": "timeout",
+            "duration_ms": 3_600_000,
+            "source_revision": None,
+            "result_revision": None,
+            "external_session_id": None,
+            "external_conversation_id": None,
+        },
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    summary = AttemptLedger(path).route_summaries(
+        ["codebuddy-account-primary", "never-used"], now=now
+    )["codebuddy-account-primary"]
+    assert summary.attempt_count == 2
+    assert summary.finished_count == 2
+    assert summary.open_count == 0
+    assert summary.succeeded_count == 1
+    assert summary.failed_count == 1
+    assert summary.recent_attempt_count == 1
+    assert summary.recent_failed_count == 1
+    assert summary.last_success_at == rows[1]["timestamp"]
+    assert summary.last_outcome == "FAILED"
+    assert summary.last_failure_class == "ROUTE_AVAILABILITY"
+    assert summary.last_fallback_reason == "timeout"
+    empty = AttemptLedger(path).route_summaries(["never-used"], now=now)["never-used"]
+    assert empty.attempt_count == 0
+    assert empty.last_success_at is None
 
 
 def test_failed_attempt_records_bounded_failure_metadata(tmp_path: Path) -> None:

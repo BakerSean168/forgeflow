@@ -31,6 +31,7 @@ def test_route_registry_and_attempt_ledger_are_deployed_fail_closed() -> None:
     assert "forgeflow.routing validate" in install
     assert "FORGEFLOW_ROUTE_CONFIG_FILE" in start
     assert "FORGEFLOW_ATTEMPT_LEDGER_FILE" in start
+    assert "FORGEFLOW_RESOURCE_PROBE_FILE" in start
     routes = {route["id"]: route for route in default_routes["routes"]}
     assert routes["openswe-current"]["enabled"] is True
     assert routes["openswe-current"]["priority"] == 10
