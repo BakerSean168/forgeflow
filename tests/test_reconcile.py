@@ -77,7 +77,11 @@ class FakeServices:
             self.cron_id = None
 
     def select_implementation_route(
-        self, *, exclude_ids: frozenset[str] = frozenset()
+        self,
+        *,
+        owner: str | None = None,
+        repo: str | None = None,
+        exclude_ids: frozenset[str] = frozenset(),
     ) -> RouteDefinition | None:
         if self.selected_route.id not in exclude_ids:
             return self.selected_route

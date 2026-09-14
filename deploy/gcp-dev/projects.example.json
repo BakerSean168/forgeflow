@@ -13,6 +13,16 @@
       "run",
       "pytest",
       "-q"
+    ],
+    "route_preferences": [
+      {
+        "role": "IMPLEMENT",
+        "route_id": "codebuddy-account-primary"
+      },
+      {
+        "role": "REASONING",
+        "route_id": "openswe-reviewer"
+      }
     ]
   }
 ]

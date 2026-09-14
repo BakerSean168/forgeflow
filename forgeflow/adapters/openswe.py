@@ -15,6 +15,7 @@ from openswe_ext.context_policy import install_agent_context_policy
 from openswe_ext.model_policy import (
     implementation_model_policy,
     install_forgeflow_model_policy,
+    reasoning_model_ids,
     review_model_id,
 )
 from openswe_ext.provider_fallback import install_provider_fallback_overlay
@@ -605,7 +606,11 @@ class OpenSweReviewerRuntime:
             )
         is_re_review = review_diff_baseline is not None
 
-        configurable = reviewer_config(reviewer_thread_id=thread_id)
+        # The reviewer primary honors this project's validated REASONING route
+        # preference. The fallback overlay resolves the next eligible global
+        # route, so global fallback semantics are unchanged for other projects.
+        reasoning_primary, _reasoning_fallback = reasoning_model_ids(owner=owner, repo=repo)
+        configurable = reviewer_config(reviewer_thread_id=thread_id, model_id=reasoning_primary)
         configurable.update(
             {
                 "thread_id": thread_id,
