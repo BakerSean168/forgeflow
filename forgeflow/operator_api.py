@@ -792,7 +792,7 @@ async def _list_resources_payload(
             "attemptLedgerStatus": "UNAVAILABLE",
         }
     routes = list(registry.routes)
-    attempts_available = True
+    attempts_available = _attempt_ledger() is not None
     try:
         attempts, probes = await asyncio.gather(
             _route_attempt_summaries(routes),
@@ -883,8 +883,15 @@ async def probe_resource(
         )
     except ResourceProbeStoreError as exc:
         raise HTTPException(status_code=503, detail="ForgeFlow resource probe store is invalid") from exc
+    attempts_available = _attempt_ledger() is not None
     attempts = (await _route_attempt_summaries([route])).get(route.id)
-    route_view = await asyncio.to_thread(_route_view, route, attempts=attempts, probe=record)
+    route_view = await asyncio.to_thread(
+        _route_view,
+        route,
+        attempts=attempts,
+        attempts_available=attempts_available,
+        probe=record,
+    )
     return {
         "route": route_view,
         "probe": {

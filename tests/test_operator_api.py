@@ -831,3 +831,18 @@ def test_resources_still_fail_closed_when_attempt_ledger_is_unavailable(
         asyncio.run(api.list_resources(authorization="Bearer secret"))
     assert exc.value.status_code == 503
     assert exc.value.detail == "ForgeFlow attempt ledger is unavailable"
+
+
+def test_resources_marks_unconfigured_attempt_ledger_unavailable(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    _write_unattached_test_routes(routes)
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    monkeypatch.delenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", raising=False)
+
+    payload = asyncio.run(api.list_resources(authorization="Bearer secret"))
+
+    assert payload["attemptLedgerStatus"] == "UNAVAILABLE"
+    assert payload["routes"][0]["observability"]["attempts"] is None
+    assert "attempt_ledger_unavailable" in payload["routes"][0]["observability"]["reasons"]
