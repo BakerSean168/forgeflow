@@ -19,6 +19,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from httpx import HTTPStatusError
 
@@ -77,6 +78,48 @@ def prepare_worktree(
     worktree.parent.mkdir(parents=True, exist_ok=True)
     _git(repo_path, "worktree", "add", "-b", branch_name, str(worktree), f"origin/{base_ref}")
     return worktree
+
+
+def _normalized_github_repository(remote_url: str) -> str | None:
+    value = remote_url.strip()
+    if value.startswith("git@github.com:"):
+        path = value.removeprefix("git@github.com:")
+    else:
+        parsed = urlparse(value)
+        if parsed.hostname != "github.com":
+            return None
+        path = parsed.path.lstrip("/")
+    path = path.removesuffix(".git").strip("/")
+    if path.count("/") != 1:
+        return None
+    owner, repo = path.split("/", 1)
+    return f"{owner}/{repo}".casefold() if owner and repo else None
+
+
+def adopt_existing_worktree(workspace: Path, repository: str) -> tuple[Path, str]:
+    """Adopt a clean, branch-attached worktree without creating or deleting it."""
+    resolved = workspace.expanduser().resolve()
+    probe = _git(resolved, "rev-parse", "--show-toplevel", check=False)
+    if probe.returncode != 0:
+        raise RuntimeError(f"not a Git worktree: {resolved}")
+    top_level = Path(probe.stdout.strip()).resolve()
+    if top_level != resolved:
+        raise RuntimeError(f"existing workspace must be the Git worktree root: {resolved}")
+    status = _git(resolved, "status", "--porcelain", check=False)
+    if status.returncode != 0 or status.stdout.strip():
+        raise RuntimeError(f"existing workspace must be clean: {resolved}")
+    origin = _git(resolved, "remote", "get-url", "origin", check=False)
+    if (
+        origin.returncode != 0
+        or _normalized_github_repository(origin.stdout) != repository.casefold()
+    ):
+        raise RuntimeError(f"existing workspace repository does not match {repository}")
+    branch = _git(
+        resolved, "symbolic-ref", "--quiet", "--short", "HEAD", check=False
+    ).stdout.strip()
+    if not branch:
+        raise RuntimeError(f"existing workspace must be attached to a branch: {resolved}")
+    return resolved, branch
 
 
 def extract_evidence(values: dict[str, Any], *, thread_id: str, worktree: Path) -> dict[str, Any]:
@@ -175,13 +218,19 @@ async def run_acceptance(args: argparse.Namespace) -> int:
         raise RuntimeError("objective file is empty")
     repo_path = Path(args.repo_path).resolve()
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-    branch_name = f"open-swe/forgeflow-acceptance-{stamp}"
-    worktree = prepare_worktree(
-        repo_path=repo_path,
-        base_ref=args.base_ref,
-        state_dir=state_dir,
-        branch_name=branch_name,
-    )
+    managed_worktree = args.workspace_path is None
+    if managed_worktree:
+        branch_name = f"open-swe/forgeflow-acceptance-{stamp}"
+        worktree = prepare_worktree(
+            repo_path=repo_path,
+            base_ref=args.base_ref,
+            state_dir=state_dir,
+            branch_name=branch_name,
+        )
+    else:
+        worktree, branch_name = adopt_existing_worktree(
+            Path(args.workspace_path), args.repository
+        )
     thread_id = str(uuid.uuid4())
     evidence_path = state_dir / "acceptance" / f"{stamp}-{thread_id[:8]}.json"
 
@@ -245,7 +294,11 @@ async def run_acceptance(args: argparse.Namespace) -> int:
                     await asyncio.sleep(args.poll_seconds)
                 while not await _reconcile(client, thread_id, assistant_id, {}):
                     await asyncio.sleep(args.poll_seconds)
-                cleanup = cleanup_worktree(repo_path, worktree, branch_name)
+                cleanup = (
+                    cleanup_worktree(repo_path, worktree, branch_name)
+                    if managed_worktree
+                    else "existing_preserved"
+                )
                 print(f"post_ready_policy=CANCELLED worktree_cleanup={cleanup}", flush=True)
             elif status != "READY":
                 print(f"worktree_preserved={worktree}", flush=True)
@@ -264,6 +317,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True, help="OWNER/REPO")
     parser.add_argument("--repo-path", required=True)
+    parser.add_argument(
+        "--workspace-path",
+        help="Adopt this existing clean branch worktree instead of creating a throwaway one",
+    )
     parser.add_argument("--objective-file", required=True)
     parser.add_argument("--base-ref", default="main")
     parser.add_argument("--port", type=int, default=58810)

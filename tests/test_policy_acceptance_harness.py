@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import stat
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -31,6 +32,54 @@ def test_acceptance_evidence_is_bounded_and_mode_600(tmp_path: Path) -> None:
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     saved = json.loads(path.read_text())
     assert saved["policy_thread_id"] == "thread-1"
+
+
+def test_adopt_existing_worktree_requires_clean_branch_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "existing"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "phase-03", str(workspace)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(workspace),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/BakerSean168/BodySense.git",
+        ],
+        check=True,
+    )
+
+    adopted, branch = module.adopt_existing_worktree(
+        workspace, "BakerSean168/BodySense"
+    )
+    assert adopted == workspace.resolve()
+    assert branch == "phase-03"
+
+    (workspace / "dirty.txt").write_text("dirty", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="must be clean"):
+        module.adopt_existing_worktree(workspace, "BakerSean168/BodySense")
+
+
+def test_adopt_existing_worktree_rejects_foreign_repository(tmp_path: Path) -> None:
+    workspace = tmp_path / "foreign"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "phase-03", str(workspace)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(workspace),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/BakerSean168/not-bodysense.git",
+        ],
+        check=True,
+    )
+    with pytest.raises(RuntimeError, match="repository does not match"):
+        module.adopt_existing_worktree(workspace, "BakerSean168/BodySense")
 
 
 def test_acceptance_terminal_set_treats_ready_as_evidence_not_runtime_terminal() -> None:
