@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 
 import forgeflow.operator_api as api
+from forgeflow.attempts import AttemptLedger
+from forgeflow.resource_probes import ResourceProbeStore
+from openswe_ext.codebuddy_auth import OFFICIAL_AUTH_FILE
 
 
 class FakeAssistants:
@@ -183,3 +187,141 @@ def test_resources_expose_agent_provider_and_model_profiles(manifest: Path, monk
     reviewer = next(row for row in payload["routes"] if row["id"] == "openswe-reviewer")
     assert reviewer["agent"]["name"] == "Open SWE Reviewer"
     assert reviewer["model"]["name"] == "gpt-5.6-sol"
+
+
+def test_resources_expose_codebuddy_auth_probe_and_attempt_observability(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    routes.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "codebuddy-account-primary",
+                        "role": "IMPLEMENT",
+                        "priority": 30,
+                        "runtime": "EXTERNAL_ACP",
+                        "adapter": "codebuddy",
+                        "target": "codebuddy-account",
+                        "enabled": True,
+                        "health": "READY",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    binary = tmp_path / "codebuddy"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o700)
+    monkeypatch.setenv("FORGEFLOW_CODEBUDDY_BIN", str(binary))
+    monkeypatch.setenv("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4.1-flash")
+
+    now = datetime.now(UTC)
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir()
+    millis = lambda value: round(value.timestamp() * 1000)
+    (auth_dir / OFFICIAL_AUTH_FILE).write_text(
+        json.dumps(
+            {
+                "auth": {
+                    "accessToken": "never-expose-access",
+                    "refreshToken": "never-expose-refresh",
+                    "lastRefreshTime": millis(now - timedelta(minutes=5)),
+                    "expiresAt": millis(now + timedelta(hours=2)),
+                    "refreshExpiresAt": millis(now + timedelta(days=7)),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FORGEFLOW_CODEBUDDY_AUTH_STATE_DIR", str(auth_dir))
+
+    ledger_path = tmp_path / "attempt-ledger.jsonl"
+    ledger = AttemptLedger(ledger_path)
+    handle = ledger.start(
+        role="IMPLEMENT",
+        route_id="codebuddy-account-primary",
+        priority=30,
+        runtime="EXTERNAL_ACP",
+        target="codebuddy-account",
+        operation_key="codebuddy:observability",
+    )
+    ledger.finish(handle, outcome="SUCCEEDED", result_revision="a" * 40)
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger_path))
+
+    probe_path = tmp_path / "resource-probes.json"
+    ResourceProbeStore(probe_path).record(
+        route_id="codebuddy-account-primary",
+        status="AVAILABLE",
+        model="deepseek-v4.1-flash",
+        duration_ms=222,
+    )
+    monkeypatch.setenv("FORGEFLOW_RESOURCE_PROBE_FILE", str(probe_path))
+    monkeypatch.setattr(
+        api,
+        "probe_codebuddy_model",
+        lambda _values: (_ for _ in ()).throw(AssertionError("GET /resources must not probe")),
+    )
+
+    payload = asyncio.run(api.list_resources(authorization="Bearer secret"))
+    codebuddy = payload["routes"][0]
+    observed = codebuddy["observability"]
+    assert observed["status"] == "READY"
+    assert observed["auth"]["status"] == "READY"
+    assert observed["auth"]["refreshable"] is True
+    assert observed["modelProbe"]["status"] == "AVAILABLE"
+    assert observed["attempts"]["total"] == 1
+    assert observed["attempts"]["succeeded"] == 1
+    serialized = json.dumps(codebuddy)
+    assert "never-expose-access" not in serialized
+    assert "never-expose-refresh" not in serialized
+
+
+def test_explicit_resource_probe_updates_cache_without_polling_side_effects(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    routes.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "codebuddy-account-primary",
+                        "role": "IMPLEMENT",
+                        "priority": 30,
+                        "runtime": "EXTERNAL_ACP",
+                        "adapter": "codebuddy",
+                        "target": "codebuddy-account",
+                        "enabled": True,
+                        "health": "READY",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    probe_path = tmp_path / "resource-probes.json"
+    monkeypatch.setenv("FORGEFLOW_RESOURCE_PROBE_FILE", str(probe_path))
+    monkeypatch.setenv("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4.1-flash")
+    monkeypatch.delenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", raising=False)
+    calls = 0
+
+    def fake_probe(_values):
+        nonlocal calls
+        calls += 1
+        return "AVAILABLE", 345, None
+
+    monkeypatch.setattr(api, "probe_codebuddy_model", fake_probe)
+    result = asyncio.run(
+        api.probe_resource("codebuddy-account-primary", authorization="Bearer secret")
+    )
+    assert calls == 1
+    assert result["probe"]["status"] == "AVAILABLE"
+    assert result["probe"]["model"] == "deepseek-v4.1-flash"
+    assert ResourceProbeStore(probe_path).get("codebuddy-account-primary") is not None

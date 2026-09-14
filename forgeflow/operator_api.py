@@ -7,6 +7,7 @@ and commands for Hermes and the human status dashboard.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -21,6 +22,8 @@ from langgraph_sdk import get_client
 from langgraph_sdk.errors import NotFoundError
 from pydantic import BaseModel, Field
 
+from forgeflow.attempts import AttemptLedger, AttemptLedgerError, RouteAttemptSummary
+from forgeflow.resource_probes import ResourceProbeStore, ResourceProbeStoreError
 from forgeflow.routing import RouteConfigError, RouteDefinition, load_route_registry
 from openswe_ext.operator_projection import (
     LAST_MODEL_ERROR_KEY,
@@ -28,6 +31,11 @@ from openswe_ext.operator_projection import (
     model_view,
     provider_for_model,
     review_profile,
+)
+from openswe_ext.resource_observability import (
+    codebuddy_observability,
+    generic_route_observability,
+    probe_codebuddy_model,
 )
 
 router = APIRouter(prefix="/forgeflow/api/v1", tags=["forgeflow-operator"])
@@ -162,6 +170,16 @@ def _thread_project_key(thread: Mapping[str, Any], lookup: Mapping[str, str]) ->
     if isinstance(owner, str) and isinstance(repo, str):
         return lookup.get(f"{owner}/{repo}".casefold())
     return None
+
+
+def _attempt_ledger() -> AttemptLedger | None:
+    raw = os.environ.get("FORGEFLOW_ATTEMPT_LEDGER_FILE", "").strip()
+    return AttemptLedger(Path(raw)) if raw else None
+
+
+def _resource_probe_store() -> ResourceProbeStore | None:
+    raw = os.environ.get("FORGEFLOW_RESOURCE_PROBE_FILE", "").strip()
+    return ResourceProbeStore(Path(raw)) if raw else None
 
 
 def _route_registry():
@@ -476,7 +494,13 @@ async def cancel_objective(
     return await _command_objective(thread_id, cancel_requested=True)
 
 
-def _route_view(route: RouteDefinition, *, fallback_target: str | None = None) -> dict[str, Any]:
+def _route_view(
+    route: RouteDefinition,
+    *,
+    fallback_target: str | None = None,
+    attempts: RouteAttemptSummary | None = None,
+    probe: Any = None,
+) -> dict[str, Any]:
     if route.role == "REASONING":
         model = model_view(route.target, effort="medium")
         profile = {
@@ -487,6 +511,20 @@ def _route_view(route: RouteDefinition, *, fallback_target: str | None = None) -
         }
     else:
         profile = implementation_profile(route, route.runtime) or {}
+    if (route.adapter or "").casefold() == "codebuddy":
+        observability = codebuddy_observability(
+            values=os.environ,
+            attempts=attempts,
+            probe=probe,
+            configured_health=route.health,
+            enabled=route.enabled,
+        )
+    else:
+        observability = generic_route_observability(
+            attempts=attempts,
+            configured_health=route.health,
+            enabled=route.enabled,
+        )
     return {
         "id": route.id,
         "role": route.role,
@@ -501,7 +539,28 @@ def _route_view(route: RouteDefinition, *, fallback_target: str | None = None) -
         "provider": profile.get("provider"),
         "model": profile.get("model"),
         "fallbackModel": profile.get("fallbackModel"),
+        "observability": observability,
     }
+
+
+def _route_attempt_summaries(routes: list[RouteDefinition]) -> dict[str, RouteAttemptSummary]:
+    ledger = _attempt_ledger()
+    if ledger is None:
+        return {}
+    try:
+        return ledger.route_summaries(route.id for route in routes)
+    except AttemptLedgerError as exc:
+        raise HTTPException(status_code=503, detail="ForgeFlow attempt ledger is invalid") from exc
+
+
+def _route_probe_records() -> dict[str, Any]:
+    store = _resource_probe_store()
+    if store is None:
+        return {}
+    try:
+        return store.all()
+    except ResourceProbeStoreError as exc:
+        raise HTTPException(status_code=503, detail="ForgeFlow resource probe store is invalid") from exc
 
 
 @router.get("/resources")
@@ -510,15 +569,66 @@ async def list_resources(authorization: str | None = Header(default=None)) -> di
     registry = _route_registry()
     if registry is None:
         return {"routes": []}
+    routes = list(registry.routes)
+    attempts = _route_attempt_summaries(routes)
+    probes = _route_probe_records()
     reasoning = list(registry.eligible("REASONING"))
     next_reasoning: dict[str, str | None] = {}
     for index, route in enumerate(reasoning):
         next_reasoning[route.id] = reasoning[index + 1].target if index + 1 < len(reasoning) else None
     return {
         "routes": [
-            _route_view(route, fallback_target=next_reasoning.get(route.id))
-            for route in registry.routes
+            _route_view(
+                route,
+                fallback_target=next_reasoning.get(route.id),
+                attempts=attempts.get(route.id),
+                probe=probes.get(route.id),
+            )
+            for route in routes
         ]
+    }
+
+
+@router.post("/resources/{route_id}/probe")
+async def probe_resource(
+    route_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_operator_auth(authorization)
+    registry = _route_registry()
+    if registry is None:
+        raise HTTPException(status_code=503, detail="ForgeFlow route registry is unavailable")
+    try:
+        route = registry.get(route_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="ForgeFlow resource route not found") from exc
+    if (route.adapter or "").casefold() != "codebuddy":
+        raise HTTPException(status_code=400, detail="active resource probe is not supported for this route")
+    store = _resource_probe_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="ForgeFlow resource probe store is not configured")
+    status, duration_ms, failure_code = await asyncio.to_thread(probe_codebuddy_model, os.environ)
+    model = os.environ.get("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4.1-flash").strip() or None
+    try:
+        record = store.record(
+            route_id=route.id,
+            status=status,
+            model=model,
+            duration_ms=duration_ms,
+            failure_code=failure_code,
+        )
+    except ResourceProbeStoreError as exc:
+        raise HTTPException(status_code=503, detail="ForgeFlow resource probe store is invalid") from exc
+    attempts = _route_attempt_summaries([route]).get(route.id)
+    return {
+        "route": _route_view(route, attempts=attempts, probe=record),
+        "probe": {
+            "status": record.status,
+            "checkedAt": record.checked_at,
+            "model": record.model,
+            "durationMs": record.duration_ms,
+            "failureCode": record.failure_code,
+        },
     }
 
 

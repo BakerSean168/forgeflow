@@ -16,6 +16,11 @@ from forgeflow.external_agents.execution import (
     ExternalAgentRouteGate,
     ExternalAgentRouteRejected,
 )
+from openswe_ext.codebuddy_auth import (
+    OFFICIAL_AUTH_FILE,
+    CodeBuddyAuthError,
+    resolve_codebuddy_auth_dir,
+)
 from openswe_ext.external_agent_docker import (
     BOOTSTRAP_MOUNT,
     CONTAINER_EXECUTABLE,
@@ -26,9 +31,8 @@ from openswe_ext.external_agent_docker import (
 )
 from openswe_ext.external_agent_execution import AcpWorkspaceExecutionAdapter
 
-_OFFICIAL_AUTH_FILE = "Tencent-Cloud.coding-copilot.info"
 _CONTAINER_AUTH_DIR = f"{CONTAINER_HOME}/.local/share/CodeBuddyExtension/Data/Public/auth"
-_CONTAINER_AUTH_FILE = f"{_CONTAINER_AUTH_DIR}/{_OFFICIAL_AUTH_FILE}"
+_CONTAINER_AUTH_FILE = f"{_CONTAINER_AUTH_DIR}/{OFFICIAL_AUTH_FILE}"
 
 
 def _enabled(value: str | None) -> bool:
@@ -50,21 +54,6 @@ def _docker_environment(values: Mapping[str, str]) -> dict[str, str]:
     if docker_host:
         env["DOCKER_HOST"] = docker_host
     return env
-
-
-def _official_auth_dir(values: Mapping[str, str]) -> Path:
-    home = Path(values.get("HOME", str(Path.home()))).expanduser()
-    raw = values.get(
-        "FORGEFLOW_CODEBUDDY_AUTH_STATE_DIR",
-        str(home / ".local/share/CodeBuddyExtension/Data/Public/auth"),
-    )
-    try:
-        auth_dir = Path(raw).expanduser().resolve(strict=True)
-    except FileNotFoundError as exc:
-        raise ExternalAgentRouteRejected("CODEBUDDY_OFFICIAL_AUTH_REQUIRED") from exc
-    if not auth_dir.is_dir() or not (auth_dir / _OFFICIAL_AUTH_FILE).is_file():
-        raise ExternalAgentRouteRejected("CODEBUDDY_OFFICIAL_AUTH_REQUIRED")
-    return auth_dir
 
 
 def build_codebuddy_docker_args(
@@ -94,7 +83,7 @@ def build_codebuddy_docker_args(
         raise ExternalAgentRouteRejected("CODEBUDDY_WORKSPACE_NOT_DIRECTORY")
     if not resolved_executable.is_file() or not os.access(resolved_executable, os.X_OK):
         raise ExternalAgentRouteRejected("CODEBUDDY_BINARY_NOT_EXECUTABLE")
-    if not resolved_auth.is_dir() or not (resolved_auth / _OFFICIAL_AUTH_FILE).is_file():
+    if not resolved_auth.is_dir() or not (resolved_auth / OFFICIAL_AUTH_FILE).is_file():
         raise ExternalAgentRouteRejected("CODEBUDDY_OFFICIAL_AUTH_REQUIRED")
     if not container_name.strip():
         raise ExternalAgentRouteRejected("CODEBUDDY_CONTAINER_NAME_REQUIRED")
@@ -105,7 +94,7 @@ def build_codebuddy_docker_args(
     run_gid = os.getgid() if gid is None else gid
     bootstrap = (
         f'set -eu; d="{_CONTAINER_AUTH_DIR}"; mkdir -p "$d"; '
-        f'cp "{BOOTSTRAP_MOUNT}/{_OFFICIAL_AUTH_FILE}" "{_CONTAINER_AUTH_FILE}"; '
+        f'cp "{BOOTSTRAP_MOUNT}/{OFFICIAL_AUTH_FILE}" "{_CONTAINER_AUTH_FILE}"; '
         f'chmod 600 "{_CONTAINER_AUTH_FILE}"; exec {CONTAINER_EXECUTABLE} "$@"'
     )
     return (
@@ -252,7 +241,10 @@ class CodeBuddyExternalAgentExecution:
         if not self._binary.is_file() or not os.access(self._binary, os.X_OK):
             raise ExternalAgentRouteRejected("CODEBUDDY_BINARY_NOT_EXECUTABLE")
 
-        self._auth_state_dir = _official_auth_dir(values)
+        try:
+            self._auth_state_dir = resolve_codebuddy_auth_dir(values)
+        except CodeBuddyAuthError as exc:
+            raise ExternalAgentRouteRejected(str(exc)) from exc
         self._model = values.get("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4.1-flash").strip()
         if not self._model:
             raise ExternalAgentRouteRejected("CODEBUDDY_MODEL_REQUIRED")
