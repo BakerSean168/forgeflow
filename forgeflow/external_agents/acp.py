@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,6 +47,7 @@ async def run_acp_agent(
     prompt: str,
     env: Mapping[str, str] | None = None,
     session_cwd: str | None = None,
+    before_prompt: Callable[[], Awaitable[None]] | None = None,
 ) -> AcpExecutionResult:
     """Spawn one ACP agent, open a session in ``cwd``, and execute one turn.
 
@@ -81,6 +82,8 @@ async def run_acp_agent(
             cwd=session_cwd or str(workspace),
             mcp_servers=[],
         )
+        if before_prompt is not None:
+            await before_prompt()
         response = await connection.prompt(
             session_id=session.session_id,
             prompt=[text_block(prompt)],

@@ -19,6 +19,9 @@ def test_adapter_registry_exposes_antigravity_and_codebuddy(tmp_path) -> None:
     codebuddy.chmod(0o700)
     root = tmp_path / "root"
     root.mkdir()
+    auth = tmp_path / "auth"
+    auth.mkdir()
+    (auth / "Tencent-Cloud.coding-copilot.info").write_text("{}\n", encoding="utf-8")
 
     antigravity = build_external_agent_execution(
         RouteDefinition(
@@ -54,7 +57,7 @@ def test_adapter_registry_exposes_antigravity_and_codebuddy(tmp_path) -> None:
             "FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT": str(root),
             "FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX": "docker",
             "FORGEFLOW_CODEBUDDY_BIN": str(codebuddy),
-            "CODEBUDDY_AUTH_TOKEN": "test-token",
+            "FORGEFLOW_CODEBUDDY_AUTH_STATE_DIR": str(auth),
         },
     )
 

@@ -1,6 +1,6 @@
 # ForgeFlow model and external-agent routing — V2 implementation plan
 
-> Status: Production ordered routing is enabled. Open SWE remains the IMPLEMENT p10 primary; Antigravity ACP is the p20 availability fallback. CodeBuddy native ACP is integrated as a disabled p30 candidate and must pass an authenticated DeepSeek V4.1 Flash canary before scheduler enablement. External execution, cancellation, same-PR repair handoff, fallback accounting, CI, and exact-head review have all passed controlled production canaries for the currently enabled routes.
+> Status: Production ordered routing is enabled. Open SWE remains the IMPLEMENT p10 primary; Antigravity ACP is the p20 availability fallback; CodeBuddy native ACP with `deepseek-v4.1-flash` is the enabled p30 fallback. The CodeBuddy route passed an authenticated, sealed-bootstrap ACP coding canary with an independently verified edit and test before enablement. External execution, cancellation, same-PR repair handoff, fallback accounting, CI, and exact-head review remain authoritative acceptance gates.
 > Date: 2026-09-14.
 
 ## 1. Decision summary
@@ -141,6 +141,16 @@ classified as `ROUTE_AVAILABILITY`; policy/task failures never trigger this fall
 | `FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX` | `docker` | mandatory outer isolation for unattended Antigravity coding |
 | `FORGEFLOW_ANTIGRAVITY_AUTH_STATE_DIR` | `$HOME/.gemini/antigravity-cli` | account bootstrap source; removed from the container namespace before the real task |
 | `FORGEFLOW_EXTERNAL_AGENT_DOCKER_IMAGE` | `forgeflow/openswe-sandbox:bookworm-node24` | pinned local sandbox image |
+
+CodeBuddy uses the same workspace/Docker policy but keeps its account bootstrap separate:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FORGEFLOW_CODEBUDDY_ACP_ENABLED` | `true` | execution gate; ordered routing still keeps CodeBuddy at p30 |
+| `FORGEFLOW_CODEBUDDY_BIN` | `$HOME/.local/bin/codebuddy` | official native CodeBuddy executable |
+| `FORGEFLOW_CODEBUDDY_MODEL` | `deepseek-v4.1-flash` | exact model id verified against the authenticated account |
+| `FORGEFLOW_CODEBUDDY_AUTH_STATE_DIR` | `$HOME/.local/share/CodeBuddyExtension/Data/Public/auth` | official login bootstrap source; detached before the project prompt |
+| `FORGEFLOW_CODEBUDDY_INTERNET_ENVIRONMENT` | `internal` | CodeBuddy network environment selector |
 
 The ACP bridge additionally requires one or more `--allowed-root` arguments supplied by the caller.
 The caller must derive them from the selected ForgeFlow project/workspace. They are deliberately not
@@ -453,7 +463,7 @@ The first safe production shape is conservative:
 IMPLEMENT
   10 current Open SWE chain (unchanged GLM -> Luna)
   20 Antigravity ACP (account-native)
-  30 CodeBuddy native ACP / DeepSeek V4.1 Flash candidate (disabled pending canary)
+  30 CodeBuddy native ACP / DeepSeek V4.1 Flash (enabled)
 
 REASONING
   10 Open SWE reviewer -> `openai:gpt-5.6-sol`
@@ -496,15 +506,22 @@ The initial route is intentionally conservative:
 IMPLEMENT
   10 Open SWE (enabled)
   20 Antigravity ACP (enabled)
-  30 CodeBuddy native ACP / DeepSeek V4.1 Flash (disabled until authenticated canary)
+  30 CodeBuddy native ACP / DeepSeek V4.1 Flash (enabled after authenticated canary)
 ```
 
 The CodeBuddy process runs as one short-lived native binary inside a read-only Docker container. Only
-the temporary workspace is writable, project/local CodeBuddy settings are not loaded, session
-persistence and automatic memory are disabled, and the process receives only a scoped CodeBuddy
-credential. The configured model id defaults to `deepseek-v4-flash`; DeepSeek documents this as a
-compatibility alias that currently routes to V4.1 Flash. The scheduler route remains disabled until the
-actual CodeBuddy account proves that model through a real ACP edit/test canary.
+the temporary workspace is writable, project/local CodeBuddy settings are not loaded, and session
+persistence plus automatic memory are disabled. ForgeFlow bootstraps from the official CodeBuddy login
+state at `$HOME/.local/share/CodeBuddyExtension/Data/Public/auth`, creates the ACP session, deletes the
+temporary auth copy, detaches the read-only bootstrap mount, verifies both are gone, and only then sends
+the project prompt. No CodeBuddy access or refresh token is copied into the agent environment or ACP
+payload. The configured model id is the account-verified exact id `deepseek-v4.1-flash`.
+
+The production gate passed on GCP Dev: after the auth bootstrap had been sealed, CodeBuddy completed a
+real ACP turn with `deepseek-v4.1-flash`, changed exactly `calc.py`, did not commit or switch branches,
+and ForgeFlow independently ran `python3 -m unittest -q` with exit code `0`. Normalized evidence
+retained the exact model id, source revision, changed-file set, diff SHA-256, ACP session id, and test
+output digest. The disposable workspace was removed after the run.
 
 Future complete agents such as ZCode or Codex CLI should use the same adapter registry and capability
 boundary. ZCode is especially suitable because its model backend can still point at a provider-specific
@@ -523,7 +540,8 @@ LiteLLM route while ZCode remains the coding agent.
 - cancellation terminates the execution process group.
 - bridge does not require Gemini/Antigravity API-key environment variables.
 - adapter registry dispatches Antigravity and CodeBuddy without durable-graph vendor branches.
-- CodeBuddy runs only in the external-agent Docker boundary and requires an explicit scoped credential.
+- CodeBuddy runs only in the external-agent Docker boundary and requires the official authenticated account bootstrap.
+- CodeBuddy auth is filesystem-inaccessible before the project prompt; no account token is inherited in the process environment.
 - CodeBuddy project/local settings, persistence and automatic memory are excluded from unattended runs.
 
 ### Regression
@@ -536,8 +554,8 @@ LiteLLM route while ZCode remains the coding agent.
 
 - authenticated real `agy` read-only ACP smoke;
 - disposable coding/edit smoke;
-- authenticated CodeBuddy + DeepSeek V4.1 Flash ACP edit/test canary before p30 enablement;
-- later: one full CodeBuddy ForgeFlow implementation -> CI -> official reviewer acceptance path.
+- authenticated CodeBuddy + `deepseek-v4.1-flash` ACP edit/test canary — passed with sealed auth bootstrap and independent tests;
+- one full CodeBuddy ForgeFlow project implementation -> CI -> official reviewer acceptance remains a deeper corroborating canary, not a prerequisite for p30 availability fallback.
 
 ## 11. Explicit non-goals for this iteration
 
@@ -549,7 +567,7 @@ LiteLLM route while ZCode remains the coding agent.
 - No routing based on prompt “difficulty”.
 - No attempt to proxy the Antigravity account into an OpenAI-compatible model API.
 - No Codex CLI ACP migration in this phase.
-- No CodeBuddy p30 scheduler enablement before authenticated model evidence exists.
+- No direct exposure of CodeBuddy account tokens to project prompts, child environments, or ACP payloads.
 
 ## 12. Upstream references
 
