@@ -62,7 +62,7 @@ def _external_implementation_profile(route: RouteDefinition | None) -> dict[str,
         agent = {"id": "antigravity", "name": "Antigravity", "harness": "ACP"}
         model_name = model
     elif normalized == "codebuddy":
-        model = os.environ.get("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4-flash").strip()
+        model = os.environ.get("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4.1-flash").strip()
         effort = None
         provider = {
             "id": "codebuddy-account",

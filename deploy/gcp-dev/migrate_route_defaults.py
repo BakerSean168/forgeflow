@@ -12,9 +12,9 @@ from copy import deepcopy
 from pathlib import Path
 
 # Exact semantic shape shipped immediately before Antigravity production fallback
-# was enabled. Keeping this snapshot here lets hosts that skip a release still
-# receive the one safe managed-default promotion later without guessing whether
-# a disabled external route is an operator override.
+# was enabled. Keeping these snapshots lets hosts that skip releases still receive
+# safe managed-default promotions without guessing whether a disabled external
+# route is an operator override.
 _PREVIOUS_MANAGED_DEFAULT = {
     "version": 1,
     "routes": [
@@ -60,16 +60,29 @@ _PREVIOUS_MANAGED_DEFAULT = {
 }
 
 _MANAGED_DEFAULT_BEFORE_CODEBUDDY = deepcopy(_PREVIOUS_MANAGED_DEFAULT)
-for _route in _MANAGED_DEFAULT_BEFORE_CODEBUDDY["routes"]:
-    if _route["id"] == "antigravity-account-primary":
-        _route["enabled"] = True
+for _route_item in _MANAGED_DEFAULT_BEFORE_CODEBUDDY["routes"]:
+    if _route_item["id"] == "antigravity-account-primary":
+        _route_item["enabled"] = True
         break
+
+_CODEBUDDY_DISABLED_ROUTE = {
+    "id": "codebuddy-account-primary",
+    "role": "IMPLEMENT",
+    "priority": 30,
+    "runtime": "EXTERNAL_ACP",
+    "adapter": "codebuddy",
+    "target": "codebuddy-account",
+    "enabled": False,
+    "health": "READY",
+}
+_MANAGED_DEFAULT_WITH_CODEBUDDY_DISABLED = deepcopy(_MANAGED_DEFAULT_BEFORE_CODEBUDDY)
+_MANAGED_DEFAULT_WITH_CODEBUDDY_DISABLED["routes"].insert(2, deepcopy(_CODEBUDDY_DISABLED_ROUTE))
 
 
 def _load(path: Path) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError(f"route config must be a JSON object: {path}")
+        raise TypeError(f"route config must be a JSON object: {path}")
     return payload
 
 
@@ -113,18 +126,27 @@ def migrate(current_path: Path, target_default_path: Path) -> str:
     if _route_enabled(target, "antigravity-account-primary") is not True:
         raise ValueError("target default must enable antigravity-account-primary")
     codebuddy = _route(target, "codebuddy-account-primary")
-    if codebuddy is None or codebuddy.get("adapter") != "codebuddy" or codebuddy.get("enabled") is not False:
-        raise ValueError("target default must contain disabled codebuddy-account-primary")
+    if (
+        codebuddy is None
+        or codebuddy.get("adapter") != "codebuddy"
+        or codebuddy.get("enabled") is not True
+    ):
+        raise ValueError("target default must contain enabled codebuddy-account-primary")
 
     if current == _PREVIOUS_MANAGED_DEFAULT:
-        upgraded = deepcopy(_MANAGED_DEFAULT_BEFORE_CODEBUDDY)
-        upgraded["routes"].insert(2, deepcopy(codebuddy))
-        _write_atomic(current_path, upgraded)
-        return "antigravity-enabled-codebuddy-added"
+        _write_atomic(current_path, target)
+        return "antigravity-enabled-codebuddy-enabled"
 
     if current == _MANAGED_DEFAULT_BEFORE_CODEBUDDY:
         _write_atomic(current_path, target)
-        return "codebuddy-added-disabled"
+        return "codebuddy-added-enabled"
+
+    if current == _MANAGED_DEFAULT_WITH_CODEBUDDY_DISABLED:
+        _write_atomic(current_path, target)
+        return "codebuddy-enabled"
+
+    if current == target:
+        return "already-enabled"
 
     if _route(current, "codebuddy-account-primary") is not None:
         return "already-codebuddy-or-custom"

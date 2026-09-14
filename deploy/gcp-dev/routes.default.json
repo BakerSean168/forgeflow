@@ -27,7 +27,7 @@
       "runtime": "EXTERNAL_ACP",
       "adapter": "codebuddy",
       "target": "codebuddy-account",
-      "enabled": false,
+      "enabled": true,
       "health": "READY"
     },
     {

@@ -37,6 +37,7 @@ def test_default_routes_preserve_current_openswe_policy() -> None:
     assert [(route.id, route.priority, route.runtime) for route in implement_routes] == [
         ("openswe-current", 10, "OPEN_SWE"),
         ("antigravity-account-primary", 20, "EXTERNAL_ACP"),
+        ("codebuddy-account-primary", 30, "EXTERNAL_ACP"),
     ]
     anti = registry.get("antigravity-account-primary")
     assert anti.priority == 20
@@ -46,7 +47,7 @@ def test_default_routes_preserve_current_openswe_policy() -> None:
     assert codebuddy.priority == 30
     assert codebuddy.runtime == "EXTERNAL_ACP"
     assert codebuddy.adapter == "codebuddy"
-    assert codebuddy.enabled is False
+    assert codebuddy.enabled is True
 
 
 def test_priority_alone_selects_between_enabled_eligible_routes() -> None:
@@ -111,6 +112,8 @@ def test_failure_classifier_only_marks_route_availability_for_provider_runtime_f
     assert classify_failure_code("CODEBUDDY_BINARY_NOT_FOUND") == "ROUTE_AVAILABILITY"
     assert classify_failure_code("CODEBUDDY_BINARY_NOT_EXECUTABLE") == "ROUTE_AVAILABILITY"
     assert classify_failure_code("CODEBUDDY_CREDENTIAL_REQUIRED") == "POLICY_DENIED"
+    assert classify_failure_code("CODEBUDDY_OFFICIAL_AUTH_REQUIRED") == "POLICY_DENIED"
+    assert classify_failure_code("CODEBUDDY_BOOTSTRAP_SEAL_FAILED") == "POLICY_DENIED"
     assert classify_failure_code("CODEBUDDY_OUTER_SANDBOX_REQUIRED") == "POLICY_DENIED"
     assert classify_failure_code("EXTERNAL_AGENT_ADAPTER_UNSUPPORTED:other") == "POLICY_DENIED"
     assert classify_failure_code("ANTIGRAVITY_RESULT_FAILED") == "UNCLASSIFIED"

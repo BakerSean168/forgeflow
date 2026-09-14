@@ -81,6 +81,31 @@ def test_acp_bridge_streams_antigravity_response_and_metadata(tmp_path: Path) ->
     assert result.metadata["conversation_id"]
 
 
+def test_acp_client_runs_before_prompt_hook_after_session_creation(tmp_path: Path) -> None:
+    fake = _fake_agy(tmp_path)
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    command, _ = python_module_command("openswe_ext.antigravity_acp")
+    called = False
+
+    async def before_prompt() -> None:
+        nonlocal called
+        called = True
+
+    result = asyncio.run(
+        run_acp_agent(
+            command=command,
+            args=_bridge_args(workspace, fake),
+            cwd=workspace,
+            prompt="hello",
+            before_prompt=before_prompt,
+        )
+    )
+
+    assert called is True
+    assert result.text == "FAKE_AGY:hello"
+
+
 def test_acp_bridge_rejects_workspace_outside_allowed_root(tmp_path: Path) -> None:
     fake = _fake_agy(tmp_path)
     allowed = tmp_path / "allowed"

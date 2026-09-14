@@ -1,9 +1,13 @@
-"""Guarded CodeBuddy implementation route using its native ACP server."""
+"""Guarded CodeBuddy implementation route using native ACP and sealed official auth."""
 
 from __future__ import annotations
 
+import asyncio
 import os
-from collections.abc import Mapping
+import subprocess
+import uuid
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from forgeflow.external_agents.execution import (
@@ -13,12 +17,18 @@ from forgeflow.external_agents.execution import (
     ExternalAgentRouteRejected,
 )
 from openswe_ext.external_agent_docker import (
+    BOOTSTRAP_MOUNT,
     CONTAINER_EXECUTABLE,
     CONTAINER_HOME,
     CONTAINER_WORKSPACE,
     DEFAULT_IMAGE,
+    build_bootstrap_unmount_args,
 )
 from openswe_ext.external_agent_execution import AcpWorkspaceExecutionAdapter
+
+_OFFICIAL_AUTH_FILE = "Tencent-Cloud.coding-copilot.info"
+_CONTAINER_AUTH_DIR = f"{CONTAINER_HOME}/.local/share/CodeBuddyExtension/Data/Public/auth"
+_CONTAINER_AUTH_FILE = f"{_CONTAINER_AUTH_DIR}/{_OFFICIAL_AUTH_FILE}"
 
 
 def _enabled(value: str | None) -> bool:
@@ -29,44 +39,12 @@ def _projects(value: str | None) -> frozenset[str]:
     return frozenset(item.strip() for item in (value or "").split(",") if item.strip())
 
 
-def _read_secret(path: str | None) -> str | None:
-    if not path:
-        return None
-    secret_path = Path(path).expanduser()
-    if not secret_path.is_file():
-        return None
-    value = secret_path.read_text(encoding="utf-8").strip()
-    return value or None
-
-
-def _credential_environment(values: Mapping[str, str]) -> tuple[dict[str, str], str]:
-    token = values.get("CODEBUDDY_AUTH_TOKEN", "").strip() or _read_secret(
-        values.get(
-            "FORGEFLOW_CODEBUDDY_AUTH_TOKEN_FILE",
-            str(Path.home() / ".config/forgeflow-policy/codebuddy-auth.token"),
-        )
-    )
-    if token:
-        return {"CODEBUDDY_AUTH_TOKEN": token}, "CODEBUDDY_AUTH_TOKEN"
-
-    api_key = values.get("CODEBUDDY_API_KEY", "").strip() or _read_secret(
-        values.get(
-            "FORGEFLOW_CODEBUDDY_API_KEY_FILE",
-            str(Path.home() / ".config/forgeflow-policy/codebuddy-api.key"),
-        )
-    )
-    if api_key:
-        return {"CODEBUDDY_API_KEY": api_key}, "CODEBUDDY_API_KEY"
-    raise ExternalAgentRouteRejected("CODEBUDDY_CREDENTIAL_REQUIRED")
-
-
-def _docker_environment(values: Mapping[str, str], credential: Mapping[str, str]) -> dict[str, str]:
+def _docker_environment(values: Mapping[str, str]) -> dict[str, str]:
     env = {
         "HOME": values.get("HOME", str(Path.home())),
         "PATH": values.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "LANG": values.get("LANG", "C.UTF-8"),
         "LC_ALL": values.get("LC_ALL", "C.UTF-8"),
-        **credential,
     }
     docker_host = values.get("DOCKER_HOST", "").strip()
     if docker_host:
@@ -74,36 +52,68 @@ def _docker_environment(values: Mapping[str, str], credential: Mapping[str, str]
     return env
 
 
+def _official_auth_dir(values: Mapping[str, str]) -> Path:
+    home = Path(values.get("HOME", str(Path.home()))).expanduser()
+    raw = values.get(
+        "FORGEFLOW_CODEBUDDY_AUTH_STATE_DIR",
+        str(home / ".local/share/CodeBuddyExtension/Data/Public/auth"),
+    )
+    try:
+        auth_dir = Path(raw).expanduser().resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ExternalAgentRouteRejected("CODEBUDDY_OFFICIAL_AUTH_REQUIRED") from exc
+    if not auth_dir.is_dir() or not (auth_dir / _OFFICIAL_AUTH_FILE).is_file():
+        raise ExternalAgentRouteRejected("CODEBUDDY_OFFICIAL_AUTH_REQUIRED")
+    return auth_dir
+
+
 def build_codebuddy_docker_args(
     *,
     workspace: Path,
     executable: Path,
+    auth_state_dir: Path,
+    container_name: str,
     model: str,
-    credential_name: str,
     image: str = DEFAULT_IMAGE,
     internet_environment: str = "internal",
     uid: int | None = None,
     gid: int | None = None,
 ) -> tuple[str, ...]:
-    """Return one-shot Docker arguments for a native CodeBuddy ACP process."""
+    """Return one-shot Docker arguments for a native CodeBuddy ACP process.
+
+    The official browser-login state is mounted only at the bootstrap path. A
+    temporary copy is created under the isolated HOME so CodeBuddy can load it
+    during ACP initialization. ``_seal_codebuddy_bootstrap`` removes that copy
+    and detaches the bootstrap mount before ForgeFlow sends the project prompt.
+    """
 
     resolved_workspace = workspace.expanduser().resolve(strict=True)
     resolved_executable = executable.expanduser().resolve(strict=True)
+    resolved_auth = auth_state_dir.expanduser().resolve(strict=True)
     if not resolved_workspace.is_dir():
         raise ExternalAgentRouteRejected("CODEBUDDY_WORKSPACE_NOT_DIRECTORY")
     if not resolved_executable.is_file() or not os.access(resolved_executable, os.X_OK):
         raise ExternalAgentRouteRejected("CODEBUDDY_BINARY_NOT_EXECUTABLE")
+    if not resolved_auth.is_dir() or not (resolved_auth / _OFFICIAL_AUTH_FILE).is_file():
+        raise ExternalAgentRouteRejected("CODEBUDDY_OFFICIAL_AUTH_REQUIRED")
+    if not container_name.strip():
+        raise ExternalAgentRouteRejected("CODEBUDDY_CONTAINER_NAME_REQUIRED")
     if not model.strip():
         raise ExternalAgentRouteRejected("CODEBUDDY_MODEL_REQUIRED")
-    if credential_name not in {"CODEBUDDY_AUTH_TOKEN", "CODEBUDDY_API_KEY"}:
-        raise ExternalAgentRouteRejected("CODEBUDDY_CREDENTIAL_KIND_INVALID")
 
     run_uid = os.getuid() if uid is None else uid
     run_gid = os.getgid() if gid is None else gid
+    bootstrap = (
+        f'set -eu; d="{_CONTAINER_AUTH_DIR}"; mkdir -p "$d"; '
+        f'cp "{BOOTSTRAP_MOUNT}/{_OFFICIAL_AUTH_FILE}" "{_CONTAINER_AUTH_FILE}"; '
+        f'chmod 600 "{_CONTAINER_AUTH_FILE}"; exec {CONTAINER_EXECUTABLE} "$@"'
+    )
     return (
         "run",
         "--rm",
         "-i",
+        "--name",
+        container_name.strip(),
         "--label",
         "forgeflow.external-agent=true",
         "--read-only",
@@ -133,22 +143,27 @@ def build_codebuddy_docker_args(
         "CODEBUDDY_DISABLE_AUTO_MEMORY=1",
         "--env",
         f"CODEBUDDY_INTERNET_ENVIRONMENT={internet_environment}",
-        "--env",
-        credential_name,
         "--tmpfs",
         f"{CONTAINER_HOME}:rw,nosuid,nodev,mode=0700,uid={run_uid},gid={run_gid}",
+        # CodeBuddy's native Bun build extracts shared objects to /tmp. The
+        # mount stays nosuid/nodev but must permit executable mappings.
         "--tmpfs",
-        "/tmp:rw,nosuid,nodev,mode=1777",
+        "/tmp:rw,exec,nosuid,nodev,mode=1777",
         "--mount",
         f"type=bind,src={resolved_workspace},dst={CONTAINER_WORKSPACE}",
         "--mount",
         f"type=bind,src={resolved_executable},dst={CONTAINER_EXECUTABLE},readonly",
+        "--mount",
+        f"type=bind,src={resolved_auth},dst={BOOTSTRAP_MOUNT},readonly",
         "--workdir",
         CONTAINER_WORKSPACE,
         "--network",
         "bridge",
         image,
-        CONTAINER_EXECUTABLE,
+        "/bin/sh",
+        "-c",
+        bootstrap,
+        "sh",
         "--acp",
         "--model",
         model.strip(),
@@ -159,6 +174,44 @@ def build_codebuddy_docker_args(
         "--setting-sources",
         "user",
         "--no-session-persistence",
+    )
+
+
+def _run_checked(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        list(command),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+        env={**os.environ, "LC_ALL": "C.UTF-8"},
+    )
+    if completed.returncode != 0:
+        raise ExternalAgentRouteRejected("CODEBUDDY_BOOTSTRAP_SEAL_FAILED")
+    return completed
+
+
+def _seal_codebuddy_bootstrap_sync(*, container_name: str, image: str) -> None:
+    """Remove all filesystem-readable auth material before the project prompt."""
+
+    _run_checked(["docker", "exec", container_name, "rm", "-f", _CONTAINER_AUTH_FILE])
+    inspect = _run_checked(["docker", "inspect", container_name, "--format", "{{.State.Pid}}"])
+    raw_pid = inspect.stdout.strip()
+    if not raw_pid.isdigit() or int(raw_pid) <= 0:
+        raise ExternalAgentRouteRejected("CODEBUDDY_CONTAINER_PID_INVALID")
+    pid = int(raw_pid)
+    _run_checked(build_bootstrap_unmount_args(pid=pid, image=image))
+    mountinfo = Path(f"/proc/{pid}/mountinfo").read_text(encoding="utf-8", errors="replace")
+    if f" {BOOTSTRAP_MOUNT} " in mountinfo:
+        raise ExternalAgentRouteRejected("CODEBUDDY_BOOTSTRAP_STILL_MOUNTED")
+    _run_checked(["docker", "exec", container_name, "test", "!", "-e", _CONTAINER_AUTH_FILE])
+
+
+async def _seal_codebuddy_bootstrap(*, container_name: str, image: str) -> None:
+    await asyncio.to_thread(
+        _seal_codebuddy_bootstrap_sync,
+        container_name=container_name,
+        image=image,
     )
 
 
@@ -199,7 +252,8 @@ class CodeBuddyExternalAgentExecution:
         if not self._binary.is_file() or not os.access(self._binary, os.X_OK):
             raise ExternalAgentRouteRejected("CODEBUDDY_BINARY_NOT_EXECUTABLE")
 
-        self._model = values.get("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4-flash").strip()
+        self._auth_state_dir = _official_auth_dir(values)
+        self._model = values.get("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4.1-flash").strip()
         if not self._model:
             raise ExternalAgentRouteRejected("CODEBUDDY_MODEL_REQUIRED")
         self._image = values.get(
@@ -209,29 +263,38 @@ class CodeBuddyExternalAgentExecution:
         self._internet_environment = values.get(
             "FORGEFLOW_CODEBUDDY_INTERNET_ENVIRONMENT", "internal"
         ).strip()
-        credential, self._credential_name = _credential_environment(values)
-        self._agent_env = _docker_environment(values, credential)
+        self._agent_env = _docker_environment(values)
 
     async def execute(
         self, request: ExternalAgentExecutionRequest
     ) -> ExternalAgentExecutionEvidence:
         workspace = self._gate.validate(request)
+        container_name = f"forgeflow-codebuddy-{uuid.uuid4().hex[:16]}"
         docker_args = build_codebuddy_docker_args(
             workspace=workspace,
             executable=self._binary,
+            auth_state_dir=self._auth_state_dir,
+            container_name=container_name,
             model=self._model,
-            credential_name=self._credential_name,
             image=self._image,
             internet_environment=self._internet_environment,
         )
-        return await AcpWorkspaceExecutionAdapter(
+        evidence = await AcpWorkspaceExecutionAdapter(
             gate=self._gate,
             agent_command="docker",
             agent_args=docker_args,
             runtime_label="codebuddy",
             agent_env=self._agent_env,
             session_cwd=CONTAINER_WORKSPACE,
+            before_prompt=lambda: _seal_codebuddy_bootstrap(
+                container_name=container_name,
+                image=self._image,
+            ),
         ).execute(request)
+        return evidence if evidence.model is not None else replace(evidence, model=self._model)
 
 
-__all__ = ["CodeBuddyExternalAgentExecution", "build_codebuddy_docker_args"]
+__all__ = [
+    "CodeBuddyExternalAgentExecution",
+    "build_codebuddy_docker_args",
+]
