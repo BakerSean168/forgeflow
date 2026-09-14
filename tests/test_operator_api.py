@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -279,6 +280,53 @@ def test_resources_expose_codebuddy_auth_probe_and_attempt_observability(
     serialized = json.dumps(codebuddy)
     assert "never-expose-access" not in serialized
     assert "never-expose-refresh" not in serialized
+
+
+def test_resource_filesystem_reads_are_offloaded_from_the_event_loop(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    routes.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "openswe-current",
+                        "role": "IMPLEMENT",
+                        "priority": 10,
+                        "runtime": "OPEN_SWE",
+                        "target": "current-model-policy",
+                        "enabled": True,
+                        "health": "READY",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    event_loop_thread = threading.get_ident()
+    observed_threads: list[int] = []
+
+    class FakeLedger:
+        def route_summaries(self, route_ids):
+            observed_threads.append(threading.get_ident())
+            assert tuple(route_ids) == ("openswe-current",)
+            return {}
+
+    class FakeProbeStore:
+        def all(self):
+            observed_threads.append(threading.get_ident())
+            return {}
+
+    monkeypatch.setattr(api, "_attempt_ledger", lambda: FakeLedger())
+    monkeypatch.setattr(api, "_resource_probe_store", lambda: FakeProbeStore())
+
+    payload = asyncio.run(api.list_resources(authorization="Bearer secret"))
+    assert payload["routes"][0]["id"] == "openswe-current"
+    assert len(observed_threads) == 2
+    assert all(thread_id != event_loop_thread for thread_id in observed_threads)
 
 
 def test_explicit_resource_probe_updates_cache_without_polling_side_effects(
