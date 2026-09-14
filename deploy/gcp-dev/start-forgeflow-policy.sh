@@ -49,8 +49,10 @@ export FIREWORKS_API_KEY="$(<"$litellm_glm53_key")"
 unset LLM_FALLBACK_MODEL_ID
 
 # External-agent routing is a production availability fallback. Open SWE remains
-# the priority-10 implementation route; Antigravity is only selected at priority 20
-# after a classified route-availability failure. `agy` owns its Google account state.
+# the priority-10 implementation route; Antigravity is priority 20. CodeBuddy is a
+# guarded priority-30 route and stays scheduler-disabled until its account credential
+# and DeepSeek V4.1 Flash canary have passed. Each external agent owns only one bounded
+# ACP turn inside the ForgeFlow Docker/workspace/evidence boundary.
 export FORGEFLOW_ANTIGRAVITY_ACP_ENABLED="${FORGEFLOW_ANTIGRAVITY_ACP_ENABLED:-true}"
 export FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED="${FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED:-true}"
 export FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS="${FORGEFLOW_ANTIGRAVITY_ACP_PROJECTS:-}"
@@ -62,6 +64,13 @@ export FORGEFLOW_ANTIGRAVITY_MODE="${FORGEFLOW_ANTIGRAVITY_MODE:-accept-edits}"
 export FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT="${FORGEFLOW_ANTIGRAVITY_PRINT_TIMEOUT:-20m}"
 export FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX="${FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX:-docker}"
 export FORGEFLOW_ANTIGRAVITY_AUTH_STATE_DIR="${FORGEFLOW_ANTIGRAVITY_AUTH_STATE_DIR:-$HOME/.gemini/antigravity-cli}"
+export FORGEFLOW_CODEBUDDY_ACP_ENABLED="${FORGEFLOW_CODEBUDDY_ACP_ENABLED:-true}"
+export FORGEFLOW_CODEBUDDY_ACP_PROJECTS="${FORGEFLOW_CODEBUDDY_ACP_PROJECTS:-}"
+export FORGEFLOW_CODEBUDDY_BIN="${FORGEFLOW_CODEBUDDY_BIN:-$HOME/.local/bin/codebuddy}"
+export FORGEFLOW_CODEBUDDY_MODEL="${FORGEFLOW_CODEBUDDY_MODEL:-deepseek-v4-flash}"
+export FORGEFLOW_CODEBUDDY_INTERNET_ENVIRONMENT="${FORGEFLOW_CODEBUDDY_INTERNET_ENVIRONMENT:-internal}"
+export FORGEFLOW_CODEBUDDY_AUTH_TOKEN_FILE="${FORGEFLOW_CODEBUDDY_AUTH_TOKEN_FILE:-$config_dir/codebuddy-auth.token}"
+export FORGEFLOW_CODEBUDDY_API_KEY_FILE="${FORGEFLOW_CODEBUDDY_API_KEY_FILE:-$config_dir/codebuddy-api.key}"
 export FORGEFLOW_EXTERNAL_AGENT_DOCKER_IMAGE="${FORGEFLOW_EXTERNAL_AGENT_DOCKER_IMAGE:-forgeflow/openswe-sandbox:bookworm-node24}"
 export SANDBOX_TYPE="${SANDBOX_TYPE:-docker}"
 

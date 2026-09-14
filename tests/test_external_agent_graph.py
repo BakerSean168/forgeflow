@@ -151,7 +151,11 @@ def test_delivery_transport_failure_is_normalized_and_closes_attempt(tmp_path, m
         async def deliver(self, **kwargs):
             raise httpx2.ConnectError("network unavailable")
 
-    monkeypatch.setattr(module, "AntigravityExternalAgentExecution", FakeExecution)
+    monkeypatch.setattr(
+        module,
+        "build_external_agent_execution",
+        lambda route, **kwargs: FakeExecution(**kwargs),
+    )
     monkeypatch.setattr(module, "GitHubExternalAgentDelivery", FailingDelivery)
 
     result = asyncio.run(module.DefaultExternalAgentGraphServices().run(_input()))
@@ -459,7 +463,11 @@ def test_availability_failure_closes_attempt_after_workspace_cleanup(tmp_path, m
                 {"code": "ANTIGRAVITY_TIMEOUT"},
             )
 
-    monkeypatch.setattr(module, "AntigravityExternalAgentExecution", FailingExecution)
+    monkeypatch.setattr(
+        module,
+        "build_external_agent_execution",
+        lambda route, **kwargs: FailingExecution(**kwargs),
+    )
     result = asyncio.run(module.DefaultExternalAgentGraphServices().run(_input()))
     assert result.external_status == "BLOCKED"
     assert result.failure_code == "ANTIGRAVITY_TIMEOUT"
@@ -542,7 +550,11 @@ def test_cleanup_failure_is_fail_closed_and_finishes_attempt(tmp_path, monkeypat
         del path
         raise ExternalAgentWorkspaceError("EXTERNAL_AGENT_WORKSPACE_CLEANUP_FAILED")
 
-    monkeypatch.setattr(module, "AntigravityExternalAgentExecution", FailingExecution)
+    monkeypatch.setattr(
+        module,
+        "build_external_agent_execution",
+        lambda route, **kwargs: FailingExecution(**kwargs),
+    )
     monkeypatch.setattr(module, "cleanup_external_workspace", failing_cleanup)
     result = asyncio.run(module.DefaultExternalAgentGraphServices().run(_input()))
     assert result.external_status == "BLOCKED"
@@ -614,7 +626,11 @@ def test_subprocess_failure_is_terminalized_in_attempt_ledger(tmp_path, monkeypa
             del request
             raise subprocess.TimeoutExpired(["git", "status"], timeout=30)
 
-    monkeypatch.setattr(module, "AntigravityExternalAgentExecution", FailingExecution)
+    monkeypatch.setattr(
+        module,
+        "build_external_agent_execution",
+        lambda route, **kwargs: FailingExecution(**kwargs),
+    )
     result = asyncio.run(module.DefaultExternalAgentGraphServices().run(_input()))
 
     assert result.external_status == "BLOCKED"
@@ -723,7 +739,11 @@ def test_cleanup_cancellation_after_delivery_preserves_success_terminalization(
         entered.set()
         assert release.wait(timeout=5)
 
-    monkeypatch.setattr(module, "AntigravityExternalAgentExecution", FakeExecution)
+    monkeypatch.setattr(
+        module,
+        "build_external_agent_execution",
+        lambda route, **kwargs: FakeExecution(**kwargs),
+    )
     monkeypatch.setattr(module, "GitHubExternalAgentDelivery", FakeDelivery)
     monkeypatch.setattr(module, "cleanup_external_workspace", blocking_cleanup)
 
@@ -867,7 +887,11 @@ def test_unknown_programming_error_finishes_attempt_before_reraise(tmp_path, mon
             del request
             raise TypeError("programming bug")
 
-    monkeypatch.setattr(module, "AntigravityExternalAgentExecution", BrokenExecution)
+    monkeypatch.setattr(
+        module,
+        "build_external_agent_execution",
+        lambda route, **kwargs: BrokenExecution(**kwargs),
+    )
     with pytest.raises(TypeError, match="programming bug"):
         asyncio.run(module.DefaultExternalAgentGraphServices().run(_input()))
 

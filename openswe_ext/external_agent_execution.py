@@ -7,6 +7,7 @@ import hashlib
 import os
 import stat
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 from forgeflow.external_agents.acp import run_acp_agent
@@ -123,11 +124,15 @@ class AcpWorkspaceExecutionAdapter:
         agent_command: str,
         agent_args: tuple[str, ...],
         runtime_label: str,
+        agent_env: Mapping[str, str] | None = None,
+        session_cwd: str | None = None,
     ) -> None:
         self._gate = gate
         self._agent_command = agent_command
         self._agent_args = agent_args
         self._runtime_label = runtime_label
+        self._agent_env = dict(agent_env) if agent_env is not None else None
+        self._session_cwd = session_cwd
 
     async def execute(
         self, request: ExternalAgentExecutionRequest
@@ -163,6 +168,8 @@ class AcpWorkspaceExecutionAdapter:
             args=self._agent_args,
             cwd=workspace,
             prompt=prompt,
+            env=self._agent_env,
+            session_cwd=self._session_cwd,
         )
         if result.stop_reason != "end_turn":
             raise ExternalAgentExecutionError(f"EXTERNAL_AGENT_STOP_{result.stop_reason.upper()}")

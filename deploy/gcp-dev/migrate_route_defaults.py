@@ -59,6 +59,12 @@ _PREVIOUS_MANAGED_DEFAULT = {
     ],
 }
 
+_MANAGED_DEFAULT_BEFORE_CODEBUDDY = deepcopy(_PREVIOUS_MANAGED_DEFAULT)
+for _route in _MANAGED_DEFAULT_BEFORE_CODEBUDDY["routes"]:
+    if _route["id"] == "antigravity-account-primary":
+        _route["enabled"] = True
+        break
+
 
 def _load(path: Path) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -67,14 +73,19 @@ def _load(path: Path) -> dict:
     return payload
 
 
-def _antigravity_enabled(payload: dict) -> bool | None:
+def _route(payload: dict, route_id: str) -> dict | None:
     rows = payload.get("routes")
     if not isinstance(rows, list):
         return None
-    matches = [row for row in rows if isinstance(row, dict) and row.get("id") == "antigravity-account-primary"]
-    if len(matches) != 1:
+    matches = [row for row in rows if isinstance(row, dict) and row.get("id") == route_id]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _route_enabled(payload: dict, route_id: str) -> bool | None:
+    row = _route(payload, route_id)
+    if row is None:
         return None
-    value = matches[0].get("enabled", True)
+    value = row.get("enabled", True)
     return value if isinstance(value, bool) else None
 
 
@@ -99,20 +110,24 @@ def _write_atomic(path: Path, payload: dict) -> None:
 def migrate(current_path: Path, target_default_path: Path) -> str:
     current = _load(current_path)
     target = _load(target_default_path)
-    if _antigravity_enabled(target) is not True:
+    if _route_enabled(target, "antigravity-account-primary") is not True:
         raise ValueError("target default must enable antigravity-account-primary")
+    codebuddy = _route(target, "codebuddy-account-primary")
+    if codebuddy is None or codebuddy.get("adapter") != "codebuddy" or codebuddy.get("enabled") is not False:
+        raise ValueError("target default must contain disabled codebuddy-account-primary")
 
     if current == _PREVIOUS_MANAGED_DEFAULT:
-        upgraded = deepcopy(current)
-        for route in upgraded["routes"]:
-            if route["id"] == "antigravity-account-primary":
-                route["enabled"] = True
-                break
+        upgraded = deepcopy(_MANAGED_DEFAULT_BEFORE_CODEBUDDY)
+        upgraded["routes"].insert(2, deepcopy(codebuddy))
         _write_atomic(current_path, upgraded)
-        return "antigravity-enabled"
+        return "antigravity-enabled-codebuddy-added"
 
-    if _antigravity_enabled(current) is True:
-        return "already-enabled-or-custom"
+    if current == _MANAGED_DEFAULT_BEFORE_CODEBUDDY:
+        _write_atomic(current_path, target)
+        return "codebuddy-added-disabled"
+
+    if _route(current, "codebuddy-account-primary") is not None:
+        return "already-codebuddy-or-custom"
     return "preserved-custom"
 
 

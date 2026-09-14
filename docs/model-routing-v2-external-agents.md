@@ -1,7 +1,7 @@
 # ForgeFlow model and external-agent routing — V2 implementation plan
 
-> Status: Production ordered routing is enabled. Open SWE remains the IMPLEMENT p10 primary; Antigravity ACP is the p20 availability fallback. External execution, cancellation, same-PR repair handoff, fallback accounting, CI, and exact-head review have all passed controlled production canaries.
-> Date: 2026-09-13.
+> Status: Production ordered routing is enabled. Open SWE remains the IMPLEMENT p10 primary; Antigravity ACP is the p20 availability fallback. CodeBuddy native ACP is integrated as a disabled p30 candidate and must pass an authenticated DeepSeek V4.1 Flash canary before scheduler enablement. External execution, cancellation, same-PR repair handoff, fallback accounting, CI, and exact-head review have all passed controlled production canaries for the currently enabled routes.
+> Date: 2026-09-14.
 
 ## 1. Decision summary
 
@@ -17,7 +17,7 @@ This phase does **not** change those priorities, fallbacks, or model-policy hook
 
 A second execution class is introduced for products that are valuable specifically as a complete,
 account-authenticated coding agent rather than as a chat-model endpoint. Antigravity is the first
-such route and is connected through ACP (Agent Client Protocol):
+enabled route in that class. CodeBuddy is the second adapter and uses its native ACP server directly:
 
 ```text
 ForgeFlow policy / future route selector
@@ -28,10 +28,12 @@ ForgeFlow policy / future route selector
         |
         `-- EXTERNAL_AGENT route -----------> generic ACP client
                                                |
-                                               `-- Antigravity ACP bridge
-                                                    |
-                                                    `-- agy headless agent
-                                                         `-- Google account auth
+                                               |-- Antigravity ACP bridge
+                                               |    `-- agy headless agent
+                                               |         `-- Google account auth
+                                               |
+                                               `-- CodeBuddy native ACP
+                                                    `-- DeepSeek V4.1 Flash candidate
 ```
 
 The ACP bridge is a **bounded external-agent execution surface**, not a restored standalone ForgeFlow
@@ -451,6 +453,7 @@ The first safe production shape is conservative:
 IMPLEMENT
   10 current Open SWE chain (unchanged GLM -> Luna)
   20 Antigravity ACP (account-native)
+  30 CodeBuddy native ACP / DeepSeek V4.1 Flash candidate (disabled pending canary)
 
 REASONING
   10 Open SWE reviewer -> `openai:gpt-5.6-sol`
@@ -482,12 +485,30 @@ SHA remains audit metadata; it is not an implicit expiry mechanism for open revi
 
 ### Phase 5 — additional external agents
 
-Only after the Antigravity route is stable, reuse the **same generic ACP client** for other complete
-agents such as ZCode or Codex CLI. Each integration should be a thin ACP bridge/adapter with its own
-capability declaration; do not add provider-specific branches to the selector.
+The first Phase 5 adapter is now implemented: **CodeBuddy** reuses the same generic ACP client through
+an adapter registry rather than adding a provider-specific branch to the durable external-agent graph.
+CodeBuddy already exposes native stdio ACP, so no protocol bridge is needed. Its execution is still
+wrapped by the same ForgeFlow workspace, independent test, diff-evidence, delivery and review gates.
 
-ZCode is especially suitable for a future route because its model backend can still point at a
-provider-specific LiteLLM route while ZCode remains the coding agent.
+The initial route is intentionally conservative:
+
+```text
+IMPLEMENT
+  10 Open SWE (enabled)
+  20 Antigravity ACP (enabled)
+  30 CodeBuddy native ACP / DeepSeek V4.1 Flash (disabled until authenticated canary)
+```
+
+The CodeBuddy process runs as one short-lived native binary inside a read-only Docker container. Only
+the temporary workspace is writable, project/local CodeBuddy settings are not loaded, session
+persistence and automatic memory are disabled, and the process receives only a scoped CodeBuddy
+credential. The configured model id defaults to `deepseek-v4-flash`; DeepSeek documents this as a
+compatibility alias that currently routes to V4.1 Flash. The scheduler route remains disabled until the
+actual CodeBuddy account proves that model through a real ACP edit/test canary.
+
+Future complete agents such as ZCode or Codex CLI should use the same adapter registry and capability
+boundary. ZCode is especially suitable because its model backend can still point at a provider-specific
+LiteLLM route while ZCode remains the coding agent.
 
 ## 10. Test matrix
 
@@ -501,6 +522,9 @@ provider-specific LiteLLM route while ZCode remains the coding agent.
 - malformed/oversized Antigravity events fail closed.
 - cancellation terminates the execution process group.
 - bridge does not require Gemini/Antigravity API-key environment variables.
+- adapter registry dispatches Antigravity and CodeBuddy without durable-graph vendor branches.
+- CodeBuddy runs only in the external-agent Docker boundary and requires an explicit scoped credential.
+- CodeBuddy project/local settings, persistence and automatic memory are excluded from unattended runs.
 
 ### Regression
 
@@ -512,7 +536,8 @@ provider-specific LiteLLM route while ZCode remains the coding agent.
 
 - authenticated real `agy` read-only ACP smoke;
 - disposable coding/edit smoke;
-- later: one full ForgeFlow implementation -> CI -> official reviewer acceptance path.
+- authenticated CodeBuddy + DeepSeek V4.1 Flash ACP edit/test canary before p30 enablement;
+- later: one full CodeBuddy ForgeFlow implementation -> CI -> official reviewer acceptance path.
 
 ## 11. Explicit non-goals for this iteration
 
@@ -524,10 +549,14 @@ provider-specific LiteLLM route while ZCode remains the coding agent.
 - No routing based on prompt “difficulty”.
 - No attempt to proxy the Antigravity account into an OpenAI-compatible model API.
 - No Codex CLI ACP migration in this phase.
+- No CodeBuddy p30 scheduler enablement before authenticated model evidence exists.
 
 ## 12. Upstream references
 
 - Antigravity Headless CLI: <https://antigravity.google/docs/cli/headless/>
+- CodeBuddy ACP: <https://www.codebuddy.cn/docs/cli/acp>
+- CodeBuddy CLI model configuration: <https://www.codebuddy.ai/docs/cli/model-config>
+- DeepSeek V4.1 Flash release/support note: <https://www.deepseek.com/en/news/deepseek-v4-1-flash/>
 - ACP Python SDK: <https://github.com/agentclientprotocol/python-sdk>
 - Agent Client Protocol: <https://agentclientprotocol.com/>
 

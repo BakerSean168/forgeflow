@@ -21,6 +21,16 @@
       "health": "READY"
     },
     {
+      "id": "codebuddy-account-primary",
+      "role": "IMPLEMENT",
+      "priority": 30,
+      "runtime": "EXTERNAL_ACP",
+      "adapter": "codebuddy",
+      "target": "codebuddy-account",
+      "enabled": false,
+      "health": "READY"
+    },
+    {
       "id": "openswe-reviewer",
       "role": "REASONING",
       "priority": 10,
