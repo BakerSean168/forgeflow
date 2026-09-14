@@ -141,6 +141,38 @@ def test_create_and_list_objective_use_langgraph_thread_as_plan_id(manifest: Pat
     assert listed["objectives"][0]["planId"] == created["planId"]
 
 
+def test_workspace_validation_runs_off_event_loop_thread(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = _init_git_workspace(
+        tmp_path / "bodysense-threaded", "BakerSean168/BodySense"
+    )
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    original = api._validated_workspace_path
+    caller_thread = threading.get_ident()
+    validation_threads: list[int] = []
+
+    def validate(project, raw_path):
+        validation_threads.append(threading.get_ident())
+        return original(project, raw_path)
+
+    monkeypatch.setattr(api, "_validated_workspace_path", validate)
+    asyncio.run(
+        api.create_objective(
+            api.ObjectiveCreate(
+                projectKey="bodysense",
+                objective="Resume threaded workspace",
+                workspacePath=str(workspace),
+            ),
+            authorization="Bearer secret",
+        )
+    )
+
+    assert validation_threads
+    assert validation_threads[0] != caller_thread
+
+
 def test_create_objective_accepts_same_repo_workspace(
     manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

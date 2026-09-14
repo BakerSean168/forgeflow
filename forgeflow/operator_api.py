@@ -483,7 +483,9 @@ async def create_objective(body: ObjectiveCreate, authorization: str | None = He
     thread_id = str(uuid4())
     objective = _compose_objective(body)
     base_ref = body.base_ref.strip() if isinstance(body.base_ref, str) and body.base_ref.strip() else project["defaultBaseRef"]
-    workspace_path = _validated_workspace_path(project, body.workspace_path)
+    workspace_path = await asyncio.to_thread(
+        _validated_workspace_path, project, body.workspace_path
+    )
     await client.threads.create(
         thread_id=thread_id,
         graph_id="forgeflow",
