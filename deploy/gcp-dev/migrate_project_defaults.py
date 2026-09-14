@@ -25,6 +25,19 @@ def _repo(row: Any) -> str | None:
     return value.casefold() if isinstance(value, str) and "/" in value else None
 
 
+def _is_allowlist_only(row: Any) -> bool:
+    """Return whether *row* is an Open SWE desktop allowlist entry only.
+
+    These rows deliberately have no repository identity, so ForgeFlow's project
+    registry ignores them. They still need to survive installer convergence so
+    a long-running desktop execution does not lose access after a service repair.
+    """
+    if not isinstance(row, dict) or row.get("allowlist_only") is not True:
+        return False
+    cwd = row.get("cwd")
+    return isinstance(cwd, str) and bool(cwd.strip()) and _repo(row) is None
+
+
 def _write_atomic(path: Path, payload: list[dict[str, Any]]) -> None:
     original_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
@@ -61,10 +74,14 @@ def migrate(current_path: Path, target_default_path: Path) -> str:
                     merged[key] = default[key]
         result.append(merged)
 
-    # Preserve valid operator-owned project objects not managed by the default set.
+    # Preserve valid operator-owned projects plus repo-less Open SWE desktop
+    # allowlist entries. The latter intentionally stay invisible to ForgeFlow's
+    # repository-policy/project surfaces while remaining durable across install.
     for row in current:
         repo = _repo(row)
-        if isinstance(row, dict) and repo and repo not in target_repos:
+        if (
+            isinstance(row, dict) and repo and repo not in target_repos
+        ) or _is_allowlist_only(row):
             result.append(row)
 
     if result == current:
