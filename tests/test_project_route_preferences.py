@@ -320,6 +320,7 @@ def test_ineligible_fallback_does_not_reorder_global_priorities(
 @pytest.mark.parametrize(
     ("raw", "match"),
     [
+        (None, "non-empty list"),
         ({"role": "IMPLEMENT", "route_id": "codebuddy-account-primary"}, "non-empty list"),
         ([], "non-empty list"),
         ("codebuddy-account-primary", "non-empty list"),
@@ -367,6 +368,49 @@ def test_malformed_preference_propagates_from_manifest_fail_closed(
     registry = load_route_registry(routes_path)
     with pytest.raises(RouteConfigError, match="unknown route"):
         load_project_route_preferences(registry, "o", "memo")
+
+
+def test_explicit_null_preference_is_rejected_from_manifest(
+    routes_path: Path, manifest_factory
+) -> None:
+    # An explicit `"route_preferences": null` is malformed, not an absent
+    # preference, and must fail closed on every read path.
+    manifest_factory(
+        [
+            {"repo": "o/memo", "cwd": "/tmp/memo", "route_preferences": None},
+            {"repo": "o/other", "cwd": "/tmp/other"},
+        ]
+    )
+    registry = load_route_registry(routes_path)
+
+    with pytest.raises(RouteConfigError, match="non-empty list"):
+        load_project_route_preferences(registry, "o", "memo")
+    with pytest.raises(RouteConfigError, match="non-empty list"):
+        resolve_project_route(registry, "IMPLEMENT", owner="o", repo="memo")
+
+    # A genuinely absent key still yields the empty default and keeps global
+    # role/priority routing unchanged.
+    assert load_project_route_preferences(registry, "o", "other").empty is True
+    assert resolve_project_route(registry, "IMPLEMENT", owner="o", repo="other").id == (
+        "openswe-current"
+    )
+    assert registry.select("IMPLEMENT").id == "openswe-current"
+
+
+def test_policy_services_fail_closed_on_explicit_null_preference(
+    routes_path: Path, manifest_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_factory(
+        [{"repo": "o/memo", "cwd": "/tmp/memo", "route_preferences": None}]
+    )
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes_path))
+    services = DefaultPolicyServices(client=object())
+
+    with pytest.raises(ReconcileError, match="PROJECT_ROUTE_PREFERENCE_INVALID"):
+        services.select_implementation_route(owner="o", repo="memo")
+
+    # The global selection path is unaffected when owner/repo are omitted.
+    assert services.select_implementation_route().id == "openswe-current"
 
 
 def test_policy_services_fail_closed_on_invalid_project_preference(
@@ -580,6 +624,19 @@ def test_operator_projection_surfaces_invalid_preference_fail_closed(
                 "route_preferences": [{"role": "IMPLEMENT", "route_id": "ghost-route"}],
             }
         ]
+    )
+    registry = load_route_registry(routes_path)
+    memo = _policy(registry, "o", "memo")
+    assert memo["routeConfigurationError"] is not None
+    assert memo["selectedRoutes"] == {}
+    assert memo["routePreferences"] == {}
+
+
+def test_operator_projection_surfaces_explicit_null_preference_fail_closed(
+    routes_path: Path, manifest_factory
+) -> None:
+    manifest_factory(
+        [{"repo": "o/memo", "cwd": "/tmp/memo", "route_preferences": None}]
     )
     registry = load_route_registry(routes_path)
     memo = _policy(registry, "o", "memo")

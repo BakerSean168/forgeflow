@@ -132,12 +132,14 @@ def parse_project_route_preferences(
 ) -> ProjectRoutePreferences:
     """Validate the explicit ``route_preferences`` block of one project entry.
 
-    Malformed shapes, duplicate roles/routes, unknown route ids, and routes that
-    belong to a different role are rejected fail-closed with ``RouteConfigError``.
-    ``None`` (field absent) yields the empty default and preserves global order.
+    The raw value is supplied only when the project entry actually declares
+    ``route_preferences``; an absent key is handled upstream by
+    :func:`forgeflow.projects.load_project_route_preferences`, which returns the
+    empty default. Consequently an explicit ``null`` (``None``) is malformed and
+    is rejected fail-closed with ``RouteConfigError`` along with other malformed
+    shapes, duplicate roles/routes, unknown route ids, and routes that belong to a
+    different role.
     """
-    if raw is None:
-        return ProjectRoutePreferences()
     if not isinstance(raw, list) or not raw:
         raise RouteConfigError("project route_preferences must be a non-empty list")
     parsed: list[tuple[str, str]] = []
