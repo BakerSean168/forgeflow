@@ -706,8 +706,15 @@ async def _reconcile_new(
     route_id = state.get("implementation_route_id")
     runtime = state.get("implementation_runtime")
     if not route_id or not runtime:
-        route = services.select_implementation_route(
-            exclude_ids=frozenset(state.get("implementation_failed_route_ids", []))
+        # A bound host workspace is an Open SWE ownership contract. External
+        # ACP routes create disposable checkouts and new PRs, so they cannot
+        # safely take over an existing mutable worktree/PR.
+        route = (
+            services.select_repair_route()
+            if state.get("workspace_path")
+            else services.select_implementation_route(
+                exclude_ids=frozenset(state.get("implementation_failed_route_ids", []))
+            )
         )
         if route is None:
             return escalate(state, "IMPLEMENTATION_ROUTE_UNAVAILABLE")
@@ -775,6 +782,7 @@ async def _reconcile_implementation_run(
     if (
         failure_class == "ROUTE_AVAILABILITY"
         and services.automatic_route_fallback_enabled()
+        and not state.get("workspace_path")
     ):
         return _fallback_implementation_route(state, services, failure_code=failure_code)
     return note_child_run_failure(state, failure_code)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -91,6 +92,24 @@ def test_project_manifest_ignores_legacy_string_entry(manifest: Path) -> None:
     assert [row["projectKey"] for row in projects] == ["memoflow", "bodysense"]
 
 
+def _init_git_workspace(path: Path, repository: str) -> Path:
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "remote",
+            "add",
+            "origin",
+            f"https://github.com/{repository}.git",
+        ],
+        check=True,
+    )
+    return path
+
+
 def test_operator_auth_rejects_missing_or_wrong_token(manifest: Path) -> None:
     with pytest.raises(HTTPException) as missing:
         api.require_operator_auth(None)
@@ -112,12 +131,95 @@ def test_create_and_list_objective_use_langgraph_thread_as_plan_id(manifest: Pat
     )
     assert created["planId"] == created["threadId"]
     assert created["projectKey"] == "memoflow"
+    assert created["workspacePath"] is None
     assert client.runs.calls[0][2]["input"]["repo_name"] == "memoflow"
+    assert client.runs.calls[0][2]["input"]["workspace_path"] is None
     thread = client.threads.rows[created["threadId"]]
     thread["values"]["status"] = "IMPLEMENTING"
     listed = asyncio.run(api.list_objectives(project_key="memoflow", active_only=True, limit=10, authorization="Bearer secret"))
     assert listed["objectives"][0]["status"] == "IMPLEMENTING"
     assert listed["objectives"][0]["planId"] == created["planId"]
+
+
+def test_create_objective_accepts_same_repo_workspace(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = _init_git_workspace(
+        tmp_path / "bodysense-recovery", "BakerSean168/BodySense"
+    )
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    created = asyncio.run(
+        api.create_objective(
+            api.ObjectiveCreate(
+                projectKey="bodysense",
+                objective="Resume the existing Phase 03 worktree",
+                workspacePath=str(workspace),
+            ),
+            authorization="Bearer secret",
+        )
+    )
+
+    resolved = str(workspace.resolve())
+    assert created["workspacePath"] == resolved
+    assert client.runs.calls[0][2]["input"]["workspace_path"] == resolved
+    thread = client.threads.rows[created["threadId"]]
+    thread["values"]["status"] = "IMPLEMENTING"
+    listed = asyncio.run(
+        api.list_objectives(
+            project_key="bodysense",
+            active_only=True,
+            limit=10,
+            authorization="Bearer secret",
+        )
+    )
+    assert listed["objectives"][0]["workspacePath"] == resolved
+
+
+@pytest.mark.parametrize(
+    "workspace", ["relative/worktree", "/definitely/missing/forgeflow-worktree"]
+)
+def test_create_objective_rejects_invalid_workspace_path(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, workspace: str
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            api.create_objective(
+                api.ObjectiveCreate(
+                    projectKey="bodysense", objective="Resume", workspacePath=workspace
+                ),
+                authorization="Bearer secret",
+            )
+        )
+    assert exc.value.status_code == 400
+    assert client.runs.calls == []
+
+
+def test_create_objective_rejects_foreign_repository_workspace(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = _init_git_workspace(
+        tmp_path / "foreign", "BakerSean168/not-bodysense"
+    )
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            api.create_objective(
+                api.ObjectiveCreate(
+                    projectKey="bodysense",
+                    objective="Resume",
+                    workspacePath=str(workspace),
+                ),
+                authorization="Bearer secret",
+            )
+        )
+    assert exc.value.status_code == 400
+    assert "does not match project" in str(exc.value.detail)
+    assert client.runs.calls == []
 
 
 def test_summary_surfaces_latest_project_state(manifest: Path, monkeypatch: pytest.MonkeyPatch) -> None:

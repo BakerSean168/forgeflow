@@ -12,9 +12,11 @@ import json
 import os
 import re
 import secrets
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Query
@@ -60,6 +62,7 @@ class ObjectiveCreate(BaseModel):
     project_key: str = Field(alias="projectKey", min_length=1, max_length=120)
     objective: str = Field(min_length=1, max_length=50_000)
     base_ref: str | None = Field(default=None, alias="baseRef", max_length=300)
+    workspace_path: str | None = Field(default=None, alias="workspacePath", max_length=4096)
     acceptance_criteria: list[str] = Field(default_factory=list, alias="acceptanceCriteria")
 
 
@@ -148,6 +151,96 @@ def _resolve_project(project_key: str) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail=f"unknown ForgeFlow project: {project_key}")
 
 
+def _normalized_github_repository(remote_url: str) -> str | None:
+    """Return owner/repo for a GitHub remote without retaining credentials."""
+    value = remote_url.strip()
+    if not value:
+        return None
+    if value.startswith("git@github.com:"):
+        path = value.removeprefix("git@github.com:")
+    else:
+        parsed = urlparse(value)
+        if parsed.hostname != "github.com":
+            return None
+        path = parsed.path.lstrip("/")
+    path = path.removesuffix(".git").strip("/")
+    if path.count("/") != 1:
+        return None
+    owner, repo = path.split("/", 1)
+    if not owner or not repo:
+        return None
+    return f"{owner}/{repo}".casefold()
+
+
+def _git_output(workspace: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(workspace), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(
+            status_code=400, detail="workspacePath is not a usable Git workspace"
+        ) from exc
+    if result.returncode != 0:
+        raise HTTPException(status_code=400, detail="workspacePath is not a usable Git workspace")
+    return result.stdout.strip()
+
+
+def _trusted_workspace_roots(project: Mapping[str, Any]) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    project_cwd = project.get("cwd")
+    if isinstance(project_cwd, str) and project_cwd.strip():
+        roots.append(Path(project_cwd).expanduser().resolve(strict=False).parent)
+    managed_root = os.environ.get("OPEN_SWE_LOCAL_WORKTREES_DIR", "").strip()
+    if managed_root:
+        roots.append(Path(managed_root).expanduser().resolve(strict=False))
+    return tuple(dict.fromkeys(roots))
+
+
+def _validated_workspace_path(
+    project: Mapping[str, Any], raw_path: str | None
+) -> str | None:
+    """Validate an operator-supplied existing workspace and fail closed."""
+    if raw_path is None:
+        return None
+    value = raw_path.strip()
+    if not value:
+        return None
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        raise HTTPException(status_code=400, detail="workspacePath must be absolute")
+    try:
+        workspace = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="workspacePath does not exist") from exc
+    if not workspace.is_dir():
+        raise HTTPException(status_code=400, detail="workspacePath must be a directory")
+
+    roots = _trusted_workspace_roots(project)
+    if not roots or not any(
+        workspace == root or workspace.is_relative_to(root) for root in roots
+    ):
+        raise HTTPException(status_code=400, detail="workspacePath is outside trusted project roots")
+
+    top_level = Path(
+        _git_output(workspace, "rev-parse", "--show-toplevel")
+    ).resolve(strict=False)
+    if top_level != workspace:
+        raise HTTPException(status_code=400, detail="workspacePath must be the Git worktree root")
+
+    expected_repo = project.get("repository")
+    origin_repo = _normalized_github_repository(
+        _git_output(workspace, "remote", "get-url", "origin")
+    )
+    if not isinstance(expected_repo, str) or origin_repo != expected_repo.casefold():
+        raise HTTPException(status_code=400, detail="workspacePath repository does not match project")
+    return str(workspace)
+
+
 def _project_lookup(projects: list[dict[str, Any]]) -> dict[str, str]:
     return {project["repository"].casefold(): project["projectKey"] for project in projects}
 
@@ -210,6 +303,7 @@ def _objective_view(thread: Mapping[str, Any], lookup: Mapping[str, str], *, ful
         "status": status,
         "active": status in _ACTIVE_STATUSES,
         "baseRef": values.get("base_ref"),
+        "workspacePath": values.get("workspace_path"),
         "implementationRouteId": values.get("implementation_route_id"),
         "implementationRuntime": values.get("implementation_runtime"),
         "implementationThreadId": values.get("implementation_thread_id"),
@@ -389,6 +483,7 @@ async def create_objective(body: ObjectiveCreate, authorization: str | None = He
     thread_id = str(uuid4())
     objective = _compose_objective(body)
     base_ref = body.base_ref.strip() if isinstance(body.base_ref, str) and body.base_ref.strip() else project["defaultBaseRef"]
+    workspace_path = _validated_workspace_path(project, body.workspace_path)
     await client.threads.create(
         thread_id=thread_id,
         graph_id="forgeflow",
@@ -409,7 +504,7 @@ async def create_objective(body: ObjectiveCreate, authorization: str | None = He
             "repo_owner": project["repoOwner"],
             "repo_name": project["repoName"],
             "base_ref": base_ref,
-            "workspace_path": None,
+            "workspace_path": workspace_path,
         },
         config={"configurable": {"thread_id": thread_id}},
         metadata={"kind": "forgeflow_policy", "source": "hermes"},
@@ -423,6 +518,7 @@ async def create_objective(body: ObjectiveCreate, authorization: str | None = He
         "projectKey": project["projectKey"],
         "status": "NEW",
         "baseRef": base_ref,
+        "workspacePath": workspace_path,
         "objective": objective,
     }
 

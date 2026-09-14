@@ -708,6 +708,34 @@ async def test_default_preflight_moves_blocking_sandbox_probe_off_event_loop(mon
 
 
 @pytest.mark.asyncio
+async def test_workspace_bound_policy_selects_openswe_instead_of_external_runtime() -> None:
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        5,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    openswe = RouteDefinition(
+        "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+    )
+    services = FakeServices(
+        cron_id="cron-1", selected_route=external, fallback_route=openswe
+    )
+    state = _base_state("NEW")
+    state["workspace_path"] = "/tmp/existing-worktree"
+
+    selected = await reconcile_once(
+        state, policy_thread_id="policy-workspace-bound", services=services
+    )
+
+    assert selected["implementation_route_id"] == openswe.id
+    assert selected["implementation_runtime"] == "OPEN_SWE"
+    assert selected["workspace_path"] == "/tmp/existing-worktree"
+
+
+@pytest.mark.asyncio
 async def test_new_policy_can_select_external_runtime_without_changing_default_path() -> None:
     services = FakeServices(
         cron_id="cron-1",
@@ -928,6 +956,53 @@ async def test_openswe_provider_outage_falls_through_to_external_agent_route() -
         fallback, policy_thread_id="policy-openswe-provider-outage", services=services
     )
     assert threaded["implementation_thread_id"] == "implementation-thread-antigravity-account-primary"
+
+
+@pytest.mark.asyncio
+async def test_workspace_bound_openswe_outage_retries_without_external_handoff() -> None:
+    openswe = RouteDefinition(
+        "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+    )
+    external = RouteDefinition(
+        "antigravity-account-primary",
+        "IMPLEMENT",
+        20,
+        "EXTERNAL_ACP",
+        "google-account",
+        adapter="antigravity",
+    )
+    services = FakeServices(
+        cron_id="cron-1",
+        implementation_thread="openswe-thread",
+        selected_route=openswe,
+        fallback_route=external,
+        route_fallback_enabled=True,
+    )
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id=openswe.id,
+        implementation_runtime=openswe.runtime,
+        implementation_thread_id="openswe-thread",
+        implementation_run_id="openswe-run",
+        implementation_operation_key="op:workspace-provider-outage",
+        workspace_path="/tmp/existing-worktree",
+    )
+    services.child_status["openswe-run"] = "error"
+    services.child_failure_code["openswe-run"] = "OPENSWE_PROVIDER_UNAVAILABLE"
+
+    retried = await reconcile_once(
+        state, policy_thread_id="policy-workspace-provider-outage", services=services
+    )
+
+    assert retried["status"] == "IMPLEMENTING"
+    assert retried["implementation_route_id"] == openswe.id
+    assert retried["implementation_runtime"] == "OPEN_SWE"
+    assert retried["implementation_thread_id"] == "openswe-thread"
+    assert retried["implementation_run_id"] is None
+    assert retried["run_retry_count"] == 1
+    assert retried["last_failure_code"] == "OPENSWE_PROVIDER_UNAVAILABLE"
+    assert retried.get("implementation_failed_route_ids", []) == []
+    assert retried["workspace_path"] == "/tmp/existing-worktree"
 
 
 @pytest.mark.asyncio
