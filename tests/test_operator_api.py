@@ -507,3 +507,176 @@ def test_explicit_resource_probe_updates_cache_without_polling_side_effects(
     assert result["probe"]["status"] == "AVAILABLE"
     assert result["probe"]["model"] == "deepseek-v4.1-flash"
     assert ResourceProbeStore(probe_path).get("codebuddy-account-primary") is not None
+
+
+def _write_unattached_test_routes(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "codebuddy-account-primary",
+                        "role": "IMPLEMENT",
+                        "priority": 30,
+                        "runtime": "EXTERNAL_ACP",
+                        "adapter": "codebuddy",
+                        "target": "codebuddy-account",
+                        "enabled": True,
+                        "health": "READY",
+                    },
+                    {
+                        "id": "openswe-reviewer",
+                        "role": "REASONING",
+                        "priority": 10,
+                        "runtime": "OPEN_SWE",
+                        "target": "openai:gpt-5.6-sol",
+                        "enabled": True,
+                        "health": "READY",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_summary_surfaces_open_ad_hoc_attempt_as_unattached_execution(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    _write_unattached_test_routes(routes)
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    ledger_path = tmp_path / "attempt-ledger.jsonl"
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger_path))
+    ledger = AttemptLedger(ledger_path)
+    ledger.start(
+        role="IMPLEMENT",
+        route_id="codebuddy-account-primary",
+        priority=30,
+        runtime="EXTERNAL_ACP",
+        target="codebuddy-account",
+        operation_key="manual-recovery-without-policy-objective",
+        source_revision="a" * 40,
+    )
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+
+    assert payload["activeObjectiveCount"] == 0
+    assert payload["unattachedExecutionStatus"] == "AVAILABLE"
+    assert payload["unattachedExecutionCount"] == 1
+    item = payload["unattachedExecutions"][0]
+    assert item["routeId"] == "codebuddy-account-primary"
+    assert item["reason"] == "NO_ACTIVE_POLICY_OBJECTIVE"
+    assert item["profile"]["agent"]["name"] == "CodeBuddy"
+    assert "manual-recovery-without-policy-objective" not in json.dumps(item)
+    assert len(item["operationKeyHash"]) == 12
+
+
+def test_summary_does_not_double_count_policy_owned_open_attempt(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    _write_unattached_test_routes(routes)
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    ledger_path = tmp_path / "attempt-ledger.jsonl"
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger_path))
+    operation_key = "implementation:policy-1:retry:0"
+    AttemptLedger(ledger_path).start(
+        role="IMPLEMENT",
+        route_id="codebuddy-account-primary",
+        priority=30,
+        runtime="EXTERNAL_ACP",
+        target="codebuddy-account",
+        operation_key=operation_key,
+        source_revision="a" * 40,
+    )
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    asyncio.run(
+        client.threads.create(
+            thread_id="policy-1",
+            graph_id="forgeflow",
+            metadata={"project_key": "memoflow"},
+        )
+    )
+    client.threads.rows["policy-1"]["values"] = {
+        "repo_owner": "BakerSean168",
+        "repo_name": "memoflow",
+        "objective": "Policy-owned implementation",
+        "status": "IMPLEMENTING",
+        "implementation_route_id": "codebuddy-account-primary",
+        "implementation_runtime": "EXTERNAL_ACP",
+        "implementation_operation_key": operation_key,
+    }
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+
+    assert payload["activeObjectiveCount"] == 1
+    assert payload["activeObjectives"][0]["implementationOperationKey"] == operation_key
+    assert payload["unattachedExecutionCount"] == 0
+    assert payload["unattachedExecutions"] == []
+
+
+def test_summary_hides_finished_attempt_from_unattached_execution_view(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    _write_unattached_test_routes(routes)
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    ledger_path = tmp_path / "attempt-ledger.jsonl"
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger_path))
+    ledger = AttemptLedger(ledger_path)
+    handle = ledger.start(
+        role="IMPLEMENT",
+        route_id="codebuddy-account-primary",
+        priority=30,
+        runtime="EXTERNAL_ACP",
+        target="codebuddy-account",
+        operation_key="finished-manual-recovery",
+        source_revision="a" * 40,
+    )
+    ledger.finish(
+        handle,
+        outcome="BLOCKED",
+        failure_class="UNCLASSIFIED",
+        fallback_reason="STOPPED",
+        source_revision="a" * 40,
+    )
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+
+    assert payload["unattachedExecutionStatus"] == "AVAILABLE"
+    assert payload["unattachedExecutionCount"] == 0
+    assert payload["unattachedExecutions"] == []
+
+
+def test_summary_marks_unattached_observability_unavailable_without_lying(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes.json"
+    _write_unattached_test_routes(routes)
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    class BrokenLedger:
+        def route_summaries(self, route_ids):
+            del route_ids
+            return {}
+
+        def open_attempts(self):
+            raise OSError("ledger unavailable")
+
+    monkeypatch.setattr(api, "_attempt_ledger", lambda: BrokenLedger())
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+
+    assert payload["unattachedExecutionStatus"] == "UNAVAILABLE"
+    assert payload["unattachedExecutionError"] == "ATTEMPT_LEDGER_UNAVAILABLE"
+    assert payload["unattachedExecutionCount"] is None
+    assert payload["unattachedExecutions"] == []

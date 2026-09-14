@@ -104,12 +104,20 @@ def _prepare_local_delivery(
         raise ExternalAgentDeliveryError("EXTERNAL_AGENT_COMMIT_SUBJECT_EMPTY")
 
     branch = delivery_branch_name(request.operation_key)
-    if (
-        _git(workspace, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode
-        == 0
-    ):
-        raise ExternalAgentDeliveryError("EXTERNAL_AGENT_LOCAL_BRANCH_EXISTS")
-    _git(workspace, "switch", "-c", branch)
+    branch_exists = (
+        _git(workspace, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0
+    )
+    if branch_exists:
+        branch_head = _git(workspace, "rev-parse", f"refs/heads/{branch}").stdout.decode().strip()
+        if branch_head != evidence.source_revision:
+            raise ExternalAgentDeliveryError("EXTERNAL_AGENT_LOCAL_BRANCH_EXISTS")
+        # Recovery workspaces can inherit the deterministic delivery branch from
+        # the verified source checkout. Reusing it is safe only when the branch
+        # still points at the exact source revision; any other state remains
+        # fail-closed so an existing delivery commit is never rewritten.
+        _git(workspace, "switch", branch)
+    else:
+        _git(workspace, "switch", "-c", branch)
     _git(workspace, "add", "--", *evidence.changed_files)
     staged = tuple(
         sorted(
@@ -326,7 +334,6 @@ class GitHubExternalAgentDelivery:
         if delivered.head_sha != head_sha:
             raise ExternalAgentDeliveryError("EXTERNAL_AGENT_PR_HEAD_MISMATCH")
         return delivered
-
 
 
 __all__ = [
