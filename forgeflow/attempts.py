@@ -566,7 +566,7 @@ def _summarize_routes(
     details: dict[str, dict[str, object | None]] = {}
     last_started_dt: dict[str, datetime] = {}
     last_finished_dt: dict[str, datetime] = {}
-    starts: dict[str, str] = {}
+    starts: dict[str, dict[str, object]] = {}
     finishes: set[str] = set()
 
     def ensure(route_id: str) -> None:
@@ -620,7 +620,7 @@ def _summarize_routes(
         if event == "STARTED":
             if attempt_id in starts:
                 raise AttemptLedgerError("ATTEMPT_LEDGER_DUPLICATE_ATTEMPT_ID")
-            starts[attempt_id] = route_id
+            starts[attempt_id] = row
             if not selected:
                 continue
             count = counters[route_id]
@@ -635,11 +635,14 @@ def _summarize_routes(
         if attempt_id in finishes:
             raise AttemptLedgerError("ATTEMPT_LEDGER_DUPLICATE_FINISH")
         finishes.add(attempt_id)
-        start_route = starts.get(attempt_id)
-        if start_route is None:
+        start = starts.get(attempt_id)
+        if start is None:
             raise AttemptLedgerError("ATTEMPT_LEDGER_START_MISSING")
-        if start_route != route_id:
+        if start.get("route_id") != route_id:
             raise AttemptLedgerError("ATTEMPT_LEDGER_FINISH_ROUTE_MISMATCH")
+        identity_fields = ("role", "route_id", "priority", "runtime", "target", "operation_key")
+        if any(start.get(field) != row.get(field) for field in identity_fields):
+            raise AttemptLedgerError("ATTEMPT_LEDGER_FINISH_IDENTITY_MISMATCH")
         if not selected:
             continue
 

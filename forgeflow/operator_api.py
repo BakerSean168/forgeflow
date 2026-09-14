@@ -426,9 +426,27 @@ async def _assistant_id(client: Any) -> str:
     return assistant_id
 
 
-async def _search_threads(*, limit: int = 100) -> list[Mapping[str, Any]]:
-    rows = await _client().threads.search(limit=min(max(limit, 1), 200), sort_by="updated_at", sort_order="desc")
-    return [row for row in rows if isinstance(row, Mapping) and _is_forgeflow_thread(row)]
+async def _search_threads(*, limit: int | None = 100) -> list[Mapping[str, Any]]:
+    client = _client()
+    rows: list[Mapping[str, Any]] = []
+    offset = 0
+    while limit is None or len(rows) < limit:
+        page_limit = 200 if limit is None else min(max(limit - len(rows), 1), 200)
+        page = await client.threads.search(
+            metadata={"graph_id": "forgeflow"},
+            limit=page_limit,
+            offset=offset,
+            sort_by="updated_at",
+            sort_order="desc",
+        )
+        page_rows = [
+            row for row in page if isinstance(row, Mapping) and _is_forgeflow_thread(row)
+        ]
+        rows.extend(page_rows)
+        if len(page) < page_limit:
+            break
+        offset += len(page)
+    return rows if limit is None else rows[:limit]
 
 
 def _matching_run(rows: Any, run_id: str | None) -> Mapping[str, Any] | None:
@@ -683,6 +701,7 @@ def _route_view(
     *,
     fallback_target: str | None = None,
     attempts: RouteAttemptSummary | None = None,
+    attempts_available: bool = True,
     probe: Any = None,
 ) -> dict[str, Any]:
     if route.role == "REASONING":
@@ -709,6 +728,16 @@ def _route_view(
             configured_health=route.health,
             enabled=route.enabled,
         )
+    if not attempts_available:
+        observability = dict(observability)
+        observability["attempts"] = None
+        observability["needsAttention"] = True
+        observability["reasons"] = [
+            *observability.get("reasons", []),
+            "attempt_ledger_unavailable",
+        ]
+        if observability.get("status") == "READY":
+            observability["status"] = "DEGRADED"
     return {
         "id": route.id,
         "role": route.role,
@@ -736,8 +765,8 @@ async def _route_attempt_summaries(
     route_ids = tuple(route.id for route in routes)
     try:
         return await asyncio.to_thread(ledger.route_summaries, route_ids)
-    except AttemptLedgerError as exc:
-        raise HTTPException(status_code=503, detail="ForgeFlow attempt ledger is invalid") from exc
+    except (AttemptLedgerError, OSError) as exc:
+        raise HTTPException(status_code=503, detail="ForgeFlow attempt ledger is unavailable") from exc
 
 
 async def _route_probe_records() -> dict[str, Any]:
@@ -750,17 +779,35 @@ async def _route_probe_records() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="ForgeFlow resource probe store is invalid") from exc
 
 
-@router.get("/resources")
-async def list_resources(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+async def _list_resources_payload(
+    authorization: str | None, *, tolerate_attempt_ledger_errors: bool = False
+) -> dict[str, Any]:
     require_operator_auth(authorization)
     registry = _route_registry()
     if registry is None:
-        return {"routes": [], "selection": {}, "projectSelections": {}}
+        return {
+            "routes": [],
+            "selection": {},
+            "projectSelections": {},
+            "attemptLedgerStatus": "UNAVAILABLE",
+        }
     routes = list(registry.routes)
-    attempts, probes = await asyncio.gather(
-        _route_attempt_summaries(routes),
-        _route_probe_records(),
-    )
+    attempts_available = True
+    try:
+        attempts, probes = await asyncio.gather(
+            _route_attempt_summaries(routes),
+            _route_probe_records(),
+        )
+    except HTTPException as exc:
+        if not (
+            tolerate_attempt_ledger_errors
+            and exc.status_code == 503
+            and exc.detail == "ForgeFlow attempt ledger is unavailable"
+        ):
+            raise
+        attempts_available = False
+        attempts = {}
+        probes = await _route_probe_records()
     reasoning = list(registry.eligible("REASONING"))
     next_reasoning: dict[str, str | None] = {}
     for index, route in enumerate(reasoning):
@@ -772,6 +819,7 @@ async def list_resources(authorization: str | None = Header(default=None)) -> di
                 route,
                 fallback_target=next_reasoning.get(route.id),
                 attempts=attempts.get(route.id),
+                attempts_available=attempts_available,
                 probe=probes.get(route.id),
             )
             for route in routes
@@ -795,7 +843,13 @@ async def list_resources(authorization: str | None = Header(default=None)) -> di
         "routes": list(route_views),
         "selection": selection,
         "projectSelections": project_selections,
+        "attemptLedgerStatus": "AVAILABLE" if attempts_available else "UNAVAILABLE",
     }
+
+
+@router.get("/resources")
+async def list_resources(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    return await _list_resources_payload(authorization)
 
 
 @router.post("/resources/{route_id}/probe")
@@ -846,8 +900,11 @@ async def probe_resource(
 def _attempt_is_policy_attached(attempt: Any, active: list[dict[str, Any]]) -> bool:
     operation_key = attempt.operation_key
     for objective in active:
-        if objective.get("implementationOperationKey") == operation_key:
-            return True
+        current_operation = objective.get("implementationOperationKey")
+        if isinstance(current_operation, str) and current_operation:
+            if current_operation == operation_key:
+                return True
+            continue
         plan_id = objective.get("planId")
         if not isinstance(plan_id, str) or not plan_id:
             continue
@@ -935,7 +992,7 @@ async def summary(authorization: str | None = Header(default=None)) -> dict[str,
     client = _client()
     latest: dict[str, dict[str, Any]] = {}
     active: list[dict[str, Any]] = []
-    for thread in await _search_threads(limit=200):
+    for thread in await _search_threads(limit=None):
         view = _objective_view(thread, lookup)
         key = view["projectKey"]
         needs_enrichment = bool(view["active"] or (isinstance(key, str) and key not in latest))
@@ -945,7 +1002,9 @@ async def summary(authorization: str | None = Header(default=None)) -> dict[str,
         if isinstance(key, str) and key not in latest:
             latest[key] = enriched
     project_views = [dict(project, latestObjective=latest.get(project["projectKey"])) for project in projects]
-    resources = await list_resources(authorization)
+    resources = await _list_resources_payload(
+        authorization, tolerate_attempt_ledger_errors=True
+    )
     active.sort(key=lambda row: str(row.get("updatedAt") or ""), reverse=True)
     unattached = await _unattached_execution_snapshot(active)
     running_agents = sum(
