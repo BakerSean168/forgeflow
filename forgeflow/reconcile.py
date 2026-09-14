@@ -1029,7 +1029,23 @@ async def _reconcile_ci(state: ForgeFlowState, services: PolicyServices) -> Forg
         result["last_failure_code"] = "CI_EVIDENCE_UNAVAILABLE"
         return result
     decision = ci_decision(signals, services.repository_policy(state))
-    return apply_ci_decision(state, decision)
+    failure_code = decision.failure_code or ""
+    if decision.status == "UNRESOLVED" and failure_code.startswith(
+        "MISSING_REQUIRED_CHECK:"
+    ):
+        stage = f"ci_missing_required_check:{failure_code}"
+        count = state.get("wait_count", 0) if state.get("wait_stage") == stage else 0
+        if count < DEFAULT_BUDGET.external_evidence_reconciles:
+            return note_wait(
+                state,
+                stage,
+                failure_code,
+                limit=DEFAULT_BUDGET.external_evidence_reconciles,
+            )
+        decision = decision.__class__(
+            head_sha=decision.head_sha, status="FAIL", failure_code=failure_code
+        )
+    return apply_ci_decision(clear_wait(state), decision)
 
 
 async def _reconcile_review(state: ForgeFlowState, services: PolicyServices) -> ForgeFlowState:

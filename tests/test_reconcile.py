@@ -594,6 +594,55 @@ async def test_review_finalization_rereads_pr_and_refuses_ready_after_head_race(
 
 
 @pytest.mark.asyncio
+async def test_missing_required_check_settles_then_enters_same_pr_repair() -> None:
+    services = FakeServices(cron_id="cron-1", pr=_pr(HEAD1))
+    services.ci = CiSignals(head_sha=HEAD1, check_runs=(), statuses=())
+    state = _base_state("WAITING_FOR_CI")
+    state.update(pr_url=PR, observed_head_sha=HEAD1)
+
+    current = state
+    for expected in range(1, 11):
+        current = await reconcile_once(
+            current, policy_thread_id="policy-missing-check", services=services
+        )
+        assert current["status"] == "WAITING_FOR_CI"
+        assert current["wait_stage"] == "ci_missing_required_check:MISSING_REQUIRED_CHECK:tests"
+        assert current["wait_count"] == expected
+        assert current["last_failure_code"] == "MISSING_REQUIRED_CHECK:tests"
+
+    repair = await reconcile_once(
+        current, policy_thread_id="policy-missing-check", services=services
+    )
+    assert repair["status"] == "REPAIRING"
+    assert repair["last_failure_code"] == "MISSING_REQUIRED_CHECK:tests"
+    assert repair["implementation_run_id"] is None
+    assert repair["wait_stage"] is None
+    assert repair["wait_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_required_check_appearing_during_settle_clears_wait_and_advances() -> None:
+    services = FakeServices(cron_id="cron-1", pr=_pr(HEAD1))
+    services.ci = CiSignals(head_sha=HEAD1, check_runs=(), statuses=())
+    state = _base_state("WAITING_FOR_CI")
+    state.update(pr_url=PR, observed_head_sha=HEAD1)
+
+    waiting = await reconcile_once(
+        state, policy_thread_id="policy-check-appears", services=services
+    )
+    assert waiting["wait_count"] == 1
+
+    services.ci = _ci(HEAD1)
+    advanced = await reconcile_once(
+        waiting, policy_thread_id="policy-check-appears", services=services
+    )
+    assert advanced["status"] == "REVIEWING"
+    assert advanced["ci_head_sha"] == HEAD1
+    assert advanced["wait_stage"] is None
+    assert advanced["wait_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_missing_required_check_policy_escalates_before_model_dispatch() -> None:
     services = FakeServices(
         cron_id="cron-1", repo_policy=RepositoryPolicy(ci_required=True, required_checks=())
