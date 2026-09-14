@@ -137,3 +137,154 @@ def test_codebuddy_requires_outer_docker(tmp_path: Path) -> None:
                 "FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX": "host",
             }
         )
+
+
+def test_codebuddy_blocking_path_checks_run_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The async external graph must not resolve CodeBuddy paths on the event loop.
+
+    Strict ``Path.resolve(strict=True)`` (``os.readlink``), ``os.access``, and
+    official-auth discovery are all blocking. LangGraph's Blockbuster raises when
+    they run inside the async node, so the adapter must build those paths in a
+    worker thread instead.
+    """
+
+    import asyncio
+    import json
+    import threading
+
+    import openswe_ext.codebuddy_execution as codebuddy
+    import openswe_ext.external_agent_graph as graph
+    from forgeflow.adapters.external_delivery import ExternalAgentPullRequestDelivery
+    from forgeflow.external_agents.execution import ExternalAgentExecutionEvidence
+    from forgeflow.projects import ExternalAgentProjectConfig
+    from openswe_ext.external_agent_workspace import PreparedExternalWorkspace
+
+    root = tmp_path / "workspaces"
+    workspace = root / "run"
+    source = tmp_path / "source"
+    workspace.mkdir(parents=True)
+    source.mkdir()
+    # A symlinked binary makes resolve(strict=True) hit os.readlink, exactly the
+    # call Blockbuster rejected before the adapter was built in a thread.
+    real_binary = _binary(tmp_path)
+    binary = tmp_path / "codebuddy-link"
+    binary.symlink_to(real_binary)
+    auth = _auth_dir(tmp_path)
+
+    route_config = tmp_path / "routes.json"
+    route_config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "buddy",
+                        "role": "IMPLEMENT",
+                        "priority": 30,
+                        "runtime": "EXTERNAL_ACP",
+                        "adapter": "codebuddy",
+                        "target": "codebuddy-account",
+                        "enabled": True,
+                        "health": "READY",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "attempts.jsonl"
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(route_config))
+    monkeypatch.setenv("FORGEFLOW_ATTEMPT_LEDGER_FILE", str(ledger))
+    monkeypatch.setenv("FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT", str(root))
+    monkeypatch.setenv("FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX", "docker")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("FORGEFLOW_CODEBUDDY_BIN", str(binary))
+    monkeypatch.setenv("FORGEFLOW_CODEBUDDY_AUTH_STATE_DIR", str(auth))
+    monkeypatch.setenv("FORGEFLOW_CODEBUDDY_ACP_ENABLED", "true")
+
+    monkeypatch.setattr(
+        graph,
+        "load_external_agent_project_config",
+        lambda owner, repo: ExternalAgentProjectConfig(source, ("true",)),
+    )
+    monkeypatch.setattr(
+        graph,
+        "prepare_external_workspace",
+        lambda **kwargs: PreparedExternalWorkspace(workspace, "a" * 40),
+    )
+    monkeypatch.setattr(graph, "cleanup_external_workspace", lambda path: None)
+
+    class FakeAcpAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def execute(self, request):
+            del request
+            return ExternalAgentExecutionEvidence(
+                runtime="codebuddy",
+                model=None,
+                source_revision="a" * 40,
+                changed_files=("a.txt",),
+                diff_sha256="d" * 64,
+                test_command=("true",),
+                test_exit_code=0,
+                test_output_sha256="e" * 64,
+                acp_session_id="session",
+                external_conversation_id="conversation",
+                agent_stop_reason="end_turn",
+            )
+
+    class FakeDelivery:
+        async def deliver(self, **kwargs):
+            del kwargs
+            return ExternalAgentPullRequestDelivery(
+                pr_url="https://github.com/o/r/pull/1",
+                pr_number=1,
+                branch="forgeflow/external-test",
+                head_sha="b" * 40,
+                base_ref="main",
+            )
+
+    monkeypatch.setattr(codebuddy, "AcpWorkspaceExecutionAdapter", FakeAcpAdapter)
+    monkeypatch.setattr(graph, "GitHubExternalAgentDelivery", FakeDelivery)
+
+    event_loop_thread = threading.get_ident()
+    auth_threads: list[int] = []
+    docker_threads: list[int] = []
+
+    original_auth = codebuddy.resolve_codebuddy_auth_dir
+
+    def recording_auth(values):
+        auth_threads.append(threading.get_ident())
+        return original_auth(values)
+
+    original_docker_args = codebuddy.build_codebuddy_docker_args
+
+    def recording_docker_args(**kwargs):
+        docker_threads.append(threading.get_ident())
+        return original_docker_args(**kwargs)
+
+    monkeypatch.setattr(codebuddy, "resolve_codebuddy_auth_dir", recording_auth)
+    monkeypatch.setattr(codebuddy, "build_codebuddy_docker_args", recording_docker_args)
+
+    result = asyncio.run(
+        graph.DefaultExternalAgentGraphServices().run(
+            {
+                "owner": "o",
+                "repo": "r",
+                "base_ref": "main",
+                "objective": "implement x",
+                "operation_key": "op:1",
+                "route_id": "buddy",
+                "phase": "IMPLEMENT",
+            }
+        )
+    )
+
+    assert result.external_status == "SUCCESS"
+    assert result.failure_code is None
+    # The constructor and the execute-time Docker setup were both exercised.
+    assert auth_threads and all(thread != event_loop_thread for thread in auth_threads)
+    assert docker_threads and all(thread != event_loop_thread for thread in docker_threads)
