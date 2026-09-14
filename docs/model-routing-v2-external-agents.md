@@ -557,6 +557,8 @@ IMPLEMENT
   30 CodeBuddy native ACP / DeepSeek V4.1 Flash (enabled after authenticated canary)
 ```
 
+External delivery branch ownership is deterministic per operation key. A disposable or recovery workspace may legitimately inherit that ForgeFlow-owned local branch at the exact verified source revision; delivery reuses it in that one unambiguous case. If the local branch points anywhere else, delivery fails closed with `EXTERNAL_AGENT_LOCAL_BRANCH_EXISTS` rather than rewriting an existing delivery commit or foreign state. This keeps crash/recovery retries tolerant of inherited refs without turning deterministic branch naming into an unsafe reset mechanism.
+
 The CodeBuddy process runs as one short-lived native binary inside a read-only Docker container. Only
 the temporary workspace is writable, project/local CodeBuddy settings are not loaded, and session
 persistence plus automatic memory are disabled. ForgeFlow bootstraps from the official CodeBuddy login

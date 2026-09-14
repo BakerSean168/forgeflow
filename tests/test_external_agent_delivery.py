@@ -113,6 +113,41 @@ def test_delivery_commits_operation_trailer_before_push(tmp_path: Path) -> None:
     assert _git(repo, "status", "--porcelain") == ""
 
 
+def test_delivery_reuses_deterministic_local_branch_at_verified_source(tmp_path: Path) -> None:
+    import forgeflow.adapters.external_delivery as module
+
+    repo, request, evidence = _fixture(tmp_path)
+    branch = delivery_branch_name(request.operation_key)
+    _git(repo, "branch", branch, evidence.source_revision)
+
+    workspace, resolved_branch, head_sha = module._prepare_local_delivery(
+        request, evidence, "main", "test: recovery delivery"
+    )
+
+    assert workspace == repo
+    assert resolved_branch == branch
+    assert head_sha != evidence.source_revision
+    assert _git(repo, "branch", "--show-current") == branch
+    assert "ForgeFlow-Operation: external:test:1" in _git(repo, "show", "-s", "--format=%B", "HEAD")
+
+
+def test_delivery_refuses_deterministic_branch_with_foreign_head(tmp_path: Path) -> None:
+    import forgeflow.adapters.external_delivery as module
+
+    repo, request, evidence = _fixture(tmp_path)
+    branch = delivery_branch_name(request.operation_key)
+    tree = _git(repo, "rev-parse", "HEAD^{tree}")
+    foreign = subprocess.check_output(
+        ["git", "commit-tree", tree, "-p", evidence.source_revision, "-m", "foreign"],
+        cwd=repo,
+        text=True,
+    ).strip()
+    _git(repo, "update-ref", f"refs/heads/{branch}", foreign)
+
+    with pytest.raises(ExternalAgentDeliveryError, match="EXTERNAL_AGENT_LOCAL_BRANCH_EXISTS"):
+        module._prepare_local_delivery(request, evidence, "main", "test: recovery delivery")
+
+
 def test_delivery_refuses_workspace_drift(tmp_path: Path) -> None:
     repo, request, evidence = _fixture(tmp_path)
     (repo / "unexpected.txt").write_text("x\n", encoding="utf-8")

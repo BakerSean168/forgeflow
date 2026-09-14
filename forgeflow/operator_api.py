@@ -8,6 +8,7 @@ and commands for Hermes and the human status dashboard.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -385,6 +386,7 @@ def _objective_view(thread: Mapping[str, Any], lookup: Mapping[str, str], *, ful
         "implementationRuntime": values.get("implementation_runtime"),
         "implementationThreadId": values.get("implementation_thread_id"),
         "implementationRunId": values.get("implementation_run_id"),
+        "implementationOperationKey": values.get("implementation_operation_key"),
         "implementationPhase": values.get("implementation_phase"),
         "implementationFailedRouteIds": values.get("implementation_failed_route_ids", []),
         "reviewerThreadId": values.get("reviewer_thread_id"),
@@ -841,6 +843,90 @@ async def probe_resource(
     }
 
 
+def _attempt_is_policy_attached(attempt: Any, active: list[dict[str, Any]]) -> bool:
+    operation_key = attempt.operation_key
+    for objective in active:
+        if objective.get("implementationOperationKey") == operation_key:
+            return True
+        plan_id = objective.get("planId")
+        if not isinstance(plan_id, str) or not plan_id:
+            continue
+        if operation_key.startswith(f"implementation:{plan_id}:"):
+            return True
+        if operation_key.startswith(f"repair:{plan_id}:"):
+            return True
+    return False
+
+
+def _unattached_execution_view(attempt: Any, registry: RouteRegistry | None) -> dict[str, Any]:
+    route = None
+    if registry is not None:
+        try:
+            route = registry.get(attempt.route_id)
+        except KeyError:
+            route = None
+    profile = None
+    if attempt.role == "IMPLEMENT":
+        profile = implementation_profile(route, attempt.runtime)
+    elif attempt.role == "REASONING":
+        model = model_view(attempt.target, effort="medium")
+        profile = {
+            "role": "REASONING",
+            "agent": {
+                "id": "open-swe-reviewer",
+                "name": "Open SWE Reviewer",
+                "harness": "Open SWE",
+            },
+            "provider": provider_for_model(attempt.target),
+            "model": model,
+            "fallbackModel": None,
+        }
+    return {
+        "attemptId": attempt.attempt_id,
+        "routeId": attempt.route_id,
+        "role": attempt.role,
+        "runtime": attempt.runtime,
+        "target": attempt.target,
+        "startedAt": attempt.started_at,
+        "sourceRevision": attempt.source_revision,
+        "operationKeyHash": hashlib.sha256(attempt.operation_key.encode("utf-8")).hexdigest()[:12],
+        "reason": "NO_ACTIVE_POLICY_OBJECTIVE",
+        "profile": profile,
+    }
+
+
+async def _unattached_execution_snapshot(active: list[dict[str, Any]]) -> dict[str, Any]:
+    ledger = _attempt_ledger()
+    if ledger is None:
+        return {
+            "status": "UNAVAILABLE",
+            "error": "ATTEMPT_LEDGER_NOT_CONFIGURED",
+            "count": None,
+            "items": [],
+            "truncated": False,
+        }
+    try:
+        attempts = await asyncio.to_thread(ledger.open_attempts)
+    except (AttemptLedgerError, OSError):
+        return {
+            "status": "UNAVAILABLE",
+            "error": "ATTEMPT_LEDGER_UNAVAILABLE",
+            "count": None,
+            "items": [],
+            "truncated": False,
+        }
+    registry = _route_registry()
+    unmatched = [attempt for attempt in attempts if not _attempt_is_policy_attached(attempt, active)]
+    limit = 50
+    return {
+        "status": "AVAILABLE",
+        "error": None,
+        "count": len(unmatched),
+        "items": [_unattached_execution_view(attempt, registry) for attempt in unmatched[:limit]],
+        "truncated": len(unmatched) > limit,
+    }
+
+
 @router.get("/summary")
 async def summary(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_operator_auth(authorization)
@@ -861,6 +947,7 @@ async def summary(authorization: str | None = Header(default=None)) -> dict[str,
     project_views = [dict(project, latestObjective=latest.get(project["projectKey"])) for project in projects]
     resources = await list_resources(authorization)
     active.sort(key=lambda row: str(row.get("updatedAt") or ""), reverse=True)
+    unattached = await _unattached_execution_snapshot(active)
     running_agents = sum(
         1
         for row in active
@@ -872,6 +959,11 @@ async def summary(authorization: str | None = Header(default=None)) -> dict[str,
         "runtime": {"status": "ONLINE", "kind": "policy-v1"},
         "activeObjectiveCount": len(active),
         "runningAgentCount": running_agents,
+        "unattachedExecutionStatus": unattached["status"],
+        "unattachedExecutionError": unattached["error"],
+        "unattachedExecutionCount": unattached["count"],
+        "unattachedExecutions": unattached["items"],
+        "unattachedExecutionsTruncated": unattached["truncated"],
         "projects": project_views,
         "activeObjectives": active,
         "routes": resources["routes"],

@@ -61,6 +61,19 @@ class RouteAttemptSummary:
     last_duration_ms: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class OpenAttempt:
+    attempt_id: str
+    role: str
+    route_id: str
+    priority: int
+    runtime: str
+    target: str
+    operation_key: str
+    started_at: str
+    source_revision: str | None
+
+
 class AttemptLedger:
     def __init__(self, path: Path) -> None:
         self._path = path.expanduser()
@@ -265,6 +278,50 @@ class AttemptLedger:
         with self._locked_file() as file:
             rows = _read_rows(file)
         return _summarize_routes(rows, requested=requested, cutoff=cutoff)
+
+    def open_attempts(self) -> tuple[OpenAttempt, ...]:
+        """Return currently open attempts after validating the complete ledger.
+
+        This is a provenance view, not a task scheduler. Callers can correlate
+        operation keys with durable Policy V1 state and surface unmatched rows
+        as abnormal/unattached executions.
+        """
+        with self._locked_file() as file:
+            rows = _read_rows(file)
+
+        _summarize_routes(
+            rows,
+            requested=None,
+            cutoff=datetime.min.replace(tzinfo=UTC),
+        )
+        finished_ids = {
+            row["attempt_id"]
+            for row in rows
+            if row.get("event") == "FINISHED" and isinstance(row.get("attempt_id"), str)
+        }
+        result: list[OpenAttempt] = []
+        for row in rows:
+            if row.get("event") != "STARTED" or row.get("attempt_id") in finished_ids:
+                continue
+            handle = _handle_from_start(row)
+            source_revision = row.get("source_revision")
+            if source_revision is not None and not isinstance(source_revision, str):
+                raise AttemptLedgerError("ATTEMPT_LEDGER_SOURCE_REVISION_INVALID")
+            result.append(
+                OpenAttempt(
+                    attempt_id=handle.attempt_id,
+                    role=handle.role,
+                    route_id=handle.route_id,
+                    priority=handle.priority,
+                    runtime=handle.runtime,
+                    target=handle.target,
+                    operation_key=handle.operation_key,
+                    started_at=handle.started_at,
+                    source_revision=source_revision,
+                )
+            )
+        result.sort(key=lambda item: item.started_at, reverse=True)
+        return tuple(result)
 
     def _append(self, payload: dict[str, object]) -> None:
         with self._locked_file() as file:
@@ -702,5 +759,6 @@ __all__ = [
     "AttemptLedgerError",
     "AttemptOutcome",
     "AttemptStatus",
+    "OpenAttempt",
     "RouteAttemptSummary",
 ]

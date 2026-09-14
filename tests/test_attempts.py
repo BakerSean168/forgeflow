@@ -379,3 +379,57 @@ def test_finish_operation_preserves_external_provenance(tmp_path: Path) -> None:
     rows = [json.loads(line) for line in ledger.path.read_text(encoding="utf-8").splitlines()]
     assert rows[-1]["external_session_id"] == "session-1"
     assert rows[-1]["external_conversation_id"] == "conversation-1"
+
+
+def test_open_attempts_returns_only_unfinished_valid_rows(tmp_path: Path) -> None:
+    ledger = AttemptLedger(tmp_path / "attempt-ledger.jsonl")
+    open_handle = ledger.start(
+        role="IMPLEMENT",
+        route_id="codebuddy-account-primary",
+        priority=30,
+        runtime="EXTERNAL_ACP",
+        target="codebuddy-account",
+        operation_key="ad-hoc:repair",
+        source_revision="a" * 40,
+    )
+    closed = ledger.start(
+        role="IMPLEMENT",
+        route_id="openswe-current",
+        priority=10,
+        runtime="OPEN_SWE",
+        target="current-model-policy",
+        operation_key="implementation:policy:retry:0",
+        source_revision="b" * 40,
+    )
+    ledger.finish(
+        closed,
+        outcome="SUCCEEDED",
+        source_revision="b" * 40,
+        result_revision="c" * 40,
+    )
+
+    attempts = ledger.open_attempts()
+
+    assert len(attempts) == 1
+    assert attempts[0].attempt_id == open_handle.attempt_id
+    assert attempts[0].operation_key == "ad-hoc:repair"
+    assert attempts[0].source_revision == "a" * 40
+
+
+def test_open_attempts_fails_closed_on_corrupt_committed_row(tmp_path: Path) -> None:
+    from forgeflow.attempts import AttemptLedgerError
+
+    ledger = AttemptLedger(tmp_path / "attempt-ledger.jsonl")
+    ledger.start(
+        role="IMPLEMENT",
+        route_id="route",
+        priority=10,
+        runtime="OPEN_SWE",
+        target="target",
+        operation_key="op:open",
+    )
+    with ledger.path.open("a", encoding="utf-8") as handle:
+        handle.write("{not-json}\n")
+
+    with pytest.raises(AttemptLedgerError, match="ATTEMPT_LEDGER_INVALID_JSON"):
+        ledger.open_attempts()
