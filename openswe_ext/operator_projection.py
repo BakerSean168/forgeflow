@@ -13,12 +13,7 @@ from typing import Any
 from agent.utils.errors import LAST_MODEL_ERROR_KEY
 
 from forgeflow.routing import RouteDefinition
-from openswe_ext.model_policy import (
-    IMPLEMENTATION_EFFORT,
-    IMPLEMENTATION_FALLBACK_MODEL_ID,
-    IMPLEMENTATION_MODEL_ID,
-    reasoning_model_ids,
-)
+from openswe_ext.model_policy import implementation_model_policy, reasoning_model_ids
 
 
 def provider_for_model(model_id: str) -> dict[str, str]:
@@ -103,12 +98,13 @@ def implementation_profile(route: RouteDefinition | None, runtime: str | None) -
         return None
     if runtime == "EXTERNAL_ACP" or (route is not None and route.runtime == "EXTERNAL_ACP"):
         return _external_implementation_profile(route)
+    model_id, effort, fallback_model_id = implementation_model_policy()
     return {
         "role": "IMPLEMENT",
         "agent": {"id": "open-swe-agent", "name": "Open SWE Agent", "harness": "Open SWE"},
-        "provider": provider_for_model(IMPLEMENTATION_MODEL_ID),
-        "model": model_view(IMPLEMENTATION_MODEL_ID, effort=IMPLEMENTATION_EFFORT),
-        "fallbackModel": model_view(IMPLEMENTATION_FALLBACK_MODEL_ID, effort="xhigh"),
+        "provider": provider_for_model(model_id),
+        "model": model_view(model_id, effort=effort),
+        "fallbackModel": model_view(fallback_model_id, effort="xhigh"),
     }
 
 

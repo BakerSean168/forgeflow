@@ -31,6 +31,34 @@ class ModelPolicyError(RuntimeError):
     """The configured model route cannot be represented by the Open SWE runtime."""
 
 
+def implementation_model_policy() -> tuple[str, str, str | None]:
+    """Return deployment-selected implementation model, effort and fallback.
+
+    Repository constants remain the defaults. Operators may override them at
+    service start when a provider is unavailable. An explicitly empty fallback
+    disables model-level fallback.
+    """
+    model_id = os.environ.get(
+        "FORGEFLOW_IMPLEMENTATION_MODEL_ID", IMPLEMENTATION_MODEL_ID
+    ).strip()
+    effort = os.environ.get(
+        "FORGEFLOW_IMPLEMENTATION_EFFORT", IMPLEMENTATION_EFFORT
+    ).strip()
+    fallback_raw = os.environ.get("FORGEFLOW_IMPLEMENTATION_FALLBACK_MODEL_ID")
+    fallback = (
+        IMPLEMENTATION_FALLBACK_MODEL_ID
+        if fallback_raw is None
+        else fallback_raw.strip() or None
+    )
+    if not model_id:
+        raise ModelPolicyError("IMPLEMENTATION_MODEL_ID_EMPTY")
+    if not effort:
+        raise ModelPolicyError("IMPLEMENTATION_EFFORT_EMPTY")
+    if fallback == model_id:
+        raise ModelPolicyError("IMPLEMENTATION_FALLBACK_EQUALS_PRIMARY")
+    return model_id, effort, fallback
+
+
 def reasoning_model_ids(route_config_path: Path | None = None) -> tuple[str, str | None]:
     """Return the eligible ordered Open SWE model pair for the REASONING role.
 
@@ -69,9 +97,10 @@ def review_model_id() -> str:
 
 def fallback_model_id_for(primary_model_id: str) -> str | None:
     """Return role-safe model fallback for Open SWE's native fallback middleware."""
-    if primary_model_id == IMPLEMENTATION_MODEL_ID:
-        return IMPLEMENTATION_FALLBACK_MODEL_ID
-    if primary_model_id == IMPLEMENTATION_FALLBACK_MODEL_ID:
+    implementation_model, _effort, implementation_fallback = implementation_model_policy()
+    if primary_model_id == implementation_model:
+        return implementation_fallback
+    if implementation_fallback and primary_model_id == implementation_fallback:
         return None
 
     # Reviewer fallback is installed only inside the dedicated reviewer graph.
@@ -102,6 +131,7 @@ __all__ = [
     "REVIEW_MODEL_ID",
     "ModelPolicyError",
     "fallback_model_id_for",
+    "implementation_model_policy",
     "install_forgeflow_model_policy",
     "reasoning_model_ids",
     "review_model_id",

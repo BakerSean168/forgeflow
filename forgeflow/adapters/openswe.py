@@ -13,8 +13,7 @@ import httpx2
 
 from openswe_ext.context_policy import install_agent_context_policy
 from openswe_ext.model_policy import (
-    IMPLEMENTATION_EFFORT,
-    IMPLEMENTATION_MODEL_ID,
+    implementation_model_policy,
     install_forgeflow_model_policy,
     review_model_id,
 )
@@ -124,17 +123,18 @@ def implementation_config(
     repo_owner: str,
     repo_name: str,
     workspace_path: str | None = None,
-    model_id: str = IMPLEMENTATION_MODEL_ID,
-    effort: str = IMPLEMENTATION_EFFORT,
+    model_id: str | None = None,
+    effort: str | None = None,
     draft_prs: bool = True,
 ) -> dict[str, Any]:
     """Build the minimal Open SWE configurable contract for implementation/repair."""
+    default_model_id, default_effort, _fallback = implementation_model_policy()
     config = {
         "thread_id": thread_id,
         "source": "desktop" if workspace_path else "forgeflow",
         "repo": {"owner": repo_owner, "name": repo_name},
-        "agent_model_id": model_id,
-        "agent_effort": effort,
+        "agent_model_id": model_id or default_model_id,
+        "agent_effort": effort or default_effort,
         "draft_prs": draft_prs,
     }
     if workspace_path:
