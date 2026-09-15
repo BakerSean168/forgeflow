@@ -1155,9 +1155,10 @@ async def _reconcile_review(state: ForgeFlowState, services: PolicyServices) -> 
         return escalate(state, target_failure)
     if final_pr.head_sha != head_sha:
         return observe_external_head(state, final_pr.head_sha)
-    # Learning is advisory and idempotent. Persist only after the official review
-    # and final PR evidence agree on the exact head; ledger failure must never
-    # participate in delivery acceptance.
+    result = apply_review_decision(state, decision)
+    # Learning is advisory and idempotent. Persist only after both exact-head
+    # external evidence and the deterministic policy decision have been accepted;
+    # ledger failure must never participate in delivery acceptance.
     try:
         await asyncio.to_thread(
             record_review_snapshot,
@@ -1168,7 +1169,7 @@ async def _reconcile_review(state: ForgeFlowState, services: PolicyServices) -> 
         )
     except (OSError, ValueError):
         pass
-    return apply_review_decision(state, decision)
+    return result
 
 
 async def _reconcile_ready(state: ForgeFlowState, services: PolicyServices) -> ForgeFlowState:
