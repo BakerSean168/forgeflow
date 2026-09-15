@@ -188,9 +188,8 @@ def unknown_resolved_findings(
                 severity=event.severity,
                 title=event.title,
                 file=event.file,
-                evidence_terms=event.evidence_terms or _evidence_terms(
-                    f"{event.title} {event.file}"
-                ),
+                evidence_terms=event.evidence_terms
+                or _evidence_terms(f"{event.title} {event.file}"),
             )
         )
     return tuple(
@@ -254,7 +253,7 @@ def _event_from_finding(
         for rule in infer_invariants(f"{title} {description} {file}", limit=12)
         if rule.id != ROOT_RULE.id
     )
-    evidence_terms = _evidence_terms(f"{title} {description} {file}")
+    evidence_terms = _evidence_terms(f"{title} {file}")
     event_key = "|".join((repository, str(pr_number), head_sha, finding_id, status))
     event_id = hashlib.sha256(event_key.encode("utf-8")).hexdigest()[:24]
     return LearningEvent(
@@ -374,11 +373,41 @@ def _bounded(value: Any, limit: int, *, fallback: str = "") -> str:
 
 _EVIDENCE_STOPWORDS = frozenset(
     {
-        "about", "after", "before", "could", "during", "finding", "findings", "from",
-        "into", "mismatch", "review", "reviewer", "should", "that", "their",
-        "there", "these", "this", "through", "when", "with", "without", "would",
-        "the", "and", "for", "its", "second",
-        "packages", "package", "source", "module", "code", "path", "file",
+        "about",
+        "after",
+        "before",
+        "could",
+        "during",
+        "finding",
+        "findings",
+        "from",
+        "into",
+        "mismatch",
+        "review",
+        "reviewer",
+        "should",
+        "that",
+        "their",
+        "there",
+        "these",
+        "this",
+        "through",
+        "when",
+        "with",
+        "without",
+        "would",
+        "the",
+        "and",
+        "for",
+        "its",
+        "second",
+        "packages",
+        "package",
+        "source",
+        "module",
+        "code",
+        "path",
+        "file",
     }
 )
 
