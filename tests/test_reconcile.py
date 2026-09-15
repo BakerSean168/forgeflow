@@ -1995,3 +1995,97 @@ async def test_operation_pr_lookup_outage_never_retries_model_work() -> None:
     assert blocked["last_failure_code"] == "PR_OPERATION_EVIDENCE_UNAVAILABLE_WAIT_EXHAUSTED"
     assert blocked["run_retry_count"] == 0
     assert services.attempt_finish_calls[-1]["outcome"] == "BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_exact_head_successful_review_records_advisory_learning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ledger = tmp_path / "invariant-learning.jsonl"
+    monkeypatch.setenv("FORGEFLOW_INVARIANT_LEDGER_FILE", str(ledger))
+    services = FakeServices(cron_id="cron-1", pr=_pr(HEAD1))
+    pair = ("review-thread", "review-run-learning")
+    services.current_review = pair
+    services.review_snapshots[pair] = ReviewerSnapshot(
+        thread_id=pair[0],
+        run_id=pair[1],
+        run_status="success",
+        last_reviewed_sha=HEAD1,
+        findings=(
+            {
+                "id": "f-learning",
+                "severity": "medium",
+                "status": "open",
+                "title": "Future birthday bypasses owner validation",
+                "description": "Portable birthday accepts a future date.",
+                "file": "account-portability.ts",
+                "last_confirmed_sha": HEAD1,
+            },
+        ),
+    )
+    state = _base_state("REVIEWING")
+    state.update(
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        ci_head_sha=HEAD1,
+        reviewer_thread_id=pair[0],
+        reviewer_run_id=pair[1],
+    )
+
+    result = await reconcile_once(state, policy_thread_id="policy-learning", services=services)
+
+    assert result["status"] == "REPAIRING"
+    assert ledger.is_file()
+    payload = ledger.read_text(encoding="utf-8")
+    assert "f-learning" in payload
+    assert "INV-TIME-001" in payload
+
+
+@pytest.mark.asyncio
+async def test_head_race_does_not_record_stale_review_learning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ledger = tmp_path / "invariant-learning.jsonl"
+    monkeypatch.setenv("FORGEFLOW_INVARIANT_LEDGER_FILE", str(ledger))
+
+    class RacingLearningServices(FakeServices):
+        fetch_count = 0
+
+        async def fetch_pr(self, pr_url: str):
+            self.fetch_count += 1
+            return _pr(HEAD1 if self.fetch_count == 1 else HEAD2)
+
+    services = RacingLearningServices(cron_id="cron-1")
+    pair = ("review-thread", "review-run-learning-race")
+    services.current_review = pair
+    services.review_snapshots[pair] = ReviewerSnapshot(
+        thread_id=pair[0],
+        run_id=pair[1],
+        run_status="success",
+        last_reviewed_sha=HEAD1,
+        findings=(
+            {
+                "id": "f-stale",
+                "severity": "medium",
+                "status": "open",
+                "title": "Future birthday bypasses owner validation",
+                "description": "Portable birthday accepts a future date.",
+                "file": "account-portability.ts",
+                "last_confirmed_sha": HEAD1,
+            },
+        ),
+    )
+    state = _base_state("REVIEWING")
+    state.update(
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        ci_head_sha=HEAD1,
+        reviewer_thread_id=pair[0],
+        reviewer_run_id=pair[1],
+    )
+
+    result = await reconcile_once(state, policy_thread_id="policy-learning-race", services=services)
+
+    assert result["status"] == "WAITING_FOR_CI"
+    assert result["observed_head_sha"] == HEAD2
+    assert not ledger.exists()
