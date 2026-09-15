@@ -56,6 +56,7 @@ def test_codebuddy_docker_contract_seals_official_auth_and_uses_native_acp(tmp_p
         auth_state_dir=auth,
         container_name="forgeflow-codebuddy-test",
         model="deepseek-v4.1-flash",
+        memory_limit="4g",
         image="sandbox:test",
         uid=1234,
         gid=1234,
@@ -63,6 +64,7 @@ def test_codebuddy_docker_contract_seals_official_auth_and_uses_native_acp(tmp_p
     joined = " ".join(args)
     assert args[:5] == ("run", "--rm", "-i", "--name", "forgeflow-codebuddy-test")
     assert "--read-only" in args
+    assert "--memory 4g" in joined
     assert "--cap-drop ALL" in joined
     assert "no-new-privileges:true" in args
     assert "--user 1234:1234" in joined
@@ -115,14 +117,32 @@ def test_codebuddy_execution_requires_official_auth_but_not_secret_env(tmp_path:
             "FORGEFLOW_CODEBUDDY_ACP_ENABLED": "false",
             "FORGEFLOW_EXTERNAL_AGENT_WORKSPACE_ROOT": str(root),
             "FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX": "docker",
+            "FORGEFLOW_CODEBUDDY_MEMORY_LIMIT": "4g",
         },
         allowed_projects=frozenset({"o/r"}),
     )
     assert route._model == "deepseek-v4.1-flash"
+    assert route._memory_limit == "4g"
     assert "CODEBUDDY_AUTH_TOKEN" not in route._agent_env
     assert "CODEBUDDY_API_KEY" not in route._agent_env
     with pytest.raises(ExternalAgentRouteRejected, match="ROUTE_DISABLED"):
         route._gate.validate(_request(workspace))
+
+
+def test_codebuddy_rejects_invalid_memory_limit(tmp_path: Path) -> None:
+    binary = _binary(tmp_path)
+    auth = _auth_dir(tmp_path)
+
+    with pytest.raises(ExternalAgentRouteRejected, match="MEMORY_LIMIT_INVALID"):
+        CodeBuddyExternalAgentExecution(
+            env={
+                "HOME": str(tmp_path),
+                "FORGEFLOW_CODEBUDDY_BIN": str(binary),
+                "FORGEFLOW_CODEBUDDY_AUTH_STATE_DIR": str(auth),
+                "FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX": "docker",
+                "FORGEFLOW_CODEBUDDY_MEMORY_LIMIT": "unlimited",
+            }
+        )
 
 
 def test_codebuddy_requires_outer_docker(tmp_path: Path) -> None:
