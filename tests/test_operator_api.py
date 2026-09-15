@@ -846,3 +846,24 @@ def test_resources_marks_unconfigured_attempt_ledger_unavailable(
     assert payload["attemptLedgerStatus"] == "UNAVAILABLE"
     assert payload["routes"][0]["observability"]["attempts"] is None
     assert "attempt_ledger_unavailable" in payload["routes"][0]["observability"]["reasons"]
+
+
+def test_operator_recover_command_is_explicit_and_separate_from_reconcile(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    created = asyncio.run(
+        api.create_objective(
+            api.ObjectiveCreate(projectKey="memoflow", objective="Recover me"),
+            authorization="Bearer secret",
+        )
+    )
+    thread_id = created["threadId"]
+    client.threads.rows[thread_id]["values"].update(
+        status="ESCALATED", last_failure_code="OPENSWE_PROVIDER_UNAVAILABLE"
+    )
+    result = asyncio.run(api.recover_objective(thread_id, authorization="Bearer secret"))
+    assert result["command"] == "recover"
+    assert client.runs.calls[-1][2]["input"] == {"recover_requested": True}
+    assert client.runs.calls[-1][2]["metadata"]["command"] == "recover"

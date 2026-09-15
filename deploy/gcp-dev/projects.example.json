@@ -23,6 +23,18 @@
         "role": "REASONING",
         "route_id": "openswe-reviewer"
       }
-    ]
+    ],
+    "continuous_supervisor": {
+      "enabled": false,
+      "base_ref": "main",
+      "plan_paths": [
+        "docs/plan/active/current.md"
+      ],
+      "objective": "Continue the repository-owned canonical implementation plan by selecting one dependency-ready incomplete ticket.",
+      "acceptance_criteria": [
+        "The selected ticket is implemented and validated."
+      ],
+      "auto_merge_ready": false
+    }
   }
 ]

@@ -421,6 +421,7 @@ class ReviewerSnapshot:
     run_status: str
     last_reviewed_sha: str
     findings: tuple[dict[str, Any], ...]
+    failure_code: str | None = None
 
 
 async def _github_compare(
@@ -674,6 +675,17 @@ class OpenSweReviewerRuntime:
         after_current = after_meta.get("current_reviewer_run_id")
         if after_current != run_id:
             raise ReviewerSupersededError(after_current if isinstance(after_current, str) else None)
+        failure_code = None
+        if status == "error":
+            provider_failure = _provider_failure_for_run(after_meta, run_id)
+            if provider_failure is not None:
+                joined = await self._client.runs.join(thread_id, run_id)
+                terminal_error_type = _terminal_error_type(joined)
+                provider_failure = _provider_failure_for_run(
+                    after_meta, run_id, terminal_error_type=terminal_error_type
+                )
+                if provider_failure is not None:
+                    failure_code = "OPENSWE_PROVIDER_UNAVAILABLE"
         last_reviewed_sha = after_meta.get("last_reviewed_sha")
         return ReviewerSnapshot(
             thread_id=thread_id,
@@ -681,6 +693,7 @@ class OpenSweReviewerRuntime:
             run_status=status if isinstance(status, str) else "unknown",
             last_reviewed_sha=last_reviewed_sha if isinstance(last_reviewed_sha, str) else "",
             findings=tuple(dict(item) for item in findings),
+            failure_code=failure_code,
         )
 
 __all__ += ["OpenSweReviewerRuntime", "ReviewerSnapshot", "ReviewerSupersededError", "get_team_default_model_pair"]

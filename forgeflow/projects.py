@@ -131,3 +131,83 @@ __all__ = [
     "load_repository_policy",
     "resolve_project_route",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuousProjectConfig:
+    project_key: str
+    owner: str
+    repo: str
+    cwd: Path
+    base_ref: str
+    plan_paths: tuple[Path, ...]
+    objective: str
+    acceptance_criteria: tuple[str, ...]
+    auto_merge_ready: bool
+
+
+def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
+    """Load opt-in unattended project continuation from the existing project manifest.
+
+    The supervisor owns no second queue/database. Repository plan files remain the
+    task truth; LangGraph objective threads remain the execution truth.
+    """
+    raw_path = os.environ.get("OPEN_SWE_LOCAL_PROJECTS_FILE", "").strip()
+    if not raw_path:
+        return ()
+    try:
+        entries = json.loads(Path(raw_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("project manifest is unavailable") from exc
+    if not isinstance(entries, list):
+        raise TypeError("project manifest must be a JSON array")
+
+    configs: list[ContinuousProjectConfig] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        spec = raw.get("continuous_supervisor")
+        if not isinstance(spec, dict) or spec.get("enabled") is not True:
+            continue
+        repo_full = raw.get("repo")
+        cwd_raw = raw.get("cwd")
+        if not isinstance(repo_full, str) or repo_full.count("/") != 1:
+            raise ValueError("continuous supervisor project requires owner/repo")
+        if not isinstance(cwd_raw, str) or not cwd_raw.strip():
+            raise ValueError(f"continuous supervisor {repo_full} requires cwd")
+        cwd = Path(cwd_raw).expanduser().resolve(strict=False)
+        owner, repo = repo_full.split("/", 1)
+        project_key = str(raw.get("project_key") or repo).strip().casefold()
+        base_ref = str(spec.get("base_ref") or raw.get("default_branch") or "main").strip()
+        objective = str(spec.get("objective") or "").strip()
+        paths = spec.get("plan_paths")
+        criteria = spec.get("acceptance_criteria", [])
+        auto_merge = spec.get("auto_merge_ready", False)
+        if not project_key or not base_ref or not objective:
+            raise ValueError(f"continuous supervisor {repo_full} has incomplete configuration")
+        if not isinstance(paths, list) or not paths or any(not isinstance(item, str) or not item.strip() for item in paths):
+            raise ValueError(f"continuous supervisor {repo_full} requires plan_paths")
+        if not isinstance(criteria, list) or any(not isinstance(item, str) for item in criteria):
+            raise ValueError(f"continuous supervisor {repo_full} acceptance_criteria must be strings")
+        if not isinstance(auto_merge, bool):
+            raise TypeError(f"continuous supervisor {repo_full} auto_merge_ready must be boolean")
+        plan_paths = tuple((cwd / item).resolve(strict=False) for item in paths)
+        if any(cwd not in path.parents and path != cwd for path in plan_paths):
+            raise ValueError(f"continuous supervisor {repo_full} plan path escapes repository")
+        configs.append(
+            ContinuousProjectConfig(
+                project_key=project_key,
+                owner=owner,
+                repo=repo,
+                cwd=cwd,
+                base_ref=base_ref,
+                plan_paths=plan_paths,
+                objective=objective,
+                acceptance_criteria=tuple(item.strip() for item in criteria if item.strip()),
+                auto_merge_ready=auto_merge,
+            )
+        )
+    return tuple(configs)
+
+
+__all__ += ["ContinuousProjectConfig", "load_continuous_project_configs"]

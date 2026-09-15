@@ -130,6 +130,8 @@ render_unit "$root/deploy/gcp-dev/forgeflow-openswe-sandbox-gc.service.in" "$uni
 render_unit "$root/deploy/gcp-dev/forgeflow-openswe-sandbox-gc.timer.in" "$unit_dir/forgeflow-openswe-sandbox-gc.timer"
 render_unit "$root/deploy/gcp-dev/forgeflow-invariant-supervisor.service.in" "$unit_dir/forgeflow-invariant-supervisor.service"
 render_unit "$root/deploy/gcp-dev/forgeflow-invariant-supervisor.timer.in" "$unit_dir/forgeflow-invariant-supervisor.timer"
+render_unit "$root/deploy/gcp-dev/forgeflow-project-supervisor.service.in" "$unit_dir/forgeflow-project-supervisor.service"
+render_unit "$root/deploy/gcp-dev/forgeflow-project-supervisor.timer.in" "$unit_dir/forgeflow-project-supervisor.timer"
 
 systemctl --user daemon-reload
 systemctl --user enable open-swe-codex-broker.service
@@ -168,5 +170,6 @@ print("graphs=", ",".join(sorted(expected)))
 PY
 
 systemctl --user enable --now forgeflow-invariant-supervisor.timer
+systemctl --user enable --now forgeflow-project-supervisor.timer
 
 echo "ForgeFlow Policy service healthy on 127.0.0.1:$port"

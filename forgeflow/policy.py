@@ -64,6 +64,9 @@ def apply_implementation_evidence(
     result["pr_number"] = evidence.pr_number
     result["observed_head_sha"] = evidence.head_sha
     result["run_retry_count"] = 0
+    result["resource_retry_count"] = 0
+    result["resource_wait_count"] = 0
+    result["resource_resume_status"] = None
     result["last_failure_code"] = None
     if previous_head != evidence.head_sha:
         _invalidate_exact_head_evidence(result)
@@ -114,6 +117,9 @@ def apply_review_decision(
         if finding.status == "open" and finding.severity in BLOCKING_SEVERITIES
     ]
     result = deepcopy(state)
+    result["resource_retry_count"] = 0
+    result["resource_wait_count"] = 0
+    result["resource_resume_status"] = None
     result["reviewer_thread_id"] = decision.reviewer_thread_id
     result["reviewer_run_id"] = decision.reviewer_run_id
     result["reviewed_head_sha"] = decision.head_sha
@@ -171,6 +177,104 @@ def note_child_run_failure(
     result["implementation_operation_key"] = None
     result["run_retry_count"] = retry_count
     result["last_failure_code"] = failure_code
+    return result
+
+
+def enter_resource_wait(
+    state: ForgeFlowState,
+    failure_code: str,
+    *,
+    resume_status: str | None = None,
+) -> ForgeFlowState:
+    """Park a retryable resource outage without consuming engineering repair budget.
+
+    The policy cron remains live. Each outage increases a separate resource retry
+    epoch used for bounded exponential backoff and operation-key uniqueness.
+    """
+    current = state.get("status", "NEW")
+    resolved_resume = resume_status or current
+    if resolved_resume not in {"NEW", "IMPLEMENTING", "REPAIRING", "REVIEWING"}:
+        raise PolicyViolation(f"resource wait cannot resume {resolved_resume}")
+    if current == "ESCALATED":
+        # Operator recovery is intentionally the only escape hatch from an
+        # escalated resource outage. Do not broaden ALLOWED_SUCCESSORS for all
+        # terminal failures.
+        result = deepcopy(state)
+        result["status"] = "WAITING_FOR_RESOURCE"
+    else:
+        result = _transition(state, "WAITING_FOR_RESOURCE")
+    result["resource_resume_status"] = resolved_resume
+    result["resource_retry_count"] = state.get("resource_retry_count", 0) + 1
+    result["resource_wait_count"] = 0
+    result["last_failure_code"] = failure_code or "RESOURCE_UNAVAILABLE"
+    result["implementation_run_id"] = None
+    result["implementation_operation_key"] = None
+    if resolved_resume == "REVIEWING":
+        result["reviewer_run_id"] = None
+        result["reviewer_retry_pending"] = True
+    return result
+
+
+def resource_backoff_minutes(
+    state: ForgeFlowState, *, budget: PolicyBudget = DEFAULT_BUDGET
+) -> int:
+    retries = max(1, state.get("resource_retry_count", 1))
+    delay = 2 ** min(retries - 1, 5)
+    return min(delay, budget.resource_backoff_cap_minutes)
+
+
+def tick_resource_wait(
+    state: ForgeFlowState, *, budget: PolicyBudget = DEFAULT_BUDGET
+) -> ForgeFlowState:
+    _require_status(state, "WAITING_FOR_RESOURCE")
+    resume = state.get("resource_resume_status")
+    if resume not in {"NEW", "IMPLEMENTING", "REPAIRING", "REVIEWING"}:
+        return _escalated(state, "RESOURCE_RESUME_STATUS_MISSING")
+    elapsed = state.get("resource_wait_count", 0) + 1
+    required = resource_backoff_minutes(state, budget=budget)
+    if elapsed < required:
+        result = deepcopy(state)
+        result["resource_wait_count"] = elapsed
+        return result
+    result = deepcopy(state)
+    result["status"] = resume
+    result["resource_wait_count"] = 0
+    result["last_failure_code"] = None
+    if resume == "NEW":
+        # Route exhaustion is re-probed from a clean eligibility set after the
+        # backoff window; successful routes are still selected deterministically.
+        result["implementation_failed_route_ids"] = []
+        result["implementation_route_id"] = None
+        result["implementation_runtime"] = None
+        result["implementation_thread_id"] = None
+    return result
+
+
+def recover_resource_escalation(state: ForgeFlowState) -> ForgeFlowState:
+    """Explicitly recover only escalations known to be resource availability failures."""
+    _require_status(state, "ESCALATED")
+    code = state.get("last_failure_code") or ""
+    recoverable = {
+        "OPENSWE_PROVIDER_UNAVAILABLE",
+        "IMPLEMENTATION_ROUTE_UNAVAILABLE",
+        "IMPLEMENTATION_ROUTE_EXHAUSTED",
+        "REVIEWER_PROVIDER_UNAVAILABLE",
+    }
+    if code not in recoverable:
+        raise PolicyViolation(f"escalation is not resource-recoverable: {code or 'unknown'}")
+    if code in {"IMPLEMENTATION_ROUTE_UNAVAILABLE", "IMPLEMENTATION_ROUTE_EXHAUSTED"}:
+        resume = "NEW"
+    elif state.get("implementation_phase") == "REPAIR":
+        resume = "REPAIRING"
+    elif code == "REVIEWER_PROVIDER_UNAVAILABLE":
+        resume = "REVIEWING"
+    else:
+        resume = "IMPLEMENTING"
+    result = enter_resource_wait(state, code, resume_status=resume)
+    result["recover_requested"] = False
+    # The escalated objective may still carry the id of a cron that has already
+    # been deleted. Force normal cron discovery/recreation on the recovery run.
+    result["reconcile_cron_id"] = None
     return result
 
 

@@ -30,6 +30,11 @@ Objective
 A child agent reporting `success` is never enough. ForgeFlow requires authoritative PR, exact-head
 CI, and exact-head reviewer evidence before `READY`.
 
+Transient provider/runtime exhaustion is not treated as engineering failure: the objective moves to
+`WAITING_FOR_RESOURCE` and retries with capped exponential backoff. Opt-in projects can also use the
+stateless project supervisor to recover resource stalls, exact-head merge accepted PRs, and create the
+next objective from repository-owned canonical plan files.
+
 ## Status
 
 ForgeFlow Policy V1 / v2.0.0 is implementation-complete and acceptance-backed. The implementation
