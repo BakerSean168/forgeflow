@@ -101,3 +101,30 @@ def test_invariant_proposal_operator_view_is_read_only_and_bounded() -> None:
     assert "pending_proposals" in viewer
     assert "accepted_dynamic_rules" in viewer
     assert "record_proposal_decision" not in viewer
+
+
+def test_invariant_operator_views_use_project_python_and_run_outside_repo(tmp_path) -> None:
+    import os
+    import subprocess
+
+    state = tmp_path / "state"
+    state.mkdir()
+    env = os.environ.copy()
+    env["FORGEFLOW_POLICY_STATE_DIR"] = str(state)
+    for name in ("show-invariant-learning.py", "show-invariant-proposals.py"):
+        script = DEPLOY / name
+        assert script.read_text(encoding="utf-8").startswith(
+            "#!/usr/bin/env -S uv run --isolated --python 3.14 python\n"
+        )
+        result = subprocess.run(
+            [str(script), "BakerSean168/MemoFlow"],
+            cwd=tmp_path,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().startswith(("[", "{"))
+        assert not (tmp_path / ".venv").exists()
