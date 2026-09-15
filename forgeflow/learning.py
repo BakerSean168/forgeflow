@@ -42,6 +42,19 @@ class LearningEvent:
     invariant_ids: tuple[str, ...]
     title: str
     file: str
+    evidence_terms: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class UnknownFindingEvidence:
+    repository: str
+    pr_number: int
+    head_sha: str
+    finding_id: str
+    severity: str
+    title: str
+    file: str
+    evidence_terms: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +157,47 @@ def summarize_repository(
     return tuple(sorted(summaries, key=lambda item: (item.status, item.invariant_id)))
 
 
+def unknown_resolved_findings(
+    repository: str, *, path: Path | None = None
+) -> tuple[UnknownFindingEvidence, ...]:
+    """Return latest resolved findings that map to no known static invariant.
+
+    This is proposal evidence only. Raw reviewer descriptions are never returned
+    or persisted; clustering consumes bounded normalized terms captured at review
+    time plus the bounded title/file audit fields.
+    """
+
+    ledger = path or configured_learning_ledger_path()
+    if ledger is None or not ledger.is_file():
+        return ()
+    repository = _repository(repository)
+    latest: dict[tuple[int, str], LearningEvent] = {}
+    for event in _load_events(ledger):
+        if event.repository == repository:
+            latest[(event.pr_number, event.finding_id)] = event
+    evidence = []
+    for event in latest.values():
+        if event.status != "resolved" or event.invariant_ids:
+            continue
+        evidence.append(
+            UnknownFindingEvidence(
+                repository=event.repository,
+                pr_number=event.pr_number,
+                head_sha=event.head_sha,
+                finding_id=event.finding_id,
+                severity=event.severity,
+                title=event.title,
+                file=event.file,
+                evidence_terms=event.evidence_terms or _evidence_terms(
+                    f"{event.title} {event.file}"
+                ),
+            )
+        )
+    return tuple(
+        sorted(evidence, key=lambda item: (item.pr_number, item.finding_id, item.head_sha))
+    )
+
+
 def project_learning_lines(
     *, owner: str, repo: str, objective: str, path: Path | None = None, limit: int = 4
 ) -> tuple[str, ...]:
@@ -200,6 +254,7 @@ def _event_from_finding(
         for rule in infer_invariants(f"{title} {description} {file}", limit=12)
         if rule.id != ROOT_RULE.id
     )
+    evidence_terms = _evidence_terms(f"{title} {description} {file}")
     event_key = "|".join((repository, str(pr_number), head_sha, finding_id, status))
     event_id = hashlib.sha256(event_key.encode("utf-8")).hexdigest()[:24]
     return LearningEvent(
@@ -215,6 +270,7 @@ def _event_from_finding(
         invariant_ids=invariant_ids,
         title=title,
         file=file,
+        evidence_terms=evidence_terms,
     )
 
 
@@ -285,6 +341,13 @@ def _parse_lines(lines: list[str]) -> list[LearningEvent]:
                     invariant_ids=tuple(invariant_ids),
                     title=str(raw.get("title", "")),
                     file=str(raw.get("file", "unknown")),
+                    evidence_terms=tuple(
+                        item
+                        for item in raw.get("evidence_terms", [])
+                        if isinstance(item, str) and item
+                    )
+                    if isinstance(raw.get("evidence_terms", []), list)
+                    else (),
                 )
             )
         except KeyError, TypeError, ValueError, json.JSONDecodeError:
@@ -307,3 +370,30 @@ def _bounded(value: Any, limit: int, *, fallback: str = "") -> str:
     if not compact:
         return fallback
     return compact[:limit]
+
+
+_EVIDENCE_STOPWORDS = frozenset(
+    {
+        "about", "after", "before", "could", "during", "finding", "findings", "from",
+        "into", "mismatch", "review", "reviewer", "should", "that", "their",
+        "there", "these", "this", "through", "when", "with", "without", "would",
+        "the", "and", "for", "its", "second",
+        "packages", "package", "source", "module", "code", "path", "file",
+    }
+)
+
+
+def _evidence_terms(value: str, *, limit: int = 24) -> tuple[str, ...]:
+    import re
+
+    tokens = re.findall(r"[a-z0-9][a-z0-9_-]{2,31}", value.casefold())
+    unique = []
+    seen = set()
+    for token in tokens:
+        if token in _EVIDENCE_STOPWORDS or token.isdigit() or token in seen:
+            continue
+        seen.add(token)
+        unique.append(token)
+        if len(unique) >= limit:
+            break
+    return tuple(unique)

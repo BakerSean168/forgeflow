@@ -67,6 +67,7 @@ from forgeflow.policy import (
 from forgeflow.projects import load_repository_policy, resolve_project_route
 from forgeflow.prompts.implementation import build_implementation_prompt, operation_trailer
 from forgeflow.prompts.repair import build_ci_repair_prompt, build_review_repair_prompt
+from forgeflow.proposals import dynamic_project_lines
 from forgeflow.routing import (
     RouteConfigError,
     RouteDefinition,
@@ -872,10 +873,17 @@ async def _adopt_or_dispatch_initial(
                 objective=_required(state, "objective"),
                 operation_key=operation_key,
                 base_ref=_required(state, "base_ref"),
-                project_learning=project_learning_lines(
-                    owner=_required(state, "repo_owner"),
-                    repo=_required(state, "repo_name"),
-                    objective=_required(state, "objective"),
+                project_learning=(
+                    *project_learning_lines(
+                        owner=_required(state, "repo_owner"),
+                        repo=_required(state, "repo_name"),
+                        objective=_required(state, "objective"),
+                    ),
+                    *dynamic_project_lines(
+                        owner=_required(state, "repo_owner"),
+                        repo=_required(state, "repo_name"),
+                        objective=_required(state, "objective"),
+                    ),
                 ),
             ),
             repo_owner=_required(state, "repo_owner"),

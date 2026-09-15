@@ -14,6 +14,7 @@ EXPECTED_GRAPHS = {
     "scheduler",
     "external_agent",
     "forgeflow",
+    "invariant_reviewer",
 }
 
 
@@ -37,7 +38,7 @@ def test_one_langgraph_deployment_exposes_upstream_and_policy_graphs() -> None:
 
 
 def test_open_swe_graph_imports_are_centralized() -> None:
-    assert set(GRAPH_ENTRIES) == EXPECTED_GRAPHS - {"external_agent", "forgeflow"}
+    assert set(GRAPH_ENTRIES) == EXPECTED_GRAPHS - {"external_agent", "forgeflow", "invariant_reviewer"}
     for path in (REPO / "forgeflow").rglob("*.py"):
         if path.name == "openswe.py":
             continue

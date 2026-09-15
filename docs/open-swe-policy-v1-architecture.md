@@ -40,7 +40,7 @@ after replacement health was proven.
 
 1. Build and validate the exact candidate checkout.
 2. Install/start `open-swe-codex-broker.service` and `forgeflow-policy.service` side-by-side with the legacy runtime.
-3. Authenticate to the replacement and require `/ok`, all six graph ids (`agent`, `reviewer`, `analyzer`, `chat`, `scheduler`, `forgeflow`), the expected systemd fragment/ExecStart identity, and a successful authenticated broker token probe.
+3. Authenticate to the replacement and require `/ok`, all required graph ids (`agent`, `reviewer`, `analyzer`, `chat`, `scheduler`, `external_agent`, `forgeflow`, `invariant_reviewer`), the expected systemd fragment/ExecStart identity, and a successful authenticated broker token probe.
 4. Only after that proof, stop every known legacy ForgeFlow/OpenHands/Antigravity unit and verify each is inactive. Stop failure is a hard blocker.
 5. Only after quiescence proof, remove legacy container/image, `/var/lib/forgeflow`, old unit/drop-in files, exact known libexec helpers, the legacy AppArmor profile, and the old OpenHands literal-worktree override. Preserve independently owned `/etc/forgeflow/litellm.env`.
 6. Re-run replacement health after cleanup. There is no legacy database/schema migration or compatibility adapter.
@@ -77,6 +77,9 @@ ForgeFlow Policy Graph
 ```
 
 ForgeFlow does **not** duplicate any of those owners.
+
+ForgeFlow also exposes a separate `invariant_reviewer` graph for evidence-backed self-improvement. It is not part of objective readiness and has no shell, sandbox, GitHub-write, or repository-mutation tools. A low-frequency supervisor feeds it only mature clusters of resolved previously-unknown findings; accepted outputs remain repository-scoped dynamic invariants and never rewrite the static catalog automatically.
+
 
 ## 2. Evidence for the reset
 
@@ -217,7 +220,8 @@ self-hosted compatibility hooks are installed before upstream graph construction
     "chat": "openswe_ext.graphs:chat_graph",
     "scheduler": "openswe_ext.graphs:scheduler_graph",
     "external_agent": "openswe_ext.external_agent_graph:get_external_agent_graph",
-    "forgeflow": "forgeflow.graph:get_forgeflow_graph"
+    "forgeflow": "forgeflow.graph:get_forgeflow_graph",
+    "invariant_reviewer": "forgeflow.invariant_reviewer_graph:get_invariant_reviewer_graph"
   },
   "http": {
     "app": "agent.webapp:app"
@@ -638,6 +642,7 @@ systemd --user
         +-- scheduler      -> Open SWE
         +-- external_agent -> ForgeFlow selected external runtime child graph
         +-- forgeflow      -> ForgeFlow policy graph
+        +-- invariant_reviewer -> tool-free structured invariant proposal review
         +-- agent.webapp -> Open SWE GitHub/webhook/dashboard API
 
 Docker
@@ -646,6 +651,7 @@ Docker
 
 systemd timer
   +-- forgeflow-openswe-sandbox-gc.timer -> conservative idle sandbox cleanup
+  +-- forgeflow-invariant-supervisor.timer -> low-frequency proposal learning supervisor
 ```
 
 LangGraph local-dev persistence is anchored at `$FORGEFLOW_POLICY_STATE_DIR/langgraph`. The active

@@ -79,3 +79,25 @@ def test_operator_api_is_mounted_inside_the_existing_openswe_webapp() -> None:
     assert "from agent.webapp import app" in extension
     assert "include_router" in extension
     assert "8420" not in extension
+
+
+def test_invariant_supervisor_is_separate_low_frequency_failure_domain() -> None:
+    root = DEPLOY.parents[1]
+    config = json.loads((root / "langgraph.json").read_text(encoding="utf-8"))
+    assert config["graphs"]["invariant_reviewer"] == (
+        "forgeflow.invariant_reviewer_graph:get_invariant_reviewer_graph"
+    )
+    timer = (DEPLOY / "forgeflow-invariant-supervisor.timer.in").read_text(encoding="utf-8")
+    service = (DEPLOY / "forgeflow-invariant-supervisor.service.in").read_text(encoding="utf-8")
+    installer = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    assert "OnUnitActiveSec=1h" in timer
+    assert "run-invariant-supervisor.py" in service
+    assert "enable --now forgeflow-invariant-supervisor.timer" in installer
+
+
+def test_invariant_proposal_operator_view_is_read_only_and_bounded() -> None:
+    viewer = (DEPLOY / "show-invariant-proposals.py").read_text(encoding="utf-8")
+    assert "discover_proposals" in viewer
+    assert "pending_proposals" in viewer
+    assert "accepted_dynamic_rules" in viewer
+    assert "record_proposal_decision" not in viewer
