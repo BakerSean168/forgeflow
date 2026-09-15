@@ -304,8 +304,11 @@ def _evidence_id(item: UnknownFindingEvidence) -> str:
 def _validate_accepted_rule(
     candidate: InvariantProposalCandidate, decision: InvariantProposalDecision
 ) -> None:
-    if not decision.title.strip() or len(decision.title.strip()) > 100:
+    title = " ".join(decision.title.split())
+    if not title or len(title) > 100:
         raise ValueError("accepted proposal requires a bounded title")
+    if _unsafe_instruction(title):
+        raise ValueError("accepted proposal title contains unsafe instruction text")
     triggers = tuple(
         dict.fromkeys(_normalized_terms(item) for item in decision.triggers if item.strip())
     )
