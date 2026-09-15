@@ -58,6 +58,13 @@ class FakeThreads:
     async def get(self, thread_id, **kwargs):
         return self.rows[thread_id]
 
+    async def get_state(self, thread_id, **kwargs):
+        return {"values": dict(self.rows[thread_id].get("values", {}))}
+
+    async def update_state(self, thread_id, values, **kwargs):
+        self.rows[thread_id]["values"] = dict(values or {})
+        return {"checkpoint": {"checkpoint_id": "updated-state"}}
+
 
 class FakeRuns:
     def __init__(self, threads):
@@ -863,7 +870,40 @@ def test_operator_recover_command_is_explicit_and_separate_from_reconcile(
     client.threads.rows[thread_id]["values"].update(
         status="ESCALATED", last_failure_code="OPENSWE_PROVIDER_UNAVAILABLE"
     )
+    before = dict(client.threads.rows[thread_id]["values"])
     result = asyncio.run(api.recover_objective(thread_id, authorization="Bearer secret"))
     assert result["command"] == "recover"
-    assert client.runs.calls[-1][2]["input"] == {"recover_requested": True}
+    assert client.runs.calls[-1][2]["input"] == {}
     assert client.runs.calls[-1][2]["metadata"]["command"] == "recover"
+    persisted = client.threads.rows[thread_id]["values"]
+    assert persisted["recover_requested"] is True
+    for key, value in before.items():
+        assert persisted[key] == value
+
+
+def test_operator_cancel_patches_checkpoint_without_replacing_objective_state(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    created = asyncio.run(
+        api.create_objective(
+            api.ObjectiveCreate(projectKey="memoflow", objective="Keep durable fields"),
+            authorization="Bearer secret",
+        )
+    )
+    thread_id = created["threadId"]
+    client.threads.rows[thread_id]["values"].update(
+        status="IMPLEMENTING",
+        base_ref="main",
+        workspace_path="/tmp/existing",
+        implementation_thread_id="impl-1",
+    )
+    asyncio.run(api.cancel_objective(thread_id, authorization="Bearer secret"))
+    values = client.threads.rows[thread_id]["values"]
+    assert values["cancel_requested"] is True
+    assert values["objective"] == "Keep durable fields"
+    assert values["base_ref"] == "main"
+    assert values["workspace_path"] == "/tmp/existing"
+    assert values["implementation_thread_id"] == "impl-1"
+    assert client.runs.calls[-1][2]["input"] == {}
