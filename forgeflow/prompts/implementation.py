@@ -1,5 +1,7 @@
 """Deterministic implementation instructions layered onto an Open SWE objective."""
 
+from forgeflow.invariants import render_preflight
+
 
 def operation_trailer(operation_key: str) -> str:
     if not operation_key:
@@ -7,13 +9,17 @@ def operation_trailer(operation_key: str) -> str:
     return f"ForgeFlow-Operation: {operation_key}"
 
 
-def build_implementation_prompt(*, objective: str, operation_key: str, base_ref: str = "main") -> str:
+def build_implementation_prompt(
+    *, objective: str, operation_key: str, base_ref: str = "main"
+) -> str:
     trailer = operation_trailer(operation_key)
     if not base_ref.strip():
         raise ValueError("base_ref is required")
     return "\n".join(
         [
             objective.strip(),
+            "",
+            *render_preflight(objective),
             "",
             "ForgeFlow delivery evidence requirement:",
             f"- Base the task branch on `origin/{base_ref}` and open/update the PR against exactly `{base_ref}`.",
