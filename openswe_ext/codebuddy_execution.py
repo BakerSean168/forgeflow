@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
 import uuid
 from collections.abc import Mapping, Sequence
@@ -33,6 +34,8 @@ from openswe_ext.external_agent_execution import AcpWorkspaceExecutionAdapter
 
 _CONTAINER_AUTH_DIR = f"{CONTAINER_HOME}/.local/share/CodeBuddyExtension/Data/Public/auth"
 _CONTAINER_AUTH_FILE = f"{_CONTAINER_AUTH_DIR}/{OFFICIAL_AUTH_FILE}"
+_DEFAULT_MEMORY_LIMIT = "2g"
+_MEMORY_LIMIT_RE = re.compile(r"^[1-9][0-9]*[bkmg]?$", re.IGNORECASE)
 
 
 def _enabled(value: str | None) -> bool:
@@ -41,6 +44,13 @@ def _enabled(value: str | None) -> bool:
 
 def _projects(value: str | None) -> frozenset[str]:
     return frozenset(item.strip() for item in (value or "").split(",") if item.strip())
+
+
+def _memory_limit(value: str | None) -> str:
+    limit = (value or _DEFAULT_MEMORY_LIMIT).strip()
+    if not _MEMORY_LIMIT_RE.fullmatch(limit):
+        raise ExternalAgentRouteRejected("CODEBUDDY_MEMORY_LIMIT_INVALID")
+    return limit
 
 
 def _docker_environment(values: Mapping[str, str]) -> dict[str, str]:
@@ -63,6 +73,7 @@ def build_codebuddy_docker_args(
     auth_state_dir: Path,
     container_name: str,
     model: str,
+    memory_limit: str = _DEFAULT_MEMORY_LIMIT,
     image: str = DEFAULT_IMAGE,
     internet_environment: str = "internal",
     uid: int | None = None,
@@ -89,6 +100,7 @@ def build_codebuddy_docker_args(
         raise ExternalAgentRouteRejected("CODEBUDDY_CONTAINER_NAME_REQUIRED")
     if not model.strip():
         raise ExternalAgentRouteRejected("CODEBUDDY_MODEL_REQUIRED")
+    validated_memory_limit = _memory_limit(memory_limit)
 
     run_uid = os.getuid() if uid is None else uid
     run_gid = os.getgid() if gid is None else gid
@@ -113,7 +125,7 @@ def build_codebuddy_docker_args(
         "--pids-limit",
         "256",
         "--memory",
-        "2g",
+        validated_memory_limit,
         "--cpus",
         "2",
         "--user",
@@ -248,6 +260,7 @@ class CodeBuddyExternalAgentExecution:
         self._model = values.get("FORGEFLOW_CODEBUDDY_MODEL", "deepseek-v4.1-flash").strip()
         if not self._model:
             raise ExternalAgentRouteRejected("CODEBUDDY_MODEL_REQUIRED")
+        self._memory_limit = _memory_limit(values.get("FORGEFLOW_CODEBUDDY_MEMORY_LIMIT"))
         self._image = values.get(
             "FORGEFLOW_EXTERNAL_AGENT_DOCKER_IMAGE",
             "forgeflow/openswe-sandbox:bookworm-node24",
@@ -275,6 +288,7 @@ class CodeBuddyExternalAgentExecution:
             auth_state_dir=self._auth_state_dir,
             container_name=container_name,
             model=self._model,
+            memory_limit=self._memory_limit,
             image=self._image,
             internet_environment=self._internet_environment,
         )
