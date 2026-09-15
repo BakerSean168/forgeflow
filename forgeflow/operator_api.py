@@ -682,15 +682,22 @@ async def _command_objective(thread_id: str, *, command: str) -> dict[str, Any]:
     if command not in {"reconcile", "cancel", "recover"}:
         raise HTTPException(status_code=400, detail="unsupported ForgeFlow objective command")
     assistant_id = await _assistant_id(client)
-    inputs: dict[str, bool] = {}
-    if command == "cancel":
-        inputs["cancel_requested"] = True
-    elif command == "recover":
-        inputs["recover_requested"] = True
+    if command in {"cancel", "recover"}:
+        # LangGraph run input is not a PATCH. Supplying only a command flag can
+        # replace the durable graph channels for an existing objective. Patch the
+        # checkpoint state explicitly, then invoke reconciliation with empty
+        # input so the complete objective/workspace/evidence state is preserved.
+        state = await client.threads.get_state(thread_id)
+        raw_values = state.get("values") if isinstance(state, Mapping) else None
+        if not isinstance(raw_values, Mapping) or not raw_values:
+            raise HTTPException(status_code=409, detail="ForgeFlow objective state is unavailable")
+        values = dict(raw_values)
+        values["cancel_requested" if command == "cancel" else "recover_requested"] = True
+        await client.threads.update_state(thread_id, values)
     run = await client.runs.create(
         thread_id,
         assistant_id,
-        input=inputs,
+        input={},
         config={"configurable": {"thread_id": thread_id}},
         metadata={"kind": "forgeflow_policy_command", "command": command},
         multitask_strategy="enqueue",
