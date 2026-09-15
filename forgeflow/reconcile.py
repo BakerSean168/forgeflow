@@ -46,6 +46,7 @@ from forgeflow.evidence import (
     tracked_pr_target_failure,
     tracked_pull_request,
 )
+from forgeflow.learning import project_learning_lines, record_review_snapshot
 from forgeflow.models import RepositoryPolicy, RepositoryPreflight
 from forgeflow.policy import (
     apply_ci_decision,
@@ -871,6 +872,11 @@ async def _adopt_or_dispatch_initial(
                 objective=_required(state, "objective"),
                 operation_key=operation_key,
                 base_ref=_required(state, "base_ref"),
+                project_learning=project_learning_lines(
+                    owner=_required(state, "repo_owner"),
+                    repo=_required(state, "repo_name"),
+                    objective=_required(state, "objective"),
+                ),
             ),
             repo_owner=_required(state, "repo_owner"),
             repo_name=_required(state, "repo_name"),
@@ -1149,6 +1155,19 @@ async def _reconcile_review(state: ForgeFlowState, services: PolicyServices) -> 
         return escalate(state, target_failure)
     if final_pr.head_sha != head_sha:
         return observe_external_head(state, final_pr.head_sha)
+    # Learning is advisory and idempotent. Persist only after the official review
+    # and final PR evidence agree on the exact head; ledger failure must never
+    # participate in delivery acceptance.
+    try:
+        await asyncio.to_thread(
+            record_review_snapshot,
+            repository=f"{final_pr.owner}/{final_pr.repo}",
+            pr_number=final_pr.number,
+            head_sha=head_sha,
+            findings=snapshot.findings,
+        )
+    except (OSError, ValueError):
+        pass
     return apply_review_decision(state, decision)
 
 

@@ -9,3 +9,22 @@ Current rule families cover owner-validation parity, product time, identity owne
 Review repair prompts map finding text back to the same catalog. A repair must add a reproducing regression test where behavioral, scan an adjacent path that shares the invariant, and fix the root cause rather than only the reported line.
 
 This is intentionally the first learning layer. The static catalog makes repeated errors expensive only once while keeping ForgeFlow deterministic. A later durable finding ledger can persist project-specific rules after the catalog proves stable.
+
+## Evidence-backed project learning
+
+Successful exact-head official review snapshots are recorded in the local append-only
+`invariant-learning.jsonl` ledger. Raw finding text is retained only as bounded local
+audit evidence; it is never injected back into model prompts.
+
+Learning is conservative:
+
+- `open` findings are candidates only;
+- an explicit later `resolved` status validates the mapped invariant class;
+- the same invariant validated across at least two PRs is promoted;
+- `dismissed` findings are counter-evidence and never become prompt lessons;
+- findings that do not map to a known invariant remain auditable candidates rather
+  than automatically creating a new rule.
+
+Future implementation prompts receive only stable invariant IDs and aggregate counts
+for validated/promoted classes relevant to the new objective. The learning ledger is
+advisory: corruption or write failure must never block CI/review/delivery acceptance.
