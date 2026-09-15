@@ -65,12 +65,31 @@ def _config(tmp_path: Path, *, auto_merge=True) -> ContinuousProjectConfig:
     )
 
 
-def _thread(status: str, **values):
-    return {
-        "thread_id": "policy-1",
-        "values": {"status": status, **values},
-        "metadata": {"graph_id": "forgeflow", "project_key": "memoflow"},
+def _thread(status: str, *, thread_id: str = "policy-1", source: str = "hermes", **values):
+    defaults = {
+        "objective": "Continue canonical plan",
+        "repo_owner": "BakerSean168",
+        "repo_name": "memoflow",
+        "base_ref": "feat/convergence",
     }
+    defaults.update(values)
+    return {
+        "thread_id": thread_id,
+        "status": "idle",
+        "values": {"status": status, **defaults},
+        "metadata": {
+            "graph_id": "forgeflow",
+            "project_key": "memoflow",
+            "source": source,
+            "repo": {"owner": "BakerSean168", "name": "memoflow"},
+        },
+    }
+
+
+def _acceptance_thread(status: str, *, thread_id: str = "acceptance-1", **values):
+    row = _thread(status, thread_id=thread_id, source="forgeflow-acceptance", **values)
+    row["metadata"].pop("project_key", None)
+    return row
 
 
 def test_load_continuous_project_configs_uses_existing_manifest(tmp_path: Path, monkeypatch) -> None:
@@ -200,3 +219,52 @@ async def test_missing_plan_stops_project_without_new_objective(tmp_path: Path) 
     result = await module.supervise_project(client, "assistant", cfg)
     assert result == "plan-complete"
     assert client.runs.calls == []
+
+
+@pytest.mark.asyncio
+async def test_supervisor_discovers_legacy_acceptance_thread_by_repo_identity(tmp_path: Path) -> None:
+    legacy = _acceptance_thread(
+        "ESCALATED",
+        last_failure_code="OPENSWE_PROVIDER_UNAVAILABLE",
+    )
+    client = FakeClient([legacy])
+    result = await module.supervise_project(client, "assistant", _config(tmp_path))
+    assert result == "recovering:OPENSWE_PROVIDER_UNAVAILABLE"
+    assert client.runs.calls[0][0] == "acceptance-1"
+
+
+@pytest.mark.asyncio
+async def test_any_viable_active_objective_wins_over_newer_terminal_record(tmp_path: Path) -> None:
+    active = _acceptance_thread("REPAIRING", thread_id="active-old")
+    terminal = _thread(
+        "ESCALATED",
+        thread_id="terminal-new",
+        last_failure_code="OPENSWE_PROVIDER_UNAVAILABLE",
+    )
+    client = FakeClient([terminal, active])
+    result = await module.supervise_project(client, "assistant", _config(tmp_path))
+    assert result == "active:REPAIRING"
+    assert client.runs.calls == []
+
+
+@pytest.mark.asyncio
+async def test_malformed_graph_error_shell_does_not_mask_recoverable_objective(tmp_path: Path) -> None:
+    malformed = {
+        "thread_id": "broken-new",
+        "status": "error",
+        "values": {"status": "NEW", "objective": "quota reset continuation"},
+        "metadata": {
+            "graph_id": "forgeflow",
+            "project_key": "memoflow",
+            "repo": {"owner": "BakerSean168", "name": "memoflow"},
+        },
+    }
+    recoverable = _acceptance_thread(
+        "ESCALATED",
+        thread_id="routine-349",
+        last_failure_code="OPENSWE_PROVIDER_UNAVAILABLE",
+    )
+    client = FakeClient([malformed, recoverable])
+    result = await module.supervise_project(client, "assistant", _config(tmp_path))
+    assert result == "recovering:OPENSWE_PROVIDER_UNAVAILABLE"
+    assert client.runs.calls[0][0] == "routine-349"

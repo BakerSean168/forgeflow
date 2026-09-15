@@ -96,15 +96,68 @@ async def _assistant_id(client: Any) -> str:
     return str(matches[0]["assistant_id"])
 
 
-async def _latest_project_thread(client: Any, project_key: str) -> Mapping[str, Any] | None:
+def _thread_matches_project(row: Mapping[str, Any], config: ContinuousProjectConfig) -> bool:
+    metadata = row.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    if str(metadata.get("project_key") or "").casefold() == config.project_key.casefold():
+        return True
+    repo = metadata.get("repo")
+    if isinstance(repo, Mapping):
+        owner = str(repo.get("owner") or "")
+        name = str(repo.get("name") or repo.get("repo") or "")
+        if owner.casefold() == config.owner.casefold() and name.casefold() == config.repo.casefold():
+            return True
+    values = _values(row)
+    return (
+        str(values.get("repo_owner") or "").casefold() == config.owner.casefold()
+        and str(values.get("repo_name") or "").casefold() == config.repo.casefold()
+    )
+
+
+def _thread_has_execution_identity(row: Mapping[str, Any], config: ContinuousProjectConfig) -> bool:
+    values = _values(row)
+    return (
+        isinstance(values.get("objective"), str)
+        and bool(str(values.get("objective")).strip())
+        and str(values.get("repo_owner") or "").casefold() == config.owner.casefold()
+        and str(values.get("repo_name") or "").casefold() == config.repo.casefold()
+        and isinstance(values.get("base_ref"), str)
+        and bool(str(values.get("base_ref")).strip())
+    )
+
+
+async def _project_threads(client: Any, config: ContinuousProjectConfig) -> list[Mapping[str, Any]]:
+    # Legacy acceptance-created objectives predate project_key metadata. Search
+    # the graph as a whole and match the durable repository identity instead of
+    # treating one presentation field as task truth. The server returns newest
+    # first, so filtering preserves deterministic recency.
     rows = await client.threads.search(
-        metadata={"graph_id": "forgeflow", "project_key": project_key},
-        limit=20,
+        metadata={"graph_id": "forgeflow"},
+        limit=200,
         sort_by="updated_at",
         sort_order="desc",
     )
+    return [
+        row
+        for row in rows
+        if isinstance(row, Mapping) and _thread_matches_project(row, config)
+    ]
+
+
+def _select_project_thread(
+    rows: list[Mapping[str, Any]], config: ContinuousProjectConfig
+) -> Mapping[str, Any] | None:
+    # Any viable active objective wins even when a newer terminal record exists;
+    # this is the duplicate-writer guard. A graph-error shell without complete
+    # execution identity cannot dispatch a writer and must not permanently mask
+    # the last recoverable durable objective.
     for row in rows:
-        if isinstance(row, Mapping):
+        values = _values(row)
+        status = str(values.get("status") or "NEW")
+        if status in ACTIVE and _thread_has_execution_identity(row, config):
+            return row
+    for row in rows:
+        if _thread_has_execution_identity(row, config):
             return row
     return None
 
@@ -159,7 +212,8 @@ async def supervise_project(client: Any, assistant_id: str, config: ContinuousPr
     if not _plan_active(config):
         return "plan-complete"
 
-    latest = await _latest_project_thread(client, config.project_key)
+    rows = await _project_threads(client, config)
+    latest = _select_project_thread(rows, config)
     if latest is None:
         thread_id = await _create_objective(client, assistant_id, config)
         return f"created:{thread_id}"
