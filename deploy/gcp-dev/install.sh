@@ -128,6 +128,8 @@ render_unit "$root/deploy/gcp-dev/open-swe-codex-broker.service.in" "$unit_dir/o
 render_unit "$root/deploy/gcp-dev/forgeflow-policy.service.in" "$unit_dir/forgeflow-policy.service"
 render_unit "$root/deploy/gcp-dev/forgeflow-openswe-sandbox-gc.service.in" "$unit_dir/forgeflow-openswe-sandbox-gc.service"
 render_unit "$root/deploy/gcp-dev/forgeflow-openswe-sandbox-gc.timer.in" "$unit_dir/forgeflow-openswe-sandbox-gc.timer"
+render_unit "$root/deploy/gcp-dev/forgeflow-invariant-supervisor.service.in" "$unit_dir/forgeflow-invariant-supervisor.service"
+render_unit "$root/deploy/gcp-dev/forgeflow-invariant-supervisor.timer.in" "$unit_dir/forgeflow-invariant-supervisor.timer"
 
 systemctl --user daemon-reload
 systemctl --user enable open-swe-codex-broker.service
@@ -156,7 +158,7 @@ payload="$(curl -fsS -X POST -H "Authorization: Bearer $auth" -H 'content-type: 
   "http://127.0.0.1:$port/assistants/search" -d '{"limit":20}')"
 ASSISTANTS_JSON="$payload" python3 - <<'PY'
 import json, os
-expected={"agent","reviewer","analyzer","chat","scheduler","external_agent","forgeflow"}
+expected={"agent","reviewer","analyzer","chat","scheduler","external_agent","forgeflow","invariant_reviewer"}
 items=json.loads(os.environ["ASSISTANTS_JSON"])
 actual={item.get("graph_id") for item in items}
 missing=sorted(expected-actual)
@@ -164,5 +166,7 @@ if missing:
     raise SystemExit(f"missing graph ids: {missing}")
 print("graphs=", ",".join(sorted(expected)))
 PY
+
+systemctl --user enable --now forgeflow-invariant-supervisor.timer
 
 echo "ForgeFlow Policy service healthy on 127.0.0.1:$port"

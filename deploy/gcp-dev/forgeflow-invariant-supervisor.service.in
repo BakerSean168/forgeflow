@@ -1,0 +1,19 @@
+[Unit]
+Description=ForgeFlow invariant learning supervisor
+After=forgeflow-policy.service
+Requires=forgeflow-policy.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@ROOT@
+Environment=FORGEFLOW_POLICY_CONFIG_DIR=@CONFIG_DIR@
+Environment=FORGEFLOW_POLICY_STATE_DIR=@STATE_DIR@
+ExecStart=%h/.local/bin/uv run --directory @ROOT@ python @ROOT@/deploy/gcp-dev/run-invariant-supervisor.py --port @PORT@
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+TimeoutStartSec=10min

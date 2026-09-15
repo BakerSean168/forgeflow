@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically review mature ForgeFlow invariant proposals
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=forgeflow-invariant-supervisor.service
+
+[Install]
+WantedBy=timers.target

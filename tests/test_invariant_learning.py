@@ -193,3 +193,5 @@ def test_ledger_does_not_persist_raw_description(tmp_path: Path) -> None:
     )
     raw = json.loads(ledger.read_text().strip())
     assert "description" not in raw
+    assert "explanation" not in raw.get("evidence_terms", [])
+    assert "persist" not in raw.get("evidence_terms", [])
