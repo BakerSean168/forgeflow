@@ -114,7 +114,7 @@ def test_invariant_operator_views_use_project_python_and_run_outside_repo(tmp_pa
     for name in ("show-invariant-learning.py", "show-invariant-proposals.py"):
         script = DEPLOY / name
         assert script.read_text(encoding="utf-8").startswith(
-            "#!/usr/bin/env -S uv run --isolated --python 3.14 python\n"
+            "#!/usr/bin/env -S uv run --no-project --python 3.14 python\n"
         )
         result = subprocess.run(
             [str(script), "BakerSean168/MemoFlow"],
@@ -127,4 +127,5 @@ def test_invariant_operator_views_use_project_python_and_run_outside_repo(tmp_pa
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip().startswith(("[", "{"))
+        assert "Installed " not in result.stderr
         assert not (tmp_path / ".venv").exists()
