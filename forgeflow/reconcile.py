@@ -54,6 +54,7 @@ from forgeflow.policy import (
     apply_review_decision,
     cancel,
     clear_wait,
+    enter_resource_wait,
     escalate,
     mark_repair_dispatched,
     mark_repair_run_terminal,
@@ -62,7 +63,9 @@ from forgeflow.policy import (
     note_reviewer_run_failure,
     note_wait,
     observe_external_head,
+    recover_resource_escalation,
     start_implementation,
+    tick_resource_wait,
 )
 from forgeflow.projects import load_repository_policy, resolve_project_route
 from forgeflow.prompts.implementation import build_implementation_prompt, operation_trailer
@@ -597,6 +600,14 @@ async def reconcile_once(
     if not policy_thread_id:
         raise ReconcileError("policy thread_id is required")
 
+    if state.get("recover_requested"):
+        if state["status"] != "ESCALATED":
+            result = deepcopy(state)
+            result["recover_requested"] = False
+            state = result
+        else:
+            state = recover_resource_escalation(state)
+
     if state.get("cancel_requested") and state["status"] not in TERMINAL_STATUSES:
         return await _reconcile_cancel_request(
             state, policy_thread_id=policy_thread_id, services=services
@@ -630,6 +641,8 @@ async def reconcile_once(
         return await _reconcile_review(state, services)
     if status == "REPAIRING":
         return await _reconcile_repair(state, policy_thread_id, services)
+    if status == "WAITING_FOR_RESOURCE":
+        return tick_resource_wait(state)
     if status == "READY":
         return await _reconcile_ready(state, services)
     raise ReconcileError(f"unsupported policy status: {status}")
@@ -749,7 +762,9 @@ async def _reconcile_new(
             )
         )
         if route is None:
-            return escalate(state, "IMPLEMENTATION_ROUTE_UNAVAILABLE")
+            return enter_resource_wait(
+                state, "IMPLEMENTATION_ROUTE_UNAVAILABLE", resume_status="NEW"
+            )
         result = deepcopy(state)
         result["implementation_route_id"] = route.id
         result["implementation_runtime"] = route.runtime
@@ -811,12 +826,10 @@ async def _reconcile_implementation_run(
         failure_code=failure_code,
         failure_class=failure_class,
     )
-    if (
-        failure_class == "ROUTE_AVAILABILITY"
-        and services.automatic_route_fallback_enabled()
-        and not state.get("workspace_path")
-    ):
-        return _fallback_implementation_route(state, services, failure_code=failure_code)
+    if failure_class == "ROUTE_AVAILABILITY":
+        if services.automatic_route_fallback_enabled() and not state.get("workspace_path"):
+            return _fallback_implementation_route(state, services, failure_code=failure_code)
+        return enter_resource_wait(state, failure_code, resume_status="IMPLEMENTING")
     return note_child_run_failure(state, failure_code)
 
 
@@ -830,7 +843,9 @@ def _fallback_implementation_route(
         exclude_ids=frozenset(failed),
     )
     if route is None:
-        return escalate(state, "IMPLEMENTATION_ROUTE_EXHAUSTED")
+        return enter_resource_wait(
+            state, "IMPLEMENTATION_ROUTE_EXHAUSTED", resume_status="NEW"
+        )
     result = deepcopy(state)
     result["implementation_failed_route_ids"] = failed
     result["implementation_route_id"] = route.id
@@ -1147,6 +1162,10 @@ async def _reconcile_review(state: ForgeFlowState, services: PolicyServices) -> 
     if snapshot.run_status in _PENDING_RUN_STATUSES:
         return state
     if snapshot.run_status != "success":
+        if snapshot.failure_code == "OPENSWE_PROVIDER_UNAVAILABLE":
+            return enter_resource_wait(
+                state, "REVIEWER_PROVIDER_UNAVAILABLE", resume_status="REVIEWING"
+            )
         return note_reviewer_run_failure(state, f"REVIEWER_RUN_{snapshot.run_status.upper()}")
     try:
         decision = review_decision(snapshot, expected_head_sha=head_sha)
@@ -1309,13 +1328,17 @@ async def _reconcile_repair(
         result["last_failure_code"] = None
         return result
     failure_code = snapshot.failure_code or f"REPAIR_RUN_{snapshot.status.upper()}"
+    failure_class = classify_failure_code(failure_code)
     await _finish_openswe_attempt_for_state(
         state,
         services,
         outcome="FAILED",
         failure_code=failure_code,
+        failure_class=failure_class,
         source_revision=rejected_head,
     )
+    if failure_class == "ROUTE_AVAILABILITY":
+        return enter_resource_wait(state, failure_code, resume_status="REPAIRING")
     return note_child_run_failure(state, failure_code)
 
 
@@ -1409,11 +1432,15 @@ def _completed_implementation_operation_key(state: ForgeFlowState) -> str:
 def _review_operation_key(state: ForgeFlowState) -> str:
     head_sha = state.get("observed_head_sha") or "missing-head"
     retry = state.get("reviewer_retry_count", 0)
-    return f"review:{head_sha}:retry:{retry}"
+    key = f"review:{head_sha}:retry:{retry}"
+    resource_epoch = state.get("resource_retry_count", 0)
+    return f"{key}:resource:{resource_epoch}" if resource_epoch else key
 
 
 def _implementation_operation_key(policy_thread_id: str, state: ForgeFlowState) -> str:
-    return f"implementation:{policy_thread_id}:retry:{state.get('run_retry_count', 0)}"
+    key = f"implementation:{policy_thread_id}:retry:{state.get('run_retry_count', 0)}"
+    resource_epoch = state.get("resource_retry_count", 0)
+    return f"{key}:resource:{resource_epoch}" if resource_epoch else key
 
 
 def _repair_operation_key(
@@ -1422,7 +1449,9 @@ def _repair_operation_key(
     round_number = state.get("repair_round", 0) + (1 if fresh else 0)
     head_sha = state.get("observed_head_sha") or "missing-head"
     retry = state.get("run_retry_count", 0)
-    return f"repair:{policy_thread_id}:{head_sha}:round:{round_number}:retry:{retry}"
+    key = f"repair:{policy_thread_id}:{head_sha}:round:{round_number}:retry:{retry}"
+    resource_epoch = state.get("resource_retry_count", 0)
+    return f"{key}:resource:{resource_epoch}" if resource_epoch else key
 
 
 def _normalize_state(raw: ForgeFlowState) -> ForgeFlowState:
@@ -1435,7 +1464,11 @@ def _normalize_state(raw: ForgeFlowState) -> ForgeFlowState:
     state.setdefault("blocking_finding_ids", [])
     state.setdefault("last_failure_code", None)
     state.setdefault("cancel_requested", False)
+    state.setdefault("recover_requested", False)
     state.setdefault("implementation_failed_route_ids", [])
+    state.setdefault("resource_resume_status", None)
+    state.setdefault("resource_retry_count", 0)
+    state.setdefault("resource_wait_count", 0)
     if state.get("implementation_thread_id") and not state.get("implementation_route_id"):
         state["implementation_route_id"] = _LEGACY_IMPLEMENTATION_ROUTE_ID
         state["implementation_runtime"] = "OPEN_SWE"

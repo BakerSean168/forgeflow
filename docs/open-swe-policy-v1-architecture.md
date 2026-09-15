@@ -367,7 +367,7 @@ Each policy run:
 6. persists the new policy state;
 7. exits.
 
-A non-terminal policy thread is re-invoked by a LangGraph cron/wakeup. This includes `READY`, which remains monitored for PR head drift. `ESCALATED` and `CANCELLED` are the only terminal statuses and remove the reconcile cron.
+A non-terminal policy thread is re-invoked by a LangGraph cron/wakeup. This includes `READY`, which remains monitored for PR head drift, and `WAITING_FOR_RESOURCE`, which retries only after the current 1/2/4/8/16/30-minute backoff window. `ESCALATED` and `CANCELLED` remove the reconcile cron. The explicit recovery command is deliberately narrow: only known resource-availability failure codes can recreate the cron and resume the same durable objective/workspace.
 
 This keeps crash recovery simple: the next reconciliation re-observes authoritative external state before taking another action.
 
@@ -568,7 +568,7 @@ Because compatibility is intentionally broken, only these contracts survive the 
 3. **Quality philosophy:** model claims never outrank deterministic evidence.
 4. **Independent review:** implementation and acceptance remain distinct roles.
 5. **Exact-revision acceptance:** CI and review must apply to the exact current head.
-6. **Bounded autonomy:** retries/repairs settle into monitored `READY` or terminal `ESCALATED`/`CANCELLED`; budgets prevent unbounded loops.
+6. **Bounded engineering autonomy, durable resource waiting:** code/no-progress/review repair budgets still prevent unbounded model loops. Transient provider/runtime exhaustion does not consume those budgets; it settles into monitored `WAITING_FOR_RESOURCE` with capped exponential backoff and resumes the same objective when capacity returns.
 7. **No secret persistence in repo/policy state.**
 
 Explicitly retired contracts:
@@ -580,6 +580,26 @@ Explicitly retired contracts:
 - retired worktree/resource/provider/release APIs;
 - retired deployment ports and systemd topology;
 - retired database backup compatibility.
+
+
+### Continuous project supervisor
+
+Repositories may opt into `continuous_supervisor` in the existing project manifest. This is a
+stateless one-shot driver, not a second workflow database or project queue. Every invocation reads
+only: (1) repository-owned configured active plan paths, (2) ForgeFlow LangGraph objective threads,
+and (3) authoritative GitHub PR state. It performs at most one bounded action per project.
+
+- An active objective, including `WAITING_FOR_RESOURCE`, is left alone.
+- A whitelisted resource-only `ESCALATED` objective receives the explicit `recover_requested` command.
+- A non-resource escalation remains blocked for operator/human review.
+- An exact-head `READY` objective may be auto-merged only when the project explicitly enables
+  `auto_merge_ready`; the merge request carries the exact reviewed SHA and never force-updates refs.
+- After the accepted head is on the configured base branch and a configured canonical plan file still
+  exists, the supervisor creates exactly one next objective whose implementation agent must select a
+  dependency-ready ticket from that repository plan.
+
+This gives unattended overnight progression without duplicating task truth inside ForgeFlow. Removing
+or archiving the configured plan file is the deterministic stop signal.
 
 ## 18. Current repository layout
 
@@ -652,6 +672,7 @@ Docker
 systemd timer
   +-- forgeflow-openswe-sandbox-gc.timer -> conservative idle sandbox cleanup
   +-- forgeflow-invariant-supervisor.timer -> low-frequency proposal learning supervisor
+  +-- forgeflow-project-supervisor.timer   -> stateless opt-in canonical-plan continuation/recovery
 ```
 
 LangGraph local-dev persistence is anchored at `$FORGEFLOW_POLICY_STATE_DIR/langgraph`. The active

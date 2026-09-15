@@ -1047,12 +1047,13 @@ async def test_workspace_bound_openswe_outage_retries_without_external_handoff()
         state, policy_thread_id="policy-workspace-provider-outage", services=services
     )
 
-    assert retried["status"] == "IMPLEMENTING"
+    assert retried["status"] == "WAITING_FOR_RESOURCE"
     assert retried["implementation_route_id"] == openswe.id
     assert retried["implementation_runtime"] == "OPEN_SWE"
     assert retried["implementation_thread_id"] == "openswe-thread"
     assert retried["implementation_run_id"] is None
-    assert retried["run_retry_count"] == 1
+    assert retried["run_retry_count"] == 0
+    assert retried["resource_retry_count"] == 1
     assert retried["last_failure_code"] == "OPENSWE_PROVIDER_UNAVAILABLE"
     assert retried.get("implementation_failed_route_ids", []) == []
     assert retried["workspace_path"] == "/tmp/existing-worktree"
@@ -1164,8 +1165,9 @@ async def test_route_availability_exhaustion_escalates_without_retrying_failed_r
     services.child_failure_code["external-run"] = "ANTIGRAVITY_PROCESS_EXITED"
     services.child_failure_class["external-run"] = "ROUTE_AVAILABILITY"
     result = await reconcile_once(state, policy_thread_id="policy-exhausted", services=services)
-    assert result["status"] == "ESCALATED"
+    assert result["status"] == "WAITING_FOR_RESOURCE"
     assert result["last_failure_code"] == "IMPLEMENTATION_ROUTE_EXHAUSTED"
+    assert result["resource_resume_status"] == "NEW"
 
 
 @pytest.mark.asyncio
@@ -1201,7 +1203,9 @@ async def test_route_availability_does_not_fall_through_while_global_gate_is_dis
     result = await reconcile_once(state, policy_thread_id="policy-gated", services=services)
     assert result["implementation_route_id"] == external.id
     assert result["implementation_run_id"] is None
-    assert result["run_retry_count"] == 1
+    assert result["status"] == "WAITING_FOR_RESOURCE"
+    assert result["run_retry_count"] == 0
+    assert result["resource_retry_count"] == 1
     assert result.get("implementation_failed_route_ids", []) == []
 
 @pytest.mark.asyncio
@@ -2089,3 +2093,56 @@ async def test_head_race_does_not_record_stale_review_learning(
     assert result["status"] == "WAITING_FOR_CI"
     assert result["observed_head_sha"] == HEAD2
     assert not ledger.exists()
+
+
+@pytest.mark.asyncio
+async def test_resource_escalation_recovery_reinstalls_cron_and_resumes_same_workspace() -> None:
+    services = FakeServices(cron_id="cron-recovered")
+    state = _base_state("ESCALATED")
+    state.update(
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        implementation_thread_id="implementation-thread",
+        implementation_run_id="failed-run",
+        workspace_path="/tmp/existing-worktree",
+        last_failure_code="OPENSWE_PROVIDER_UNAVAILABLE",
+        recover_requested=True,
+        reconcile_cron_id=None,
+    )
+    recovered = await reconcile_once(state, policy_thread_id="policy-resource-recovery", services=services)
+    assert recovered["status"] == "WAITING_FOR_RESOURCE"
+    assert recovered["reconcile_cron_id"] == "cron-recovered"
+    assert recovered["implementation_thread_id"] == "implementation-thread"
+    assert recovered["implementation_run_id"] is None
+    assert recovered["recover_requested"] is False
+
+    resumed = await reconcile_once(recovered, policy_thread_id="policy-resource-recovery", services=services)
+    assert resumed["status"] == "IMPLEMENTING"
+
+
+@pytest.mark.asyncio
+async def test_reviewer_provider_outage_waits_for_resource_instead_of_escalating() -> None:
+    services = FakeServices(cron_id="cron-1", pr=_pr(HEAD1))
+    pair = ("review-thread", "review-run")
+    services.current_review = pair
+    services.review_snapshots[pair] = ReviewerSnapshot(
+        thread_id=pair[0],
+        run_id=pair[1],
+        run_status="error",
+        last_reviewed_sha="",
+        findings=(),
+        failure_code="OPENSWE_PROVIDER_UNAVAILABLE",
+    )
+    state = _base_state("REVIEWING")
+    state.update(
+        pr_url=PR,
+        observed_head_sha=HEAD1,
+        ci_head_sha=HEAD1,
+        reviewer_thread_id=pair[0],
+        reviewer_run_id=pair[1],
+    )
+    result = await reconcile_once(state, policy_thread_id="review-provider-outage", services=services)
+    assert result["status"] == "WAITING_FOR_RESOURCE"
+    assert result["resource_resume_status"] == "REVIEWING"
+    assert result["last_failure_code"] == "REVIEWER_PROVIDER_UNAVAILABLE"
+    assert result["reviewer_run_id"] is None

@@ -129,3 +129,17 @@ def test_invariant_operator_views_use_project_python_and_run_outside_repo(tmp_pa
         assert result.stdout.strip().startswith(("[", "{"))
         assert "Installed " not in result.stderr
         assert not (tmp_path / ".venv").exists()
+
+
+def test_project_supervisor_is_stateless_opt_in_and_runs_frequently() -> None:
+    timer = (DEPLOY / "forgeflow-project-supervisor.timer.in").read_text(encoding="utf-8")
+    service = (DEPLOY / "forgeflow-project-supervisor.service.in").read_text(encoding="utf-8")
+    installer = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    defaults = json.loads((DEPLOY / "projects.default.json").read_text(encoding="utf-8"))
+    memoflow = next(item for item in defaults if item.get("project_key") == "memoflow")
+    assert "OnUnitActiveSec=2min" in timer
+    assert "run-project-supervisor.py" in service
+    assert "EnvironmentFile=-@CONFIG_DIR@/github-app.env" in service
+    assert "enable --now forgeflow-project-supervisor.timer" in installer
+    assert memoflow["continuous_supervisor"]["enabled"] is False
+    assert memoflow["continuous_supervisor"]["auto_merge_ready"] is True

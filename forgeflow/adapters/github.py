@@ -316,3 +316,49 @@ async def fetch_ci_signals(pr: PullRequestEvidence) -> CiSignals | None:
 
 def _string(value: Any) -> str:
     return value if isinstance(value, str) else ""
+
+
+async def merge_pull_request_exact_head(
+    pr: PullRequestEvidence,
+    *,
+    expected_head_sha: str,
+    merge_method: str = "merge",
+) -> bool:
+    """Merge an already accepted PR only when GitHub still exposes the exact reviewed head.
+
+    Returns True when GitHub reports a successful merge, False for an ordinary
+    mergeability/branch-policy refusal, and raises when authoritative evidence
+    cannot be obtained. No force update or branch mutation is attempted.
+    """
+    if merge_method not in {"merge", "squash", "rebase"}:
+        raise ValueError("unsupported merge method")
+    if pr.head_sha != expected_head_sha or not expected_head_sha:
+        raise GitHubEvidenceError("PR_MERGE_HEAD_MISMATCH")
+    scoped = await _repository_token(
+        pr.owner,
+        pr.repo,
+        permissions={"contents": "write", "pull_requests": "write"},
+    )
+    if scoped is None:
+        raise GitHubEvidenceError("PR_MERGE_PERMISSION_UNAVAILABLE")
+    _installation_id, token = scoped
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        async with httpx2.AsyncClient(timeout=20) as client:
+            response = await client.put(
+                f"https://api.github.com/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/merge",
+                headers=headers,
+                json={"sha": expected_head_sha, "merge_method": merge_method},
+            )
+    except httpx2.RequestError as exc:
+        raise GitHubEvidenceError("PR_MERGE_EVIDENCE_UNAVAILABLE") from exc
+    if response.status_code == 200:
+        payload = response.json()
+        return bool(isinstance(payload, dict) and payload.get("merged") is True)
+    if response.status_code in {405, 409, 422}:
+        return False
+    raise GitHubEvidenceError(f"PR_MERGE_HTTP_{response.status_code}")

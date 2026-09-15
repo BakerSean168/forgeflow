@@ -41,6 +41,7 @@ def test_every_status_has_an_explicit_successor_set() -> None:
         "WAITING_FOR_CI",
         "REVIEWING",
         "REPAIRING",
+        "WAITING_FOR_RESOURCE",
         "READY",
         "ESCALATED",
         "CANCELLED",
@@ -243,3 +244,52 @@ def test_head_epoch_change_resets_external_wait_budget() -> None:
 def test_wait_budget_exposes_longer_bounded_windows_for_ci_and_reviewer() -> None:
     assert DEFAULT_BUDGET.ci_pending_reconciles > DEFAULT_BUDGET.external_evidence_reconciles
     assert DEFAULT_BUDGET.reviewer_running_reconciles > DEFAULT_BUDGET.external_evidence_reconciles
+
+
+def test_resource_wait_uses_exponential_backoff_without_becoming_terminal() -> None:
+    from forgeflow.policy import enter_resource_wait, tick_resource_wait
+
+    state = initial_state(objective="x", repo_owner="o", repo_name="r")
+    state = start_implementation(state)
+    waiting = enter_resource_wait(state, "OPENSWE_PROVIDER_UNAVAILABLE")
+    assert waiting["status"] == "WAITING_FOR_RESOURCE"
+    assert waiting["resource_retry_count"] == 1
+    resumed = tick_resource_wait(waiting)
+    assert resumed["status"] == "IMPLEMENTING"
+
+    waiting = enter_resource_wait(resumed, "OPENSWE_PROVIDER_UNAVAILABLE")
+    first_tick = tick_resource_wait(waiting)
+    assert first_tick["status"] == "WAITING_FOR_RESOURCE"
+    assert first_tick["resource_wait_count"] == 1
+    resumed = tick_resource_wait(first_tick)
+    assert resumed["status"] == "IMPLEMENTING"
+
+
+def test_only_resource_escalations_can_be_explicitly_recovered() -> None:
+    from forgeflow.policy import PolicyViolation, recover_resource_escalation
+
+    state = initial_state(objective="x", repo_owner="o", repo_name="r")
+    state["status"] = "ESCALATED"
+    state["last_failure_code"] = "OPENSWE_PROVIDER_UNAVAILABLE"
+    recovered = recover_resource_escalation(state)
+    assert recovered["status"] == "WAITING_FOR_RESOURCE"
+    assert recovered["resource_resume_status"] == "IMPLEMENTING"
+
+    state["last_failure_code"] = "REPAIR_BUDGET_EXHAUSTED"
+    with pytest.raises(PolicyViolation):
+        recover_resource_escalation(state)
+
+
+def test_successful_implementation_evidence_resets_resource_backoff_epoch() -> None:
+    state = initial_state(objective="x", repo_owner="o", repo_name="r")
+    state = start_implementation(state)
+    state["resource_retry_count"] = 5
+    state["resource_wait_count"] = 7
+    state["resource_resume_status"] = "IMPLEMENTING"
+    state = mark_run_terminal(state)
+    accepted = apply_implementation_evidence(
+        state, ImplementationEvidence(pr_url=PR, pr_number=1, head_sha=HEAD_A, progressed=True)
+    )
+    assert accepted["resource_retry_count"] == 0
+    assert accepted["resource_wait_count"] == 0
+    assert accepted["resource_resume_status"] is None

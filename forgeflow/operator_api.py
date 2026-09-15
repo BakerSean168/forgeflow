@@ -50,7 +50,15 @@ from openswe_ext.resource_observability import (
 router = APIRouter(prefix="/forgeflow/api/v1", tags=["forgeflow-operator"])
 
 _ACTIVE_STATUSES = frozenset(
-    {"NEW", "IMPLEMENTING", "VERIFYING", "WAITING_FOR_CI", "REVIEWING", "REPAIRING"}
+    {
+        "NEW",
+        "IMPLEMENTING",
+        "VERIFYING",
+        "WAITING_FOR_CI",
+        "REVIEWING",
+        "REPAIRING",
+        "WAITING_FOR_RESOURCE",
+    }
 )
 _PROVIDER_FAILURE_CODES = frozenset(
     {
@@ -397,6 +405,9 @@ def _objective_view(thread: Mapping[str, Any], lookup: Mapping[str, str], *, ful
         "blockingFindingIds": values.get("blocking_finding_ids", []),
         "waitStage": values.get("wait_stage"),
         "waitCount": values.get("wait_count", 0),
+        "resourceResumeStatus": values.get("resource_resume_status"),
+        "resourceRetryCount": values.get("resource_retry_count", 0),
+        "resourceWaitCount": values.get("resource_wait_count", 0),
         "lastFailureCode": values.get("last_failure_code"),
         "prUrl": values.get("pr_url"),
         "prNumber": values.get("pr_number"),
@@ -663,27 +674,50 @@ async def get_objective(thread_id: str, authorization: str | None = Header(defau
     return await _enrich_objective(client, _objective_view(thread, _project_lookup(_load_projects()), full=True))
 
 
-async def _command_objective(thread_id: str, *, cancel_requested: bool) -> dict[str, Any]:
+async def _command_objective(thread_id: str, *, command: str) -> dict[str, Any]:
     client = _client()
     thread = await client.threads.get(thread_id, include=["values"])
     if not isinstance(thread, Mapping) or not _is_forgeflow_thread(thread):
         raise HTTPException(status_code=404, detail="ForgeFlow objective not found")
+    if command not in {"reconcile", "cancel", "recover"}:
+        raise HTTPException(status_code=400, detail="unsupported ForgeFlow objective command")
     assistant_id = await _assistant_id(client)
+    inputs: dict[str, bool] = {}
+    if command == "cancel":
+        inputs["cancel_requested"] = True
+    elif command == "recover":
+        inputs["recover_requested"] = True
     run = await client.runs.create(
         thread_id,
         assistant_id,
-        input={"cancel_requested": True} if cancel_requested else {},
+        input=inputs,
         config={"configurable": {"thread_id": thread_id}},
-        metadata={"kind": "forgeflow_policy_command", "command": "cancel" if cancel_requested else "reconcile"},
+        metadata={"kind": "forgeflow_policy_command", "command": command},
         multitask_strategy="enqueue",
     )
-    return {"planId": thread_id, "threadId": thread_id, "runId": run.get("run_id") if isinstance(run, Mapping) else None, "accepted": True}
+    return {
+        "planId": thread_id,
+        "threadId": thread_id,
+        "runId": run.get("run_id") if isinstance(run, Mapping) else None,
+        "accepted": True,
+        "command": command,
+    }
 
 
 @router.post("/objectives/{thread_id}/reconcile")
 async def reconcile_objective(thread_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_operator_auth(authorization)
-    return await _command_objective(thread_id, cancel_requested=False)
+    return await _command_objective(thread_id, command="reconcile")
+
+
+@router.post("/objectives/{thread_id}/recover")
+async def recover_objective(
+    thread_id: str,
+    body: ObjectiveCommand | None = None,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_operator_auth(authorization)
+    return await _command_objective(thread_id, command="recover")
 
 
 @router.post("/objectives/{thread_id}/cancel")
@@ -693,7 +727,7 @@ async def cancel_objective(
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     require_operator_auth(authorization)
-    return await _command_objective(thread_id, cancel_requested=True)
+    return await _command_objective(thread_id, command="cancel")
 
 
 def _route_view(

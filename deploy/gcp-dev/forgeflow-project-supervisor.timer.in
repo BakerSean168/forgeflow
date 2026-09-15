@@ -1,0 +1,11 @@
+[Unit]
+Description=Continuously advance configured ForgeFlow projects
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=forgeflow-project-supervisor.service
+
+[Install]
+WantedBy=timers.target

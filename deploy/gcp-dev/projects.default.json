@@ -5,8 +5,12 @@
     "name": "Digital Biome",
     "repo": "BakerSean168/digital-biome",
     "ci_required": true,
-    "required_checks": ["Type Check"],
-    "sandbox_read_repositories": ["BakerSean168/thought-forest"]
+    "required_checks": [
+      "Type Check"
+    ],
+    "sandbox_read_repositories": [
+      "BakerSean168/thought-forest"
+    ]
   },
   {
     "project_key": "forgeflow",
@@ -14,9 +18,16 @@
     "name": "ForgeFlow",
     "repo": "BakerSean168/forgeflow",
     "ci_required": true,
-    "required_checks": ["verify"],
+    "required_checks": [
+      "verify"
+    ],
     "sandbox_read_repositories": [],
-    "external_agent_test_command": ["uv", "run", "pytest", "-q"]
+    "external_agent_test_command": [
+      "uv",
+      "run",
+      "pytest",
+      "-q"
+    ]
   },
   {
     "project_key": "memoflow",
@@ -35,11 +46,34 @@
       "Delivery Observation"
     ],
     "sandbox_read_repositories": [],
-    "external_agent_test_command": ["pnpm", "test"],
+    "external_agent_test_command": [
+      "pnpm",
+      "test"
+    ],
     "route_preferences": [
-      {"role": "IMPLEMENT", "route_id": "codebuddy-account-primary"},
-      {"role": "REASONING", "route_id": "openswe-reviewer"}
-    ]
+      {
+        "role": "IMPLEMENT",
+        "route_id": "codebuddy-account-primary"
+      },
+      {
+        "role": "REASONING",
+        "route_id": "openswe-reviewer"
+      }
+    ],
+    "continuous_supervisor": {
+      "enabled": false,
+      "base_ref": "feat/system-wide-vnext-convergence",
+      "plan_paths": [
+        "docs/plan/active/2026-09-09-system-wide-vnext-model-convergence-implementation.md"
+      ],
+      "objective": "Continue MemoFlow from the repository-owned canonical active implementation plan. Select exactly one dependency-ready incomplete ticket, first reconcile any existing work or open PR for that ticket, implement the smallest coherent vertical slice, update the canonical plan evidence, run focused then required validation, commit and deliver a PR. Do not resurrect retired compatibility models, do not duplicate an active writer, and do not invent work outside the active plan.",
+      "acceptance_criteria": [
+        "The selected ticket has concrete implementation and plan evidence.",
+        "Required focused tests and repository gates for the changed scope pass.",
+        "The delivered PR targets feat/system-wide-vnext-convergence and is safe for exact-head review."
+      ],
+      "auto_merge_ready": true
+    }
   },
   {
     "project_key": "bodysense",
@@ -56,6 +90,9 @@
       "Delivery Observation"
     ],
     "sandbox_read_repositories": [],
-    "external_agent_test_command": ["pnpm", "test"]
+    "external_agent_test_command": [
+      "pnpm",
+      "test"
+    ]
   }
 ]
