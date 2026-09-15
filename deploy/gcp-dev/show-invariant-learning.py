@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --isolated --python 3.14 python
 """Show bounded ForgeFlow project invariant-learning summary."""
 
 from __future__ import annotations
