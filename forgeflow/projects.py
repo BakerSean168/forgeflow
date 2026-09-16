@@ -14,6 +14,7 @@ from forgeflow.routing import (
     RouteRole,
     parse_project_route_preferences,
 )
+from forgeflow.task_graph import TaskGraphSpec, TaskSpec, load_task_graph
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +158,15 @@ class ContinuousProjectConfig:
     auto_merge_ready: bool
     max_parallel_mutations: int = 1
     lanes: tuple[ContinuousLaneConfig, ...] = ()
+    task_graph_path: Path | None = None
+    task_graph: TaskGraphSpec | None = None
+    ai_decomposition_enabled: bool = False
+
+    @property
+    def execution_tasks(self) -> tuple[ContinuousLaneConfig | TaskSpec, ...]:
+        if self.task_graph is not None:
+            return self.task_graph.tasks
+        return self.lanes
 
 
 def _string_list(value: object, *, label: str) -> tuple[str, ...]:
@@ -241,12 +251,50 @@ def _continuous_lanes(
     return tuple(lanes)
 
 
+def _repo_path(cwd: Path, value: str, *, label: str) -> Path:
+    path = (cwd / value).resolve(strict=False)
+    if cwd not in path.parents and path != cwd:
+        raise ValueError(f"{label} escapes repository")
+    return path
+
+
+def _load_project_task_graph(
+    spec: dict[str, object], *, cwd: Path, repo_full: str
+) -> tuple[Path | None, TaskGraphSpec | None]:
+    raw_path = spec.get("task_graph_path")
+    if raw_path is None:
+        return None, None
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError(f"continuous supervisor {repo_full} task_graph_path must be a string")
+    path = _repo_path(
+        cwd,
+        raw_path.strip(),
+        label=f"continuous supervisor {repo_full} task graph path",
+    )
+    graph = load_task_graph(path)
+    refs = set(graph.context_refs)
+    for task in graph.tasks:
+        refs.update(task.context_refs)
+    for ref in sorted(refs):
+        resolved = _repo_path(
+            cwd,
+            ref,
+            label=f"continuous supervisor {repo_full} task graph context ref {ref}",
+        )
+        if not resolved.is_file():
+            raise ValueError(
+                f"continuous supervisor {repo_full} task graph context ref is unavailable: {ref}"
+            )
+    return path, graph
+
+
 def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
     """Load opt-in unattended project continuation from the existing project manifest.
 
-    Repository plan files remain task truth and LangGraph objective threads remain
-    execution truth. Optional lane configuration adds bounded, dependency-aware
-    parallelism without creating a second task database.
+    Repository plans/TaskGraphs remain planning truth and LangGraph objective
+    threads remain execution truth. First-class TaskGraph input or legacy lane
+    configuration adds bounded dependency-aware parallelism without creating a
+    second workflow database.
     """
     raw_path = os.environ.get("OPEN_SWE_LOCAL_PROJECTS_FILE", "").strip()
     if not raw_path:
@@ -275,17 +323,27 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
         owner, repo = repo_full.split("/", 1)
         project_key = str(raw.get("project_key") or repo).strip().casefold()
         base_ref = str(spec.get("base_ref") or raw.get("default_branch") or "main").strip()
+        task_graph_path, task_graph = _load_project_task_graph(
+            spec, cwd=cwd, repo_full=repo_full
+        )
         objective = str(spec.get("objective") or "").strip()
+        if task_graph is not None:
+            objective = task_graph.objective
         paths = spec.get("plan_paths")
         criteria = spec.get("acceptance_criteria", [])
         auto_merge = spec.get("auto_merge_ready", False)
         max_parallel = spec.get("max_parallel_mutations", 1)
+        ai_decomposition_enabled = spec.get("ai_decomposition_enabled", False)
         if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= 4:
             raise ValueError(
                 f"continuous supervisor {repo_full} max_parallel_mutations must be an integer from 1 to 4"
             )
         if not project_key or not base_ref or not objective:
             raise ValueError(f"continuous supervisor {repo_full} has incomplete configuration")
+        if not isinstance(ai_decomposition_enabled, bool):
+            raise TypeError(
+                f"continuous supervisor {repo_full} ai_decomposition_enabled must be boolean"
+            )
         if not isinstance(paths, list) or not paths or any(
             not isinstance(item, str) or not item.strip() for item in paths
         ):
@@ -297,9 +355,23 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
         if not isinstance(auto_merge, bool):
             raise TypeError(f"continuous supervisor {repo_full} auto_merge_ready must be boolean")
         lanes = _continuous_lanes(spec, repo_full=repo_full)
-        plan_paths = tuple((cwd / item).resolve(strict=False) for item in paths)
-        if any(cwd not in path.parents and path != cwd for path in plan_paths):
-            raise ValueError(f"continuous supervisor {repo_full} plan path escapes repository")
+        if task_graph is not None and lanes:
+            raise ValueError(
+                f"continuous supervisor {repo_full} cannot configure both lanes and task_graph_path"
+            )
+        plan_paths = tuple(
+            _repo_path(
+                cwd,
+                item,
+                label=f"continuous supervisor {repo_full} plan path",
+            )
+            for item in paths
+        )
+        combined_criteria = tuple(item.strip() for item in criteria if item.strip())
+        if task_graph is not None:
+            combined_criteria = tuple(
+                dict.fromkeys((*task_graph.acceptance_criteria, *combined_criteria))
+            )
         configs.append(
             ContinuousProjectConfig(
                 project_key=project_key,
@@ -309,10 +381,13 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
                 base_ref=base_ref,
                 plan_paths=plan_paths,
                 objective=objective,
-                acceptance_criteria=tuple(item.strip() for item in criteria if item.strip()),
+                acceptance_criteria=combined_criteria,
                 auto_merge_ready=auto_merge,
                 max_parallel_mutations=max_parallel,
                 lanes=lanes,
+                task_graph_path=task_graph_path,
+                task_graph=task_graph,
+                ai_decomposition_enabled=ai_decomposition_enabled,
             )
         )
     return tuple(configs)

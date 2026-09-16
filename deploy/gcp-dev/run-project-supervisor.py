@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Stateless project continuation supervisor for unattended ForgeFlow runs.
 
-Repository plan files remain task truth and LangGraph ForgeFlow threads remain
-execution truth. The legacy mode advances one project objective at a time.
-Optional configured lanes enable bounded dependency-aware parallelism while
-keeping each mutation lane in an independent ForgeFlow objective/sandbox.
+Repository-owned plans/task graphs remain planning truth and LangGraph
+ForgeFlow threads remain execution truth. The legacy mode advances one project
+objective at a time. Execution-ready task graphs are projected onto bounded
+mutation slots while every task keeps an independent ForgeFlow objective/sandbox.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from forgeflow.projects import (
     ContinuousProjectConfig,
     load_continuous_project_configs,
 )
+from forgeflow.task_graph import TaskSpec
 
 ACTIVE = frozenset(
     {
@@ -176,19 +177,37 @@ def _select_project_thread(
 def _thread_lane_key(
     row: Mapping[str, Any], config: ContinuousProjectConfig
 ) -> str | None:
-    metadata_key = str(_metadata(row).get("lane_key") or "").strip().casefold()
-    known = {lane.key for lane in config.lanes}
+    """Resolve one execution thread to the current task/lane, fail-closed on drift."""
+    metadata = _metadata(row)
+    tasks = config.execution_tasks
+    known = {task.key for task in tasks}
+
+    task_id = str(metadata.get("task_id") or "").strip().casefold()
+    if config.task_graph is not None:
+        if not task_id or task_id not in known:
+            return None
+        graph_id = str(metadata.get("task_graph_id") or "").strip()
+        fingerprint = str(metadata.get("task_fingerprint") or "").strip()
+        current = config.task_graph.task(task_id)
+        expected_fingerprint = config.task_graph.execution_fingerprint(current)
+        if graph_id != config.task_graph.graph_id or fingerprint != expected_fingerprint:
+            return None
+        return task_id
+
+    metadata_key = str(metadata.get("lane_key") or "").strip().casefold()
     if metadata_key in known:
         return metadata_key
 
+    # Legacy inline-lane compatibility only. TaskGraph mode never adopts an
+    # unfingerprinted writer by lane key or objective text.
     objective = str(_values(row).get("objective") or "").casefold()
     if not objective:
         return None
     matches = []
-    for lane in config.lanes:
-        terms = lane.match_terms or (lane.key,)
+    for task in tasks:
+        terms = task.match_terms or (task.key,)
         if any(term.casefold() in objective for term in terms):
-            matches.append(lane.key)
+            matches.append(task.key)
     return matches[0] if len(matches) == 1 else None
 
 
@@ -204,9 +223,7 @@ def _select_lane_thread(
     return _select_project_thread(_lane_rows(rows, config, lane_key), config)
 
 
-def _lane_marker_complete(
-    lane: ContinuousLaneConfig, plan_text: str
-) -> bool:
+def _lane_marker_complete(lane: ContinuousLaneConfig, plan_text: str) -> bool:
     if not lane.completion_markers:
         return False
     folded = plan_text.casefold()
@@ -233,11 +250,11 @@ def _lane_thread_complete(
 
 def _lane_complete(
     config: ContinuousProjectConfig,
-    lane: ContinuousLaneConfig,
+    lane: ContinuousLaneConfig | TaskSpec,
     rows: list[Mapping[str, Any]],
     plan_text: str,
 ) -> bool:
-    if _lane_marker_complete(lane, plan_text):
+    if isinstance(lane, ContinuousLaneConfig) and _lane_marker_complete(lane, plan_text):
         return True
     return _lane_thread_complete(config, _select_lane_thread(rows, config, lane.key))
 
@@ -268,12 +285,50 @@ async def _command_recover(client: Any, assistant_id: str, thread_id: str) -> No
     )
 
 
+def _render_list(title: str, items: tuple[str, ...] | list[str]) -> str:
+    unique = tuple(dict.fromkeys(item for item in items if item))
+    if not unique:
+        return ""
+    return f"\n\n{title}:\n" + "\n".join(f"- {item}" for item in unique)
+
+
 def _objective_text(
-    config: ContinuousProjectConfig, lane: ContinuousLaneConfig | None
+    config: ContinuousProjectConfig, lane: ContinuousLaneConfig | TaskSpec | None
 ) -> str:
     criteria = list(config.acceptance_criteria)
     if lane is None:
         body = config.objective
+    elif isinstance(lane, TaskSpec) and config.task_graph is not None:
+        graph = config.task_graph
+        criteria.extend(lane.acceptance_criteria)
+        body = (
+            f"Large objective: {graph.objective}\n\n"
+            f"TaskGraph `{graph.graph_id}` revision {graph.revision}: {graph.title}\n"
+            f"Planned by: {graph.planned_by}\n\n"
+            f"Current task `{lane.id}` — {lane.title}\n"
+            f"Goal: {lane.goal}\n"
+            f"Why now: {lane.why_now}\n"
+            f"Risk: {lane.risk}\n\n"
+            "Implement only this task while preserving the TaskGraph's system-level design. "
+            "Sibling tasks may run concurrently in isolated ForgeFlow objectives/sandboxes. "
+            "Do not optimize locally by bypassing protected contracts, expanding scope, or "
+            "stealing work owned by another task. If repository evidence contradicts the "
+            "plan or mutation ownership, stop without mutation and report the blocker."
+        )
+        body += _render_list("TaskGraph context refs", graph.context_refs)
+        body += _render_list("Architecture decisions", graph.architecture_decisions)
+        body += _render_list("Global protected contracts", graph.protected_contracts)
+        body += _render_list("Global non-goals", graph.non_goals)
+        body += _render_list("Task scope", lane.scope)
+        body += _render_list("Task out of scope", lane.out_of_scope)
+        body += _render_list("Task context refs", lane.context_refs)
+        body += _render_list("Task protected contracts", lane.protected_contracts)
+        body += _render_list("Implementation steps", lane.implementation_steps)
+        body += _render_list("Integration notes", lane.integration_notes)
+        body += _render_list("Dependencies", lane.depends_on)
+        body += _render_list("Explicit conflicts", lane.conflicts_with)
+        body += _render_list("Exclusive mutation keys", lane.mutation_keys)
+        body += _render_list("Verification commands", lane.verification_commands)
     else:
         criteria.extend(lane.acceptance_criteria)
         body = (
@@ -294,13 +349,28 @@ async def _create_objective(
     client: Any,
     assistant_id: str,
     config: ContinuousProjectConfig,
-    lane: ContinuousLaneConfig | None = None,
+    lane: ContinuousLaneConfig | TaskSpec | None = None,
 ) -> str:
-    thread_id = (
-        str(uuid4())
-        if lane is None
-        else str(uuid5(NAMESPACE_URL, f"forgeflow:continuous:{config.owner}/{config.repo}:{config.base_ref}:{lane.key}"))
-    )
+    if lane is None:
+        thread_id = str(uuid4())
+    elif isinstance(lane, TaskSpec) and config.task_graph is not None:
+        graph = config.task_graph
+        fingerprint = graph.execution_fingerprint(lane)
+        thread_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                "forgeflow:task:"
+                f"{config.owner}/{config.repo}:{config.base_ref}:"
+                f"{graph.graph_id}:{lane.key}:{fingerprint}",
+            )
+        )
+    else:
+        thread_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"forgeflow:continuous:{config.owner}/{config.repo}:{config.base_ref}:{lane.key}",
+            )
+        )
     objective = _objective_text(config, lane)
     metadata = {
         "kind": "forgeflow-policy",
@@ -311,6 +381,15 @@ async def _create_objective(
     }
     if lane is not None:
         metadata["lane_key"] = lane.key
+        if isinstance(lane, TaskSpec) and config.task_graph is not None:
+            metadata.update(
+                {
+                    "task_id": lane.id,
+                    "task_graph_id": config.task_graph.graph_id,
+                    "task_graph_revision": config.task_graph.revision,
+                    "task_fingerprint": config.task_graph.execution_fingerprint(lane),
+                }
+            )
     await client.threads.create(
         thread_id=thread_id,
         graph_id="forgeflow",
@@ -332,6 +411,16 @@ async def _create_objective(
             "kind": "forgeflow_policy",
             "source": "project-supervisor",
             **({"lane_key": lane.key} if lane is not None else {}),
+            **(
+                {
+                    "task_id": lane.id,
+                    "task_graph_id": config.task_graph.graph_id,
+                    "task_graph_revision": config.task_graph.revision,
+                    "task_fingerprint": config.task_graph.execution_fingerprint(lane),
+                }
+                if isinstance(lane, TaskSpec) and config.task_graph is not None
+                else {}
+            ),
         },
         multitask_strategy="reject",
     )
@@ -400,20 +489,40 @@ async def _supervise_single_project(
     return result
 
 
+def _mutation_conflicts(
+    candidate: ContinuousLaneConfig | TaskSpec,
+    active_keys: set[str],
+    task_map: Mapping[str, ContinuousLaneConfig | TaskSpec],
+) -> list[str]:
+    candidate_keys = set(getattr(candidate, "mutation_keys", ()))
+    if not candidate_keys:
+        return []
+    conflicts: list[str] = []
+    for key in sorted(active_keys):
+        sibling = task_map.get(key)
+        if sibling is None:
+            continue
+        sibling_keys = set(getattr(sibling, "mutation_keys", ()))
+        if candidate_keys & sibling_keys:
+            conflicts.append(key)
+    return conflicts
+
+
 async def _supervise_parallel_project(
     client: Any, assistant_id: str, config: ContinuousProjectConfig, rows: list[Mapping[str, Any]]
 ) -> str:
     plan_text = _plan_text(config)
-    lane_map = {lane.key: lane for lane in config.lanes}
+    tasks = config.execution_tasks
+    lane_map = {lane.key: lane for lane in tasks}
     completed = {
         lane.key
-        for lane in config.lanes
+        for lane in tasks
         if _lane_complete(config, lane, rows, plan_text)
     }
 
     # Process terminal/recoverable lane state before opening new capacity. Keep
     # READY merges single-effect per invocation to preserve crash/replay safety.
-    for lane in config.lanes:
+    for lane in tasks:
         latest = _select_lane_thread(rows, config, lane.key)
         if latest is None:
             continue
@@ -453,7 +562,7 @@ async def _supervise_parallel_project(
 
     created: list[tuple[str, str]] = []
     blocked: list[str] = []
-    for lane in config.lanes:
+    for lane in tasks:
         if len(created) >= capacity:
             break
         if lane.key in completed or lane.key in active_lane_keys:
@@ -485,6 +594,12 @@ async def _supervise_parallel_project(
         if reverse_conflicts:
             blocked.append(f"{lane.key}:conflicts:{'+'.join(reverse_conflicts)}")
             continue
+        ownership_conflicts = _mutation_conflicts(lane, active_lane_keys, lane_map)
+        if ownership_conflicts:
+            blocked.append(
+                f"{lane.key}:mutation-conflicts:{'+'.join(ownership_conflicts)}"
+            )
+            continue
         thread_id = await _create_objective(client, assistant_id, config, lane)
         created.append((lane.key, thread_id))
         active_lane_keys.add(lane.key)
@@ -501,7 +616,7 @@ async def supervise_project(client: Any, assistant_id: str, config: ContinuousPr
     if not _plan_active(config):
         return "plan-complete"
     rows = await _project_threads(client, config)
-    if config.lanes:
+    if config.execution_tasks:
         return await _supervise_parallel_project(client, assistant_id, config, rows)
     return await _supervise_single_project(client, assistant_id, config, rows)
 

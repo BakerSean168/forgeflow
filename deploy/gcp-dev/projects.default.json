@@ -72,7 +72,8 @@
         "Required focused tests and repository gates for the changed scope pass.",
         "The delivered PR targets feat/system-wide-vnext-convergence and is safe for exact-head review."
       ],
-      "auto_merge_ready": true
+      "auto_merge_ready": true,
+      "ai_decomposition_enabled": false
     }
   },
   {

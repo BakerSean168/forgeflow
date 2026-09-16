@@ -584,59 +584,87 @@ Explicitly retired contracts:
 
 ### Continuous project supervisor
 
-Repositories may opt into `continuous_supervisor` in the existing project manifest. This is a
-stateless one-shot driver, not a second workflow database or project queue. Every invocation reads
-only: (1) repository-owned configured active plan paths, (2) ForgeFlow LangGraph objective threads,
-and (3) authoritative GitHub PR state.
+Repositories may opt into `continuous_supervisor` in the existing project manifest. The supervisor is
+a stateless one-shot driver, not a second workflow database or project queue. Every invocation reads
+repository-owned planning input, ForgeFlow LangGraph objective threads, and authoritative GitHub PR
+evidence, then performs only bounded replay-safe actions.
 
-The default behavior remains the original single-objective continuation contract:
+The preferred planning input is **TaskGraph V1**. The repository stores the execution-ready graph in a
+versioned JSON file and the deployment manifest points to it with `task_graph_path`. The graph owns
+planning semantics only: large objective, architecture decisions, protected contracts, non-goals,
+Tasks, dependencies, semantic conflicts, mutation ownership, implementation steps, verification
+commands, and acceptance criteria. Live implementation/PR/CI/review/repair status remains exclusively
+in ForgeFlow/LangGraph execution state. See [`task-graph-v1.md`](./task-graph-v1.md).
 
-- An active objective, including `WAITING_FOR_RESOURCE`, is left alone.
-- A whitelisted resource-only `ESCALATED` objective receives the explicit `recover_requested` command.
-- A non-resource escalation remains blocked for operator/human review.
-- An exact-head `READY` objective may be auto-merged only when the project explicitly enables
-  `auto_merge_ready`; the merge request carries the exact reviewed SHA and never force-updates refs.
-- After the accepted head is on the configured base branch and a configured canonical plan file still
-  exists, the supervisor creates exactly one next objective whose implementation agent must select a
-  dependency-ready ticket from that repository plan.
+TaskGraph changes the decomposition boundary without weakening delivery policy:
 
-Projects with an explicit decomposition may additionally configure bounded parallel mutation lanes:
+- `max_parallel_mutations` defaults to `1` and is fail-closed to the range `1..4`. The number is a
+  ceiling, never a target.
+- A Task is a durable versioned implementation contract; a mutation lane/slot is only runtime
+  capacity. Each dispatched Task still gets an independent ForgeFlow objective and Open SWE
+  thread/sandbox.
+- `depends_on` requires accepted prerequisite Tasks before dispatch. `conflicts_with` blocks semantic
+  concurrency explicitly.
+- `mutation_keys` add deterministic exclusive ownership for contracts, schemas, packages, domains, or
+  UI surfaces. Two dependency-ready Tasks that share a mutation key do not run concurrently even when
+  neither declares an explicit conflict.
+- Active Task writers must resolve to the current TaskGraph `graph_id` and deterministic execution
+  fingerprint. A revision-only change may adopt an otherwise identical Task; any semantic change to
+  global context references, architecture/acceptance, or the Task specification changes the
+  fingerprint. Unknown or unfingerprinted writers block automatic expansion instead of being guessed
+  around.
+- TaskGraph mode never adopts an unfingerprinted legacy writer from `lane_key` or objective text.
+  Legacy `match_terms` adoption is confined to the old inline-lane compatibility format; unknown
+  writers block TaskGraph parallel expansion.
+- TaskGraph dependencies are complete only through a fingerprint-valid `READY` objective whose
+  observed, CI, and reviewed heads are all non-empty, identical, and already on the configured base
+  branch. Legacy plan-text completion markers are not accepted for TaskGraph tasks.
+- CI/review stages conservatively keep their mutation reservation because a later repair may reopen
+  mutation.
+- Every Task still follows implementation -> verification -> PR -> exact-head CI -> independent
+  review -> repair -> re-review -> acceptance.
 
-- `max_parallel_mutations` defaults to `1` and is fail-closed to the range `1..4`.
-- `lanes[]` gives each mutation lane a stable key, bounded objective, optional lane-specific acceptance
-  criteria, dependency keys, conflict keys, legacy objective match terms, and optional plan completion
-  markers.
-- Every started lane is a distinct ForgeFlow objective and therefore gets an independent Open SWE
-  thread/sandbox. Synchronous Open SWE subagents remain free for analysis, but they are not used as
-  concurrent writers against one filesystem.
-- Existing active objectives without a known lane key block new lane dispatch until they are matched or
-  become inactive. This fail-closed rule prevents a new supervisor configuration from guessing around a
-  legacy/manual writer whose ownership boundary is unknown.
-- Dependencies must be complete before a lane starts. Completion is proven either by configured
-  repository-plan evidence or by an exact-head `READY` lane whose accepted head is already on the
-  configured base branch.
-- Conflicts are enforced in both directions before dispatch. Agents are additionally instructed to
-  stop without mutation if live repository evidence contradicts configured readiness.
-- The configured number is a ceiling, not a target. A project with capacity `4` may intentionally run
-  only one or two writers when dependencies, conflicts, resource state, or ownership boundaries require it.
-- Lane lifecycle reservations are conservative: an active objective continues to occupy capacity while
-  it is in CI/review so a later repair cannot unexpectedly exceed the configured mutation ceiling.
+The supervisor renders both global and Task-local planning context into each implementation objective:
+architecture decisions, protected contracts, non-goals, scope/exclusions, integration notes,
+dependencies, mutation ownership, ordered implementation steps, exact verification commands, and
+acceptance criteria. The worker is told to stop rather than widen scope when repository evidence
+contradicts the TaskGraph. This intentionally moves system reasoning to the planning/input boundary
+instead of asking an implementation model to reconstruct architecture from a loose backlog.
 
-This model deliberately separates **decomposition** from **execution safety**. Today a repository or
-operator can declare the lane graph explicitly. A future planner may propose the same lane schema from a
-large objective, but it does not get to bypass the supervisor's hard `1..4` capacity, dependency,
-conflict, exact-head CI/review, or isolated-workspace rules.
+The default authoring path is external and human-controlled:
 
-This gives unattended progression and bounded multi-lane throughput without duplicating product task
-truth inside ForgeFlow. Removing or archiving the configured plan file remains the deterministic stop
-signal.
+```text
+large objective
+    -> ChatGPT Web inspects repository + plans + ADRs + open work
+    -> repository-owned TaskGraph V1
+    -> ForgeFlow deterministic validation
+    -> bounded parallel execution
+```
+
+ForgeFlow also contains an optional structured AI TaskGraph **proposal** generator. It is not called by
+the automatic project supervisor. It requires both the global
+`FORGEFLOW_ENABLE_AI_DECOMPOSITION=1` gate and project-level
+`ai_decomposition_enabled: true`. Even then it only returns a deterministically validated proposal; it
+does not change `task_graph_path`, make itself canonical, or start mutation workers. This keeps future
+AI decomposition interchangeable with ChatGPT-authored graphs without granting the planner execution
+authority.
+
+Inline `continuous_supervisor.lanes` remain a compatibility format for existing deployments. They are
+projected onto the same bounded scheduler, but new work should use `task_graph_path`; configuring both
+formats at once is rejected.
+
+When no TaskGraph/lanes are configured, the legacy single-objective continuation contract remains:
+active objectives are left alone, whitelisted resource escalations may be explicitly recovered, unsafe
+escalations remain blocked, and exact-head `READY` work may be auto-merged only when
+`auto_merge_ready` is enabled. Removing or archiving the configured active plan file remains the
+deterministic project stop signal.
 
 ## 18. Current repository layout
 
 ```text
 forgeflow/
   graph.py / state.py / policy.py / reconcile.py
-  evidence.py / models.py / projects.py / preflight.py / deployment.py
+  evidence.py / models.py / projects.py / task_graph.py / preflight.py / deployment.py
   adapters/
     openswe.py
     github.py
@@ -650,6 +678,7 @@ openswe_ext/
   docker_gc.py               # provider-owned idle sandbox GC
   github_auth.py             # short-lived installation-token bridge
   workflow_push_guard.py     # pinned-upstream compatibility guard
+  task_planner.py            # optional proposal-only AI TaskGraph decomposition
 
 deploy/gcp-dev/
   start-forgeflow-policy.sh
