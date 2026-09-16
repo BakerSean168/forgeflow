@@ -162,3 +162,37 @@ def test_explicit_probe_uses_exact_model_and_never_inherits_unrelated_secrets(
     assert isinstance(env, dict)
     assert "FIREWORKS_API_KEY" not in env
     assert "OPEN_SWE_OPENAI_OAUTH_BROKER_TOKEN" not in env
+
+
+def test_explicit_probe_classifies_codebuddy_429_as_rate_limited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime.now(UTC)
+    auth_dir = _auth_dir(tmp_path, now=now, refresh_delta=timedelta(days=7))
+    binary = _binary(tmp_path)
+
+    def fake_run(command, **kwargs):
+        del kwargs
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                "429 您的使用量已超出频率限制，将在 2026-09-16 15:42:36 UTC+8 重置，"
+                "您也可以切换其他模型继续使用。\n"
+            ),
+        )
+
+    monkeypatch.setattr(health.subprocess, "run", fake_run)
+    status, duration_ms, failure_code = health.probe_codebuddy_model(
+        {
+            "HOME": str(tmp_path),
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "FORGEFLOW_CODEBUDDY_AUTH_STATE_DIR": str(auth_dir),
+            "FORGEFLOW_CODEBUDDY_BIN": str(binary),
+            "FORGEFLOW_CODEBUDDY_MODEL": "deepseek-v4.1-flash",
+        }
+    )
+
+    assert status == "UNAVAILABLE"
+    assert duration_ms >= 0
+    assert failure_code == "CODEBUDDY_PROBE_RATE_LIMITED"

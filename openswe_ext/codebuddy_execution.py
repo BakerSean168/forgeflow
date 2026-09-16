@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
 import re
 import subprocess
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TextIO
 
+from forgeflow.external_agents.acp import AcpExecutionResult
 from forgeflow.external_agents.execution import (
     ExternalAgentExecutionEvidence,
     ExternalAgentExecutionRequest,
@@ -22,6 +25,7 @@ from openswe_ext.codebuddy_auth import (
     CodeBuddyAuthError,
     resolve_codebuddy_auth_dir,
 )
+from openswe_ext.codebuddy_failures import classify_codebuddy_response
 from openswe_ext.external_agent_docker import (
     BOOTSTRAP_MOUNT,
     CONTAINER_EXECUTABLE,
@@ -35,7 +39,78 @@ from openswe_ext.external_agent_execution import AcpWorkspaceExecutionAdapter
 _CONTAINER_AUTH_DIR = f"{CONTAINER_HOME}/.local/share/CodeBuddyExtension/Data/Public/auth"
 _CONTAINER_AUTH_FILE = f"{_CONTAINER_AUTH_DIR}/{OFFICIAL_AUTH_FILE}"
 _DEFAULT_MEMORY_LIMIT = "2g"
+_DEFAULT_MAX_CONCURRENCY = 1
 _MEMORY_LIMIT_RE = re.compile(r"^[1-9][0-9]*[bkmg]?$", re.IGNORECASE)
+
+
+def _codebuddy_stop_failure_code(result: AcpExecutionResult) -> str | None:
+    if result.stop_reason != "refusal":
+        return None
+    candidates = [result.text]
+    error_message = result.metadata.get("codebuddy.ai/errorMessage")
+    if isinstance(error_message, str):
+        candidates.append(error_message)
+    for candidate in candidates:
+        failure = classify_codebuddy_response(candidate)
+        if failure is not None:
+            return failure
+    return None
+
+
+def _container_state(container_name: str) -> tuple[bool, int | None]:
+    completed = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            container_name,
+            "--format",
+            "{{.State.Running}} {{.State.Pid}}",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+        env={**os.environ, "LC_ALL": "C.UTF-8"},
+    )
+    if completed.returncode != 0:
+        return False, None
+    parts = completed.stdout.strip().split()
+    if len(parts) != 2:
+        return False, None
+    running = parts[0].casefold() == "true"
+    pid = int(parts[1]) if parts[1].isdigit() and int(parts[1]) > 0 else None
+    return running, pid
+
+
+@dataclass(slots=True)
+class _CodeBuddyCapacityLease:
+    handle: TextIO
+
+    def release(self) -> None:
+        fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        self.handle.close()
+
+
+def _max_concurrency(value: str | None) -> int:
+    raw = (value or str(_DEFAULT_MAX_CONCURRENCY)).strip()
+    if not raw.isdigit() or not 1 <= int(raw) <= 8:
+        raise ExternalAgentRouteRejected("CODEBUDDY_MAX_CONCURRENCY_INVALID")
+    return int(raw)
+
+
+def _acquire_codebuddy_capacity(*, state_dir: Path, max_concurrency: int) -> _CodeBuddyCapacityLease:
+    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    state_dir.chmod(0o700)
+    for slot in range(max_concurrency):
+        path = state_dir / f"codebuddy-account-{slot}.lock"
+        handle = path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            continue
+        return _CodeBuddyCapacityLease(handle)
+    raise ExternalAgentRouteRejected("CODEBUDDY_CAPACITY_BUSY")
 
 
 def _enabled(value: str | None) -> bool:
@@ -178,7 +253,9 @@ def build_codebuddy_docker_args(
     )
 
 
-def _run_checked(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+def _run_checked(
+    command: Sequence[str], *, container_name: str | None = None
+) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         list(command),
         text=True,
@@ -188,6 +265,10 @@ def _run_checked(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         env={**os.environ, "LC_ALL": "C.UTF-8"},
     )
     if completed.returncode != 0:
+        if container_name is not None:
+            running, _ = _container_state(container_name)
+            if not running:
+                raise ExternalAgentRouteRejected("CODEBUDDY_PROCESS_EXITED")
         raise ExternalAgentRouteRejected("CODEBUDDY_BOOTSTRAP_SEAL_FAILED")
     return completed
 
@@ -195,17 +276,23 @@ def _run_checked(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
 def _seal_codebuddy_bootstrap_sync(*, container_name: str, image: str) -> None:
     """Remove all filesystem-readable auth material before the project prompt."""
 
-    _run_checked(["docker", "exec", container_name, "rm", "-f", _CONTAINER_AUTH_FILE])
-    inspect = _run_checked(["docker", "inspect", container_name, "--format", "{{.State.Pid}}"])
-    raw_pid = inspect.stdout.strip()
-    if not raw_pid.isdigit() or int(raw_pid) <= 0:
+    running, pid = _container_state(container_name)
+    if not running:
+        raise ExternalAgentRouteRejected("CODEBUDDY_PROCESS_EXITED")
+    if pid is None:
         raise ExternalAgentRouteRejected("CODEBUDDY_CONTAINER_PID_INVALID")
-    pid = int(raw_pid)
+    _run_checked(
+        ["docker", "exec", container_name, "rm", "-f", _CONTAINER_AUTH_FILE],
+        container_name=container_name,
+    )
     _run_checked(build_bootstrap_unmount_args(pid=pid, image=image))
     mountinfo = Path(f"/proc/{pid}/mountinfo").read_text(encoding="utf-8", errors="replace")
     if f" {BOOTSTRAP_MOUNT} " in mountinfo:
         raise ExternalAgentRouteRejected("CODEBUDDY_BOOTSTRAP_STILL_MOUNTED")
-    _run_checked(["docker", "exec", container_name, "test", "!", "-e", _CONTAINER_AUTH_FILE])
+    _run_checked(
+        ["docker", "exec", container_name, "test", "!", "-e", _CONTAINER_AUTH_FILE],
+        container_name=container_name,
+    )
 
 
 async def _seal_codebuddy_bootstrap(*, container_name: str, image: str) -> None:
@@ -261,6 +348,13 @@ class CodeBuddyExternalAgentExecution:
         if not self._model:
             raise ExternalAgentRouteRejected("CODEBUDDY_MODEL_REQUIRED")
         self._memory_limit = _memory_limit(values.get("FORGEFLOW_CODEBUDDY_MEMORY_LIMIT"))
+        self._max_concurrency = _max_concurrency(values.get("FORGEFLOW_CODEBUDDY_MAX_CONCURRENCY"))
+        self._capacity_state_dir = Path(
+            values.get(
+                "FORGEFLOW_POLICY_STATE_DIR",
+                str(Path.home() / ".local/share/forgeflow-policy"),
+            )
+        ).expanduser()
         self._image = values.get(
             "FORGEFLOW_EXTERNAL_AGENT_DOCKER_IMAGE",
             "forgeflow/openswe-sandbox:bookworm-node24",
@@ -297,20 +391,31 @@ class CodeBuddyExternalAgentExecution:
     async def execute(
         self, request: ExternalAgentExecutionRequest
     ) -> ExternalAgentExecutionEvidence:
-        container_name, docker_args = await asyncio.to_thread(self._build_docker_execution, request)
-        evidence = await AcpWorkspaceExecutionAdapter(
-            gate=self._gate,
-            agent_command="docker",
-            agent_args=docker_args,
-            runtime_label="codebuddy",
-            agent_env=self._agent_env,
-            session_cwd=CONTAINER_WORKSPACE,
-            before_prompt=lambda: _seal_codebuddy_bootstrap(
-                container_name=container_name,
-                image=self._image,
-            ),
-        ).execute(request)
-        return evidence if evidence.model is not None else replace(evidence, model=self._model)
+        lease = await asyncio.to_thread(
+            _acquire_codebuddy_capacity,
+            state_dir=self._capacity_state_dir,
+            max_concurrency=self._max_concurrency,
+        )
+        try:
+            container_name, docker_args = await asyncio.to_thread(
+                self._build_docker_execution, request
+            )
+            evidence = await AcpWorkspaceExecutionAdapter(
+                gate=self._gate,
+                agent_command="docker",
+                agent_args=docker_args,
+                runtime_label="codebuddy",
+                agent_env=self._agent_env,
+                session_cwd=CONTAINER_WORKSPACE,
+                before_prompt=lambda: _seal_codebuddy_bootstrap(
+                    container_name=container_name,
+                    image=self._image,
+                ),
+                stop_failure_code=_codebuddy_stop_failure_code,
+            ).execute(request)
+            return evidence if evidence.model is not None else replace(evidence, model=self._model)
+        finally:
+            await asyncio.to_thread(lease.release)
 
 
 __all__ = [
