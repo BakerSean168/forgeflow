@@ -959,6 +959,52 @@ async def test_route_availability_failure_falls_through_to_next_eligible_route()
 
 
 @pytest.mark.asyncio
+async def test_codebuddy_rate_limit_falls_through_without_task_retry() -> None:
+    codebuddy = RouteDefinition(
+        "codebuddy-account-primary",
+        "IMPLEMENT",
+        5,
+        "EXTERNAL_ACP",
+        "codebuddy-account",
+        adapter="codebuddy",
+    )
+    openswe = RouteDefinition(
+        "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+    )
+    services = FakeServices(
+        cron_id="cron-1",
+        implementation_thread="codebuddy-thread",
+        selected_route=codebuddy,
+        fallback_route=openswe,
+        route_fallback_enabled=True,
+    )
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_route_id=codebuddy.id,
+        implementation_runtime=codebuddy.runtime,
+        implementation_thread_id="codebuddy-thread",
+        implementation_run_id="codebuddy-run",
+        implementation_operation_key="op:codebuddy-rate-limit",
+    )
+    services.child_status["codebuddy-run"] = "error"
+    services.child_failure_code["codebuddy-run"] = "CODEBUDDY_RATE_LIMITED"
+    services.child_failure_class["codebuddy-run"] = "UNCLASSIFIED"
+
+    fallback = await reconcile_once(
+        state, policy_thread_id="policy-codebuddy-rate-limit", services=services
+    )
+
+    assert fallback["status"] == "IMPLEMENTING"
+    assert fallback["implementation_failed_route_ids"] == [codebuddy.id]
+    assert fallback["implementation_route_id"] == openswe.id
+    assert fallback["implementation_runtime"] == "OPEN_SWE"
+    assert fallback["implementation_thread_id"] is None
+    assert fallback["implementation_run_id"] is None
+    assert fallback["run_retry_count"] == 0
+    assert fallback["last_failure_code"] == "CODEBUDDY_RATE_LIMITED"
+
+
+@pytest.mark.asyncio
 async def test_openswe_provider_outage_falls_through_to_external_agent_route() -> None:
     openswe = RouteDefinition(
         "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"

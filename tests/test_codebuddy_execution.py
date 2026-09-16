@@ -8,6 +8,9 @@ from forgeflow.external_agents.execution import (
 )
 from openswe_ext.codebuddy_execution import (
     CodeBuddyExternalAgentExecution,
+    _acquire_codebuddy_capacity,
+    _codebuddy_stop_failure_code,
+    _seal_codebuddy_bootstrap_sync,
     build_codebuddy_docker_args,
 )
 from openswe_ext.external_agent_docker import (
@@ -308,3 +311,82 @@ def test_codebuddy_blocking_path_checks_run_off_the_event_loop(
     # The constructor and the execute-time Docker setup were both exercised.
     assert auth_threads and all(thread != event_loop_thread for thread in auth_threads)
     assert docker_threads and all(thread != event_loop_thread for thread in docker_threads)
+
+
+def test_codebuddy_refusal_classifies_rate_limit_without_persisting_response() -> None:
+    from forgeflow.external_agents.acp import AcpExecutionResult
+
+    result = AcpExecutionResult(
+        stop_reason="refusal",
+        text="",
+        session_id="session",
+        metadata={
+            "codebuddy.ai/errorMessage": (
+                '{"code":-32003,"message":"Quota exceeded: 429 usage limit reached",'
+                '"data":{"statusCode":429,"category":"quota"}}'
+            )
+        },
+    )
+
+    assert _codebuddy_stop_failure_code(result) == "CODEBUDDY_RATE_LIMITED"
+
+
+def test_codebuddy_non_quota_refusal_keeps_generic_stop_reason() -> None:
+    from forgeflow.external_agents.acp import AcpExecutionResult
+
+    result = AcpExecutionResult(
+        stop_reason="refusal",
+        text="I cannot perform that request.",
+        session_id="session",
+        metadata={},
+    )
+
+    assert _codebuddy_stop_failure_code(result) is None
+
+
+def test_codebuddy_bootstrap_reports_process_exit_instead_of_seal_policy_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    import openswe_ext.codebuddy_execution as codebuddy
+
+    monkeypatch.setattr(
+        codebuddy.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout="", stderr="gone"),
+    )
+
+    with pytest.raises(ExternalAgentRouteRejected, match="CODEBUDDY_PROCESS_EXITED"):
+        _seal_codebuddy_bootstrap_sync(
+            container_name="forgeflow-codebuddy-gone",
+            image="sandbox:test",
+        )
+
+
+def test_codebuddy_capacity_gate_is_cross_execution_and_releasable(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    first = _acquire_codebuddy_capacity(state_dir=state_dir, max_concurrency=1)
+    try:
+        with pytest.raises(ExternalAgentRouteRejected, match="CODEBUDDY_CAPACITY_BUSY"):
+            _acquire_codebuddy_capacity(state_dir=state_dir, max_concurrency=1)
+    finally:
+        first.release()
+
+    second = _acquire_codebuddy_capacity(state_dir=state_dir, max_concurrency=1)
+    second.release()
+
+
+def test_codebuddy_rejects_invalid_max_concurrency(tmp_path: Path) -> None:
+    binary = _binary(tmp_path)
+    auth = _auth_dir(tmp_path)
+    with pytest.raises(ExternalAgentRouteRejected, match="MAX_CONCURRENCY_INVALID"):
+        CodeBuddyExternalAgentExecution(
+            env={
+                "HOME": str(tmp_path),
+                "FORGEFLOW_CODEBUDDY_BIN": str(binary),
+                "FORGEFLOW_CODEBUDDY_AUTH_STATE_DIR": str(auth),
+                "FORGEFLOW_EXTERNAL_AGENT_OUTER_SANDBOX": "docker",
+                "FORGEFLOW_CODEBUDDY_MAX_CONCURRENCY": "0",
+            }
+        )

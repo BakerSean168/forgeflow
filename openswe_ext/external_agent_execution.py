@@ -10,7 +10,7 @@ import subprocess
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
-from forgeflow.external_agents.acp import run_acp_agent
+from forgeflow.external_agents.acp import AcpExecutionResult, run_acp_agent
 from forgeflow.external_agents.execution import (
     ExternalAgentExecutionEvidence,
     ExternalAgentExecutionRequest,
@@ -127,6 +127,7 @@ class AcpWorkspaceExecutionAdapter:
         agent_env: Mapping[str, str] | None = None,
         session_cwd: str | None = None,
         before_prompt: Callable[[], Awaitable[None]] | None = None,
+        stop_failure_code: Callable[[AcpExecutionResult], str | None] | None = None,
     ) -> None:
         self._gate = gate
         self._agent_command = agent_command
@@ -135,6 +136,7 @@ class AcpWorkspaceExecutionAdapter:
         self._agent_env = dict(agent_env) if agent_env is not None else None
         self._session_cwd = session_cwd
         self._before_prompt = before_prompt
+        self._stop_failure_code = stop_failure_code
 
     async def execute(
         self, request: ExternalAgentExecutionRequest
@@ -175,7 +177,12 @@ class AcpWorkspaceExecutionAdapter:
             before_prompt=self._before_prompt,
         )
         if result.stop_reason != "end_turn":
-            raise ExternalAgentExecutionError(f"EXTERNAL_AGENT_STOP_{result.stop_reason.upper()}")
+            failure_code = (
+                self._stop_failure_code(result) if self._stop_failure_code is not None else None
+            )
+            raise ExternalAgentExecutionError(
+                failure_code or f"EXTERNAL_AGENT_STOP_{result.stop_reason.upper()}"
+            )
 
         head_after = (
             await _cancellation_safe_to_thread(_git, workspace, "rev-parse", "HEAD")

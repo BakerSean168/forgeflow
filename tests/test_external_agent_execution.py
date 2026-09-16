@@ -180,3 +180,60 @@ async def test_cancellation_safe_to_thread_keeps_cancellation_authoritative_when
     with pytest.raises(asyncio.CancelledError) as exc_info:
         await task
     assert isinstance(exc_info.value.__cause__, subprocess.TimeoutExpired)
+
+
+def test_acp_adapter_can_translate_vendor_refusal_into_route_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import subprocess
+
+    import openswe_ext.external_agent_execution as module
+    from forgeflow.external_agents.acp import AcpExecutionResult
+    from forgeflow.external_agents.execution import ExternalAgentExecutionRequest
+    from openswe_ext.external_agent_execution import (
+        AcpWorkspaceExecutionAdapter,
+        ExternalAgentExecutionError,
+    )
+
+    root = tmp_path / "root"
+    workspace = root / "work"
+    workspace.mkdir(parents=True)
+    subprocess.check_call(["git", "init", "-b", "main"], cwd=workspace)
+    subprocess.check_call(["git", "config", "user.name", "test"], cwd=workspace)
+    subprocess.check_call(["git", "config", "user.email", "test@example.invalid"], cwd=workspace)
+    (workspace / "a.txt").write_text("base\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "a.txt"], cwd=workspace)
+    subprocess.check_call(["git", "commit", "-m", "base"], cwd=workspace)
+
+    async def fake_agent(**kwargs):
+        del kwargs
+        return AcpExecutionResult(
+            stop_reason="refusal",
+            text="429 rate limit exceeded",
+            session_id="session",
+            metadata={},
+        )
+
+    monkeypatch.setattr(module, "run_acp_agent", fake_agent)
+    adapter = AcpWorkspaceExecutionAdapter(
+        gate=ExternalAgentRouteGate(True, frozenset({"o/r"}), root),
+        agent_command="unused",
+        agent_args=(),
+        runtime_label="fake",
+        stop_failure_code=lambda result: (
+            "CODEBUDDY_RATE_LIMITED" if "429" in result.text else None
+        ),
+    )
+    request = ExternalAgentExecutionRequest(
+        owner="o",
+        repo="r",
+        workspace=workspace,
+        objective="make one bounded change",
+        operation_key="canary:refusal",
+        phase="IMPLEMENT",
+        test_command=("git", "diff", "--check"),
+    )
+
+    with pytest.raises(ExternalAgentExecutionError, match="CODEBUDDY_RATE_LIMITED"):
+        asyncio.run(adapter.execute(request))

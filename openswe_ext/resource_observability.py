@@ -15,6 +15,7 @@ from typing import Any
 from forgeflow.attempts import RouteAttemptSummary
 from forgeflow.resource_probes import ResourceProbeRecord
 from openswe_ext.codebuddy_auth import inspect_codebuddy_auth
+from openswe_ext.codebuddy_failures import classify_codebuddy_response
 
 _CODEBUDDY_MARKER = "FORGEFLOW_CODEBUDDY_HEALTH_OK"
 
@@ -178,10 +179,12 @@ def probe_codebuddy_model(
     output = completed.stdout or ""
     if completed.returncode == 0 and output.strip() == _CODEBUDDY_MARKER:
         return "AVAILABLE", duration_ms, None
-    lowered = output.casefold()
-    if "authentication required" in lowered or "please use /login" in lowered:
+    classified = classify_codebuddy_response(output)
+    if classified == "CODEBUDDY_RATE_LIMITED":
+        code = "CODEBUDDY_PROBE_RATE_LIMITED"
+    elif classified == "CODEBUDDY_AUTH_UNAVAILABLE":
         code = "CODEBUDDY_PROBE_AUTH_UNAVAILABLE"
-    elif "service info not found" in lowered or "supported models" in lowered:
+    elif classified == "CODEBUDDY_MODEL_UNAVAILABLE":
         code = "CODEBUDDY_PROBE_MODEL_UNAVAILABLE"
     elif completed.returncode != 0:
         code = "CODEBUDDY_PROBE_PROCESS_FAILED"
