@@ -9,6 +9,8 @@ from forgeflow.external_agents.execution import (
 from openswe_ext.codebuddy_execution import (
     CodeBuddyExternalAgentExecution,
     _acquire_codebuddy_capacity,
+    _auth_mount_is_read_only,
+    _build_auth_seal_mount_args,
     _codebuddy_stop_failure_code,
     _seal_codebuddy_bootstrap_sync,
     build_codebuddy_docker_args,
@@ -390,3 +392,20 @@ def test_codebuddy_rejects_invalid_max_concurrency(tmp_path: Path) -> None:
                 "FORGEFLOW_CODEBUDDY_MAX_CONCURRENCY": "0",
             }
         )
+
+
+def test_codebuddy_auth_seal_mount_uses_privileged_namespace_helper() -> None:
+    args = _build_auth_seal_mount_args(pid=1234, image="sandbox:test")
+    joined = " ".join(args)
+    assert "--privileged" in args
+    assert "--pid host" in joined
+    assert "/usr/bin/nsenter" in args
+    assert "mount -t tmpfs -o ro,nosuid,nodev,size=4096" in joined
+    assert "/home/agent/.local/share/CodeBuddyExtension/Data/Public/auth" in joined
+
+
+def test_codebuddy_auth_mount_verification_requires_read_only_exact_mount() -> None:
+    path = "/home/agent/.local/share/CodeBuddyExtension/Data/Public/auth"
+    assert _auth_mount_is_read_only(f"1 2 0:1 / {path} ro,nosuid,nodev - tmpfs tmpfs ro\n")
+    assert not _auth_mount_is_read_only(f"1 2 0:1 / {path} rw,nosuid,nodev - tmpfs tmpfs rw\n")
+    assert not _auth_mount_is_read_only("1 2 0:1 / /other ro - tmpfs tmpfs ro\n")

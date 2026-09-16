@@ -113,6 +113,48 @@ def _acquire_codebuddy_capacity(*, state_dir: Path, max_concurrency: int) -> _Co
     raise ExternalAgentRouteRejected("CODEBUDDY_CAPACITY_BUSY")
 
 
+
+def _build_auth_seal_mount_args(*, pid: int, image: str) -> list[str]:
+    if pid <= 0:
+        raise ExternalAgentRouteRejected("CODEBUDDY_CONTAINER_PID_INVALID")
+    script = (
+        f"mkdir -p {_CONTAINER_AUTH_DIR}; "
+        f"mount -t tmpfs -o ro,nosuid,nodev,size=4096 tmpfs {_CONTAINER_AUTH_DIR}"
+    )
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--privileged",
+        "--user",
+        "0",
+        "--pid",
+        "host",
+        "--network",
+        "none",
+        "--read-only",
+        "--entrypoint",
+        "/usr/bin/nsenter",
+        image,
+        "-t",
+        str(pid),
+        "-m",
+        f"--root=/proc/{pid}/root",
+        f"--wd=/proc/{pid}/cwd",
+        "--",
+        "/bin/sh",
+        "-c",
+        script,
+    ]
+
+
+def _auth_mount_is_read_only(mountinfo: str) -> bool:
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if len(fields) > 5 and fields[4] == _CONTAINER_AUTH_DIR:
+            return "ro" in fields[5].split(",")
+    return False
+
 def _enabled(value: str | None) -> bool:
     return (value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
@@ -286,9 +328,12 @@ def _seal_codebuddy_bootstrap_sync(*, container_name: str, image: str) -> None:
         container_name=container_name,
     )
     _run_checked(build_bootstrap_unmount_args(pid=pid, image=image))
+    _run_checked(_build_auth_seal_mount_args(pid=pid, image=image))
     mountinfo = Path(f"/proc/{pid}/mountinfo").read_text(encoding="utf-8", errors="replace")
     if f" {BOOTSTRAP_MOUNT} " in mountinfo:
         raise ExternalAgentRouteRejected("CODEBUDDY_BOOTSTRAP_STILL_MOUNTED")
+    if not _auth_mount_is_read_only(mountinfo):
+        raise ExternalAgentRouteRejected("CODEBUDDY_BOOTSTRAP_SEAL_FAILED")
     _run_checked(
         ["docker", "exec", container_name, "test", "!", "-e", _CONTAINER_AUTH_FILE],
         container_name=container_name,
