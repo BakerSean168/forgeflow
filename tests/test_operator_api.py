@@ -881,6 +881,67 @@ def test_operator_recover_command_is_explicit_and_separate_from_reconcile(
         assert persisted[key] == value
 
 
+def test_operator_recover_falls_back_to_thread_values_when_idle_checkpoint_is_empty(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    created = asyncio.run(
+        api.create_objective(
+            api.ObjectiveCreate(projectKey="memoflow", objective="Recover idle terminal"),
+            authorization="Bearer secret",
+        )
+    )
+    thread_id = created["threadId"]
+    client.threads.rows[thread_id]["values"].update(
+        status="ESCALATED",
+        last_failure_code="IMPLEMENTATION_ROUTE_EXHAUSTED",
+        implementation_route_id="codebuddy-account-primary",
+        implementation_runtime="EXTERNAL_ACP",
+    )
+    before = dict(client.threads.rows[thread_id]["values"])
+
+    async def empty_idle_state(_thread_id, **_kwargs):
+        return {"values": {}}
+
+    monkeypatch.setattr(client.threads, "get_state", empty_idle_state)
+
+    result = asyncio.run(api.recover_objective(thread_id, authorization="Bearer secret"))
+
+    assert result["command"] == "recover"
+    persisted = client.threads.rows[thread_id]["values"]
+    assert persisted["recover_requested"] is True
+    for key, value in before.items():
+        assert persisted[key] == value
+    assert client.runs.calls[-1][2]["input"] == {}
+
+
+def test_operator_recover_still_fails_closed_when_both_state_views_are_empty(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    created = asyncio.run(
+        api.create_objective(
+            api.ObjectiveCreate(projectKey="memoflow", objective="No durable state"),
+            authorization="Bearer secret",
+        )
+    )
+    thread_id = created["threadId"]
+    client.threads.rows[thread_id]["values"] = {}
+
+    async def empty_idle_state(_thread_id, **_kwargs):
+        return {"values": {}}
+
+    monkeypatch.setattr(client.threads, "get_state", empty_idle_state)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(api.recover_objective(thread_id, authorization="Bearer secret"))
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "ForgeFlow objective state is unavailable"
+
+
 def test_operator_cancel_patches_checkpoint_without_replacing_objective_state(
     manifest: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

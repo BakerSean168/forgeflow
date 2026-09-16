@@ -690,6 +690,13 @@ async def _command_objective(thread_id: str, *, command: str) -> dict[str, Any]:
         state = await client.threads.get_state(thread_id)
         raw_values = state.get("values") if isinstance(state, Mapping) else None
         if not isinstance(raw_values, Mapping) or not raw_values:
+            # Local-dev LangGraph may return an empty checkpoint view for an idle
+            # terminal thread even though threads.get(include=["values"]) already
+            # returned the durable channel values. Reuse only that same-thread
+            # snapshot; never synthesize missing objective state.
+            thread_values = thread.get("values")
+            raw_values = thread_values if isinstance(thread_values, Mapping) else None
+        if not isinstance(raw_values, Mapping) or not raw_values:
             raise HTTPException(status_code=409, detail="ForgeFlow objective state is unavailable")
         values = dict(raw_values)
         values["cancel_requested" if command == "cancel" else "recover_requested"] = True
