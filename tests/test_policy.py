@@ -292,7 +292,12 @@ def _legacy_codebuddy_escalation(code: str):
 
 
 @pytest.mark.parametrize(
-    "code", ["EXTERNAL_AGENT_STOP_REFUSAL", "CODEBUDDY_BOOTSTRAP_SEAL_FAILED"]
+    "code",
+    [
+        "EXTERNAL_AGENT_STOP_REFUSAL",
+        "CODEBUDDY_BOOTSTRAP_SEAL_FAILED",
+        "EXTERNAL_AGENT_RESULT_MISSING",
+    ],
 )
 def test_legacy_codebuddy_resource_misclassification_can_be_recovered_without_evidence(
     code: str,
