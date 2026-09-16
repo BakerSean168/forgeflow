@@ -143,7 +143,7 @@ class AcpWorkspaceExecutionAdapter:
     ) -> ExternalAgentExecutionEvidence:
         workspace = await _cancellation_safe_to_thread(self._gate.validate, request)
         status = await _cancellation_safe_to_thread(_git, workspace, "status", "--porcelain")
-        if status.stdout.strip():
+        if status.stdout.strip() and not request.allow_dirty_workspace:
             raise ExternalAgentExecutionError("EXTERNAL_AGENT_WORKSPACE_NOT_CLEAN")
         source_revision = (
             await _cancellation_safe_to_thread(_git, workspace, "rev-parse", "HEAD")

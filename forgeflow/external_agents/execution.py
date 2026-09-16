@@ -22,6 +22,7 @@ class ExternalAgentExecutionRequest:
     operation_key: str
     phase: ExternalAgentPhase
     test_command: tuple[str, ...]
+    allow_dirty_workspace: bool = False
 
     @property
     def project(self) -> str:

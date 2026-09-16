@@ -237,3 +237,117 @@ def test_acp_adapter_can_translate_vendor_refusal_into_route_failure(
 
     with pytest.raises(ExternalAgentExecutionError, match="CODEBUDDY_RATE_LIMITED"):
         asyncio.run(adapter.execute(request))
+
+def test_acp_adapter_rejects_dirty_workspace_without_continuation_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    import openswe_ext.external_agent_execution as module
+    from forgeflow.external_agents.execution import ExternalAgentExecutionRequest
+    from openswe_ext.external_agent_execution import (
+        AcpWorkspaceExecutionAdapter,
+        ExternalAgentExecutionError,
+    )
+
+    root = tmp_path / "root"
+    workspace = root / "work"
+    workspace.mkdir(parents=True)
+    subprocess.check_call(["git", "init", "-b", "main"], cwd=workspace)
+    subprocess.check_call(["git", "config", "user.name", "test"], cwd=workspace)
+    subprocess.check_call(["git", "config", "user.email", "test@example.invalid"], cwd=workspace)
+    (workspace / "a.txt").write_text("base\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "a.txt"], cwd=workspace)
+    subprocess.check_call(["git", "commit", "-m", "base"], cwd=workspace)
+    (workspace / "a.txt").write_text("restored\n", encoding="utf-8")
+
+    async def should_not_run(**kwargs):
+        raise AssertionError(f"agent should not run for untrusted dirty workspace: {kwargs}")
+
+    monkeypatch.setattr(module, "run_acp_agent", should_not_run)
+    adapter = AcpWorkspaceExecutionAdapter(
+        gate=ExternalAgentRouteGate(True, frozenset({"o/r"}), root),
+        agent_command="unused",
+        agent_args=(),
+        runtime_label="fake",
+    )
+    request = ExternalAgentExecutionRequest(
+        owner="o",
+        repo="r",
+        workspace=workspace,
+        objective="continue one bounded change",
+        operation_key="canary:dirty-denied",
+        phase="IMPLEMENT",
+        test_command=("git", "diff", "--check"),
+    )
+
+    import asyncio
+
+    with pytest.raises(ExternalAgentExecutionError, match="WORKSPACE_NOT_CLEAN"):
+        asyncio.run(adapter.execute(request))
+
+
+def test_acp_adapter_accepts_authorized_continuation_dirty_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    import openswe_ext.external_agent_execution as module
+    from forgeflow.external_agents.acp import AcpExecutionResult
+    from forgeflow.external_agents.execution import ExternalAgentExecutionRequest
+    from openswe_ext.external_agent_execution import AcpWorkspaceExecutionAdapter
+
+    root = tmp_path / "root"
+    workspace = root / "work"
+    workspace.mkdir(parents=True)
+    subprocess.check_call(["git", "init", "-b", "main"], cwd=workspace)
+    subprocess.check_call(["git", "config", "user.name", "test"], cwd=workspace)
+    subprocess.check_call(["git", "config", "user.email", "test@example.invalid"], cwd=workspace)
+    (workspace / "a.txt").write_text("base\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "a.txt"], cwd=workspace)
+    subprocess.check_call(["git", "commit", "-m", "base"], cwd=workspace)
+    source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+
+    # This is the already-validated continuation state restored by ForgeFlow.
+    (workspace / "a.txt").write_text("restored\n", encoding="utf-8")
+    (workspace / "continued.txt").write_text("from previous provider\n", encoding="utf-8")
+
+    async def fake_agent(**kwargs):
+        target = Path(kwargs["cwd"]) / "continued.txt"
+        target.write_text("from previous provider\nfinished by fallback\n", encoding="utf-8")
+        return AcpExecutionResult(
+            stop_reason="end_turn",
+            text="finished",
+            session_id="session-continuation",
+            metadata={"model": "fake", "conversation_id": "conversation-continuation"},
+        )
+
+    monkeypatch.setattr(module, "run_acp_agent", fake_agent)
+    adapter = AcpWorkspaceExecutionAdapter(
+        gate=ExternalAgentRouteGate(True, frozenset({"o/r"}), root),
+        agent_command="unused",
+        agent_args=(),
+        runtime_label="fake",
+    )
+    request = ExternalAgentExecutionRequest(
+        owner="o",
+        repo="r",
+        workspace=workspace,
+        objective="continue the restored implementation",
+        operation_key="canary:dirty-authorized",
+        phase="IMPLEMENT",
+        test_command=("git", "diff", "--check"),
+        allow_dirty_workspace=True,
+    )
+
+    import asyncio
+
+    evidence = asyncio.run(adapter.execute(request))
+
+    assert evidence.source_revision == source_revision
+    assert set(evidence.changed_files) == {"a.txt", "continued.txt"}
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip() == source_revision
+    assert (workspace / "a.txt").read_text(encoding="utf-8") == "restored\n"
+    assert (workspace / "continued.txt").read_text(encoding="utf-8") == (
+        "from previous provider\nfinished by fallback\n"
+    )
