@@ -455,6 +455,38 @@ async def test_parallel_supervisor_does_not_start_dependency_before_completion(
 
 
 @pytest.mark.asyncio
+async def test_parallel_supervisor_ready_lane_requires_exact_head_evidence_before_unlock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    head = "a" * 40
+    cfg = _parallel_config(
+        tmp_path,
+        lanes=(
+            _lane("routine"),
+            _lane("planner", depends_on=("routine",)),
+        ),
+    )
+    client = FakeClient(
+        [
+            _thread(
+                "READY",
+                thread_id="routine-ready",
+                lane_key="routine",
+                observed_head_sha=head,
+                ci_head_sha=head,
+                reviewed_head_sha="b" * 40,
+                pr_url="https://github.com/BakerSean168/memoflow/pull/1",
+            )
+        ]
+    )
+    monkeypatch.setattr(module, "_head_is_on_base", lambda config, sha: True)
+    result = await module.supervise_project(client, "assistant", cfg)
+    assert client.runs.calls == []
+    assert "planner:depends-on:routine" in result
+    assert "routine:READY" in result
+
+
+@pytest.mark.asyncio
 async def test_parallel_supervisor_completion_marker_unlocks_dependency(tmp_path: Path) -> None:
     cfg = _parallel_config(
         tmp_path,

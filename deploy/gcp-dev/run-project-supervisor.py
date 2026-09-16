@@ -222,7 +222,13 @@ def _lane_thread_complete(
     if str(values.get("status") or "") != "READY":
         return False
     head = values.get("observed_head_sha")
-    return isinstance(head, str) and bool(head) and _head_is_on_base(config, head)
+    ci_head = values.get("ci_head_sha")
+    reviewed_head = values.get("reviewed_head_sha")
+    if not all(isinstance(item, str) and item for item in (head, ci_head, reviewed_head)):
+        return False
+    if not (head == ci_head == reviewed_head):
+        return False
+    return _head_is_on_base(config, head)
 
 
 def _lane_complete(
