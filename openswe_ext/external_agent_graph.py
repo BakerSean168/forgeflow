@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Protocol, TypedDict
+from typing import Literal, NotRequired, Protocol, TypedDict
 
 from acp.exceptions import RequestError
 from httpx2 import RequestError as HttpxRequestError
@@ -26,6 +26,7 @@ from openswe_ext.external_agent_workspace import (
     cleanup_external_workspace,
     prepare_external_workspace,
 )
+from openswe_ext.implementation_continuation import apply_external_continuation
 
 ExternalGraphStatus = Literal["SUCCESS", "BLOCKED"]
 
@@ -38,6 +39,7 @@ class ExternalAgentGraphInput(TypedDict):
     operation_key: str
     route_id: str
     phase: Literal["IMPLEMENT", "REPAIR"]
+    continuation_id: NotRequired[str | None]
 
 
 class ExternalAgentGraphState(ExternalAgentGraphInput, total=False):
@@ -169,11 +171,35 @@ class DefaultExternalAgentGraphServices:
             )
             workspace = prepared.path
             source_revision = prepared.source_revision
+            continuation_id = request.get("continuation_id")
+            objective = request["objective"]
+            if continuation_id:
+                continuation_root_raw = os.environ.get(
+                    "FORGEFLOW_IMPLEMENTATION_CONTINUATION_ROOT", ""
+                ).strip()
+                if continuation_root_raw:
+                    continuation_root = Path(continuation_root_raw).expanduser()
+                else:
+                    continuation_root = Path(ledger_path).expanduser().parent / "implementation-continuations"
+                await cancellation_safe_to_thread(
+                    apply_external_continuation,
+                    workspace=workspace,
+                    continuation_root=continuation_root,
+                    continuation_id=continuation_id,
+                    expected_source_revision=source_revision,
+                )
+                objective = (
+                    "ForgeFlow continuation handoff: this clean checkout has been restored with "
+                    "the authorized dirty worktree from the previous implementation provider. "
+                    "Inspect and preserve those changes, finish only the requested task, verify "
+                    "them, and deliver the required commit/PR. Do not restart from the base or "
+                    "discard the restored worktree.\n\n" + objective
+                )
             execution_request = ExternalAgentExecutionRequest(
                 owner=request["owner"],
                 repo=request["repo"],
                 workspace=workspace,
-                objective=request["objective"],
+                objective=objective,
                 operation_key=request["operation_key"],
                 phase=request["phase"],
                 test_command=project.test_command,

@@ -81,6 +81,7 @@ class ExternalAgentChildRuntime:
         base_ref: str,
         operation_key: str,
         phase: str,
+        continuation_id: str | None = None,
     ) -> str:
         run = await self._client.runs.create(
             thread_id,
@@ -93,6 +94,7 @@ class ExternalAgentChildRuntime:
                 "operation_key": operation_key,
                 "route_id": route_id,
                 "phase": phase,
+                "continuation_id": continuation_id,
             },
             metadata={
                 "kind": "forgeflow_external_child",

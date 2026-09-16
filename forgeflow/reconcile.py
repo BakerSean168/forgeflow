@@ -85,6 +85,10 @@ from forgeflow.routing import (
 )
 from forgeflow.state import DEFAULT_BUDGET, TERMINAL_STATUSES, ForgeFlowState
 from openswe_ext.external_agent_runtime import ExternalAgentChildRuntime
+from openswe_ext.implementation_continuation import (
+    ImplementationContinuationError,
+    capture_openswe_continuation,
+)
 
 _RECONCILE_CRON_KIND = "forgeflow_reconcile"
 _RECONCILE_SCHEDULE = "* * * * *"
@@ -116,6 +120,15 @@ class PolicyServices(Protocol):
     def select_repair_route(self) -> RouteDefinition | None: ...
 
     def automatic_route_fallback_enabled(self) -> bool: ...
+
+    async def capture_implementation_continuation(
+        self,
+        *,
+        thread_id: str,
+        runtime: str,
+        repo_name: str,
+        operation_key: str,
+    ) -> str | None: ...
 
     async def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str: ...
 
@@ -166,6 +179,7 @@ class PolicyServices(Protocol):
         base_ref: str,
         operation_key: str,
         workspace_path: str | None,
+        continuation_id: str | None,
     ) -> str: ...
 
     async def dispatch_repair(
@@ -334,6 +348,40 @@ class DefaultPolicyServices:
             raise ReconcileError("FORGEFLOW_AUTOMATIC_ROUTE_FALLBACK_ENABLED must be true or false")
         return value == "true"
 
+    async def capture_implementation_continuation(
+        self,
+        *,
+        thread_id: str,
+        runtime: str,
+        repo_name: str,
+        operation_key: str,
+    ) -> str | None:
+        if runtime != "OPEN_SWE":
+            return None
+        thread = await self.child.read_thread(thread_id)
+        sandbox_id = thread.metadata.get("sandbox_id")
+        if not isinstance(sandbox_id, str) or not sandbox_id:
+            raise ReconcileError("IMPLEMENTATION_CONTINUATION_SANDBOX_MISSING")
+        configured_root = os.environ.get("FORGEFLOW_IMPLEMENTATION_CONTINUATION_ROOT", "").strip()
+        if configured_root:
+            root = Path(configured_root).expanduser()
+        else:
+            ledger_path = os.environ.get("FORGEFLOW_ATTEMPT_LEDGER_FILE", "").strip()
+            if not ledger_path:
+                raise ReconcileError("FORGEFLOW_ATTEMPT_LEDGER_FILE is required")
+            root = Path(ledger_path).expanduser().parent / "implementation-continuations"
+        try:
+            continuation = await asyncio.to_thread(
+                capture_openswe_continuation,
+                sandbox_id=sandbox_id,
+                repo_name=repo_name,
+                operation_key=operation_key,
+                continuation_root=root,
+            )
+        except ImplementationContinuationError as exc:
+            raise ReconcileError(str(exc)) from exc
+        return continuation.continuation_id if continuation is not None else None
+
     async def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str:
         def operation() -> str:
             self._openswe_route(route_id)
@@ -484,6 +532,7 @@ class DefaultPolicyServices:
         base_ref: str,
         operation_key: str,
         workspace_path: str | None,
+        continuation_id: str | None,
     ) -> str:
         if runtime == "OPEN_SWE":
             return await self.child.dispatch_implementation(
@@ -504,6 +553,7 @@ class DefaultPolicyServices:
                 base_ref=base_ref,
                 operation_key=operation_key,
                 phase="IMPLEMENT",
+                continuation_id=continuation_id,
             )
         raise ReconcileError(f"unsupported implementation runtime: {runtime}")
 
@@ -847,13 +897,39 @@ async def _reconcile_implementation_run(
     )
     if failure_class == "ROUTE_AVAILABILITY":
         if services.automatic_route_fallback_enabled() and not state.get("workspace_path"):
-            return _fallback_implementation_route(state, services, failure_code=failure_code)
+            continuation_id = state.get("implementation_continuation_id")
+            if _required(state, "implementation_runtime") == "OPEN_SWE":
+                try:
+                    continuation_id = await services.capture_implementation_continuation(
+                        thread_id=thread_id,
+                        runtime=_required(state, "implementation_runtime"),
+                        repo_name=_required(state, "repo_name"),
+                        operation_key=_required(state, "implementation_operation_key"),
+                    )
+                except ReconcileError:
+                    result = enter_resource_wait(
+                        state,
+                        "IMPLEMENTATION_CONTINUATION_CAPTURE_FAILED",
+                        resume_status="IMPLEMENTING",
+                    )
+                    result["implementation_continuation_id"] = continuation_id
+                    return result
+            return _fallback_implementation_route(
+                state,
+                services,
+                failure_code=failure_code,
+                continuation_id=continuation_id,
+            )
         return enter_resource_wait(state, failure_code, resume_status="IMPLEMENTING")
     return note_child_run_failure(state, failure_code)
 
 
 def _fallback_implementation_route(
-    state: ForgeFlowState, services: PolicyServices, *, failure_code: str
+    state: ForgeFlowState,
+    services: PolicyServices,
+    *,
+    failure_code: str,
+    continuation_id: str | None = None,
 ) -> ForgeFlowState:
     failed = list(dict.fromkeys([*state.get("implementation_failed_route_ids", []), _required(state, "implementation_route_id")]))
     route = services.select_implementation_route(
@@ -875,6 +951,7 @@ def _fallback_implementation_route(
     result["implementation_operation_key"] = None
     result["run_retry_count"] = 0
     result["last_failure_code"] = failure_code
+    result["implementation_continuation_id"] = continuation_id
     return result
 
 
@@ -939,6 +1016,7 @@ async def _adopt_or_dispatch_initial(
             base_ref=_required(state, "base_ref"),
             operation_key=operation_key,
             workspace_path=state.get("workspace_path"),
+            continuation_id=state.get("implementation_continuation_id"),
         )
     result = start_implementation(state) if state["status"] == "NEW" else deepcopy(state)
     result["implementation_run_id"] = run_id
