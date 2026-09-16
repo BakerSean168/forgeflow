@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """Stateless project continuation supervisor for unattended ForgeFlow runs.
 
-The supervisor persists no queue. Repository plan files are task truth and
-LangGraph ForgeFlow threads are execution truth. One invocation performs at
-most one action per configured project: recover a resource escalation, merge an
-exact-head READY PR, or create the next bounded objective.
+Repository plan files remain task truth and LangGraph ForgeFlow threads remain
+execution truth. The legacy mode advances one project objective at a time.
+Optional configured lanes enable bounded dependency-aware parallelism while
+keeping each mutation lane in an independent ForgeFlow objective/sandbox.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from langgraph_sdk import get_client
 
@@ -25,7 +26,11 @@ from forgeflow.adapters.github import (
     fetch_pull_request,
     merge_pull_request_exact_head,
 )
-from forgeflow.projects import ContinuousProjectConfig, load_continuous_project_configs
+from forgeflow.projects import (
+    ContinuousLaneConfig,
+    ContinuousProjectConfig,
+    load_continuous_project_configs,
+)
 
 ACTIVE = frozenset(
     {
@@ -53,8 +58,23 @@ def _values(thread: Mapping[str, Any]) -> Mapping[str, Any]:
     return raw if isinstance(raw, Mapping) else {}
 
 
+def _metadata(thread: Mapping[str, Any]) -> Mapping[str, Any]:
+    raw = thread.get("metadata")
+    return raw if isinstance(raw, Mapping) else {}
+
+
 def _plan_active(config: ContinuousProjectConfig) -> bool:
     return any(path.is_file() for path in config.plan_paths)
+
+
+def _plan_text(config: ContinuousProjectConfig) -> str:
+    chunks: list[str] = []
+    for path in config.plan_paths:
+        try:
+            chunks.append(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    return "\n".join(chunks)
 
 
 def _head_is_on_base(config: ContinuousProjectConfig, head_sha: str) -> bool:
@@ -97,8 +117,7 @@ async def _assistant_id(client: Any) -> str:
 
 
 def _thread_matches_project(row: Mapping[str, Any], config: ContinuousProjectConfig) -> bool:
-    metadata = row.get("metadata")
-    metadata = metadata if isinstance(metadata, Mapping) else {}
+    metadata = _metadata(row)
     if str(metadata.get("project_key") or "").casefold() == config.project_key.casefold():
         return True
     repo = metadata.get("repo")
@@ -127,10 +146,6 @@ def _thread_has_execution_identity(row: Mapping[str, Any], config: ContinuousPro
 
 
 async def _project_threads(client: Any, config: ContinuousProjectConfig) -> list[Mapping[str, Any]]:
-    # Legacy acceptance-created objectives predate project_key metadata. Search
-    # the graph as a whole and match the durable repository identity instead of
-    # treating one presentation field as task truth. The server returns newest
-    # first, so filtering preserves deterministic recency.
     rows = await client.threads.search(
         metadata={"graph_id": "forgeflow"},
         limit=200,
@@ -147,10 +162,6 @@ async def _project_threads(client: Any, config: ContinuousProjectConfig) -> list
 def _select_project_thread(
     rows: list[Mapping[str, Any]], config: ContinuousProjectConfig
 ) -> Mapping[str, Any] | None:
-    # Any viable active objective wins even when a newer terminal record exists;
-    # this is the duplicate-writer guard. A graph-error shell without complete
-    # execution identity cannot dispatch a writer and must not permanently mask
-    # the last recoverable durable objective.
     for row in rows:
         values = _values(row)
         status = str(values.get("status") or "NEW")
@@ -162,34 +173,143 @@ def _select_project_thread(
     return None
 
 
+def _thread_lane_key(
+    row: Mapping[str, Any], config: ContinuousProjectConfig
+) -> str | None:
+    metadata_key = str(_metadata(row).get("lane_key") or "").strip().casefold()
+    known = {lane.key for lane in config.lanes}
+    if metadata_key in known:
+        return metadata_key
+
+    objective = str(_values(row).get("objective") or "").casefold()
+    if not objective:
+        return None
+    matches = []
+    for lane in config.lanes:
+        terms = lane.match_terms or (lane.key,)
+        if any(term.casefold() in objective for term in terms):
+            matches.append(lane.key)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _lane_rows(
+    rows: list[Mapping[str, Any]], config: ContinuousProjectConfig, lane_key: str
+) -> list[Mapping[str, Any]]:
+    return [row for row in rows if _thread_lane_key(row, config) == lane_key]
+
+
+def _select_lane_thread(
+    rows: list[Mapping[str, Any]], config: ContinuousProjectConfig, lane_key: str
+) -> Mapping[str, Any] | None:
+    return _select_project_thread(_lane_rows(rows, config, lane_key), config)
+
+
+def _lane_marker_complete(
+    lane: ContinuousLaneConfig, plan_text: str
+) -> bool:
+    if not lane.completion_markers:
+        return False
+    folded = plan_text.casefold()
+    return all(marker.casefold() in folded for marker in lane.completion_markers)
+
+
+def _lane_thread_complete(
+    config: ContinuousProjectConfig, row: Mapping[str, Any] | None
+) -> bool:
+    if row is None:
+        return False
+    values = _values(row)
+    if str(values.get("status") or "") != "READY":
+        return False
+    head = values.get("observed_head_sha")
+    return isinstance(head, str) and bool(head) and _head_is_on_base(config, head)
+
+
+def _lane_complete(
+    config: ContinuousProjectConfig,
+    lane: ContinuousLaneConfig,
+    rows: list[Mapping[str, Any]],
+    plan_text: str,
+) -> bool:
+    if _lane_marker_complete(lane, plan_text):
+        return True
+    return _lane_thread_complete(config, _select_lane_thread(rows, config, lane.key))
+
+
+def _active_rows(
+    rows: list[Mapping[str, Any]], config: ContinuousProjectConfig
+) -> list[Mapping[str, Any]]:
+    return [
+        row
+        for row in rows
+        if str(_values(row).get("status") or "NEW") in ACTIVE
+        and _thread_has_execution_identity(row, config)
+    ]
+
+
 async def _command_recover(client: Any, assistant_id: str, thread_id: str) -> None:
     await client.runs.create(
         thread_id,
         assistant_id,
         input={"recover_requested": True},
         config={"configurable": {"thread_id": thread_id}},
-        metadata={"kind": "forgeflow_policy_command", "command": "recover", "source": "project-supervisor"},
+        metadata={
+            "kind": "forgeflow_policy_command",
+            "command": "recover",
+            "source": "project-supervisor",
+        },
         multitask_strategy="enqueue",
     )
 
 
-async def _create_objective(
-    client: Any, assistant_id: str, config: ContinuousProjectConfig
+def _objective_text(
+    config: ContinuousProjectConfig, lane: ContinuousLaneConfig | None
 ) -> str:
-    thread_id = str(uuid4())
-    criteria = "\n".join(f"- {item}" for item in config.acceptance_criteria)
-    objective = config.objective if not criteria else f"{config.objective}\n\nAcceptance criteria:\n{criteria}"
+    criteria = list(config.acceptance_criteria)
+    if lane is None:
+        body = config.objective
+    else:
+        criteria.extend(lane.acceptance_criteria)
+        body = (
+            config.objective
+            + f"\n\nParallel mutation lane `{lane.key}`:\n"
+            + lane.objective
+            + "\n\nOwn only this lane. Other configured lanes may run concurrently in isolated "
+            "ForgeFlow objectives/sandboxes. Before mutating, verify the lane is still "
+            "dependency-ready and does not overlap an active sibling's owner contracts, "
+            "schema, or files. If repository evidence contradicts readiness, stop without "
+            "mutation and report the blocker rather than stealing another lane."
+        )
+    rendered = "\n".join(f"- {item}" for item in dict.fromkeys(criteria))
+    return body if not rendered else f"{body}\n\nAcceptance criteria:\n{rendered}"
+
+
+async def _create_objective(
+    client: Any,
+    assistant_id: str,
+    config: ContinuousProjectConfig,
+    lane: ContinuousLaneConfig | None = None,
+) -> str:
+    thread_id = (
+        str(uuid4())
+        if lane is None
+        else str(uuid5(NAMESPACE_URL, f"forgeflow:continuous:{config.owner}/{config.repo}:{config.base_ref}:{lane.key}"))
+    )
+    objective = _objective_text(config, lane)
+    metadata = {
+        "kind": "forgeflow-policy",
+        "source": "project-supervisor",
+        "project_key": config.project_key,
+        "repo": {"owner": config.owner, "name": config.repo},
+        "title": objective[:120],
+    }
+    if lane is not None:
+        metadata["lane_key"] = lane.key
     await client.threads.create(
         thread_id=thread_id,
         graph_id="forgeflow",
-        if_exists="raise",
-        metadata={
-            "kind": "forgeflow-policy",
-            "source": "project-supervisor",
-            "project_key": config.project_key,
-            "repo": {"owner": config.owner, "name": config.repo},
-            "title": objective[:120],
-        },
+        if_exists="raise" if lane is None else "do_nothing",
+        metadata=metadata,
     )
     await client.runs.create(
         thread_id,
@@ -202,17 +322,50 @@ async def _create_objective(
             "workspace_path": None,
         },
         config={"configurable": {"thread_id": thread_id}},
-        metadata={"kind": "forgeflow_policy", "source": "project-supervisor"},
+        metadata={
+            "kind": "forgeflow_policy",
+            "source": "project-supervisor",
+            **({"lane_key": lane.key} if lane is not None else {}),
+        },
         multitask_strategy="reject",
     )
     return thread_id
 
 
-async def supervise_project(client: Any, assistant_id: str, config: ContinuousProjectConfig) -> str:
-    if not _plan_active(config):
-        return "plan-complete"
+async def _advance_ready(
+    config: ContinuousProjectConfig, values: Mapping[str, Any]
+) -> str:
+    pr_url = values.get("pr_url")
+    head = values.get("observed_head_sha")
+    ci_head = values.get("ci_head_sha")
+    reviewed_head = values.get("reviewed_head_sha")
+    if not all(isinstance(item, str) and item for item in (pr_url, head, ci_head, reviewed_head)):
+        return "blocked:READY_EVIDENCE_MISSING"
+    if not (head == ci_head == reviewed_head):
+        return "blocked:READY_HEAD_MISMATCH"
+    if _head_is_on_base(config, head):
+        return "complete:on-base"
+    if not config.auto_merge_ready:
+        return "ready:awaiting-merge"
+    pr = await fetch_pull_request(pr_url)
+    if pr is None:
+        return "blocked:PR_EVIDENCE_UNAVAILABLE"
+    if pr.base_ref != config.base_ref or pr.head_sha != head:
+        return "blocked:PR_IDENTITY_DRIFT"
+    if pr.state != "open":
+        return "blocked:PR_NOT_OPEN"
+    try:
+        merged = await merge_pull_request_exact_head(
+            pr, expected_head_sha=head, merge_method="merge"
+        )
+    except GitHubEvidenceError as exc:
+        return f"blocked:{exc}"
+    return "merged" if merged else "ready:merge-deferred"
 
-    rows = await _project_threads(client, config)
+
+async def _supervise_single_project(
+    client: Any, assistant_id: str, config: ContinuousProjectConfig, rows: list[Mapping[str, Any]]
+) -> str:
     latest = _select_project_thread(rows, config)
     if latest is None:
         thread_id = await _create_objective(client, assistant_id, config)
@@ -223,56 +376,131 @@ async def supervise_project(client: Any, assistant_id: str, config: ContinuousPr
     thread_id = str(latest.get("thread_id") or "")
     if status in ACTIVE:
         return f"active:{status}"
-
     if status == "ESCALATED":
         failure = str(values.get("last_failure_code") or "")
         if failure in RESOURCE_FAILURES and thread_id:
             await _command_recover(client, assistant_id, thread_id)
             return f"recovering:{failure}"
         return f"blocked:{failure or 'ESCALATED'}"
-
     if status == "CANCELLED":
         return "blocked:CANCELLED"
-
     if status != "READY":
         return f"blocked:UNSUPPORTED_STATUS:{status}"
 
-    pr_url = values.get("pr_url")
-    head = values.get("observed_head_sha")
-    ci_head = values.get("ci_head_sha")
-    reviewed_head = values.get("reviewed_head_sha")
-    if not all(isinstance(item, str) and item for item in (pr_url, head, ci_head, reviewed_head)):
-        return "blocked:READY_EVIDENCE_MISSING"
-    if not (head == ci_head == reviewed_head):
-        return "blocked:READY_HEAD_MISMATCH"
-
-    if _head_is_on_base(config, head):
+    result = await _advance_ready(config, values)
+    if result == "complete:on-base":
         next_id = await _create_objective(client, assistant_id, config)
         return f"created:{next_id}"
-
-    if not config.auto_merge_ready:
-        return "ready:awaiting-merge"
-
-    pr = await fetch_pull_request(pr_url)
-    if pr is None:
-        return "blocked:PR_EVIDENCE_UNAVAILABLE"
-    if pr.base_ref != config.base_ref or pr.head_sha != head:
-        return "blocked:PR_IDENTITY_DRIFT"
-    if pr.state != "open":
-        return "blocked:PR_NOT_OPEN"
-    try:
-        merged = await merge_pull_request_exact_head(pr, expected_head_sha=head, merge_method="merge")
-    except GitHubEvidenceError as exc:
-        return f"blocked:{exc}"
-    if not merged:
-        return "ready:merge-deferred"
-
-    # Keep the crash/replay boundary single-effect. The next timer tick proves
-    # the accepted head is now on the base branch before creating a new objective.
-    return "merged"
+    return result
 
 
-async def run_once(*, port: int, config_dir: Path, state_dir: Path) -> int:
+async def _supervise_parallel_project(
+    client: Any, assistant_id: str, config: ContinuousProjectConfig, rows: list[Mapping[str, Any]]
+) -> str:
+    plan_text = _plan_text(config)
+    lane_map = {lane.key: lane for lane in config.lanes}
+    completed = {
+        lane.key
+        for lane in config.lanes
+        if _lane_complete(config, lane, rows, plan_text)
+    }
+
+    # Process terminal/recoverable lane state before opening new capacity. Keep
+    # READY merges single-effect per invocation to preserve crash/replay safety.
+    for lane in config.lanes:
+        latest = _select_lane_thread(rows, config, lane.key)
+        if latest is None:
+            continue
+        values = _values(latest)
+        status = str(values.get("status") or "NEW")
+        thread_id = str(latest.get("thread_id") or "")
+        if status == "ESCALATED":
+            failure = str(values.get("last_failure_code") or "")
+            if failure in RESOURCE_FAILURES and thread_id:
+                await _command_recover(client, assistant_id, thread_id)
+                return f"parallel:recovering:{lane.key}:{failure}"
+        if status == "READY" and lane.key not in completed:
+            result = await _advance_ready(config, values)
+            if result == "merged":
+                return f"parallel:merged:{lane.key}"
+
+    active = _active_rows(rows, config)
+    active_lane_keys = {
+        key
+        for row in active
+        if (key := _thread_lane_key(row, config)) is not None
+    }
+    reservations = len(active)
+    unknown_active = [row for row in active if _thread_lane_key(row, config) is None]
+    if unknown_active:
+        return (
+            f"parallel:active={reservations}/{config.max_parallel_mutations} "
+            f"blocked=unknown-active:{len(unknown_active)}"
+        )
+    capacity = max(0, config.max_parallel_mutations - reservations)
+    if capacity == 0:
+        return (
+            f"parallel:active={reservations}/{config.max_parallel_mutations} "
+            + "lanes="
+            + ",".join(sorted(active_lane_keys))
+        )
+
+    created: list[tuple[str, str]] = []
+    blocked: list[str] = []
+    for lane in config.lanes:
+        if len(created) >= capacity:
+            break
+        if lane.key in completed or lane.key in active_lane_keys:
+            continue
+        latest = _select_lane_thread(rows, config, lane.key)
+        if latest is not None:
+            status = str(_values(latest).get("status") or "NEW")
+            if status in {"ESCALATED", "CANCELLED"}:
+                blocked.append(f"{lane.key}:{status}")
+                continue
+            if status == "READY":
+                blocked.append(f"{lane.key}:READY")
+                continue
+        missing = [key for key in lane.depends_on if key not in completed]
+        if missing:
+            blocked.append(f"{lane.key}:depends-on:{'+'.join(missing)}")
+            continue
+        conflicts = [key for key in lane.conflicts_with if key in active_lane_keys]
+        if conflicts:
+            blocked.append(f"{lane.key}:conflicts:{'+'.join(conflicts)}")
+            continue
+        # Conflict declarations are directional in configuration, so also honor
+        # a currently-active sibling that declares this candidate as conflicting.
+        reverse_conflicts = [
+            key
+            for key in active_lane_keys
+            if key in lane_map and lane.key in lane_map[key].conflicts_with
+        ]
+        if reverse_conflicts:
+            blocked.append(f"{lane.key}:conflicts:{'+'.join(reverse_conflicts)}")
+            continue
+        thread_id = await _create_objective(client, assistant_id, config, lane)
+        created.append((lane.key, thread_id))
+        active_lane_keys.add(lane.key)
+
+    created_text = ",".join(f"{key}:{thread_id}" for key, thread_id in created) or "-"
+    blocked_text = ",".join(blocked) or "-"
+    return (
+        f"parallel:active={reservations + len(created)}/{config.max_parallel_mutations} "
+        f"created={created_text} blocked={blocked_text}"
+    )
+
+
+async def supervise_project(client: Any, assistant_id: str, config: ContinuousProjectConfig) -> str:
+    if not _plan_active(config):
+        return "plan-complete"
+    rows = await _project_threads(client, config)
+    if config.lanes:
+        return await _supervise_parallel_project(client, assistant_id, config, rows)
+    return await _supervise_single_project(client, assistant_id, config, rows)
+
+
+async def _run_once_locked(*, port: int, config_dir: Path, state_dir: Path) -> int:
     os.environ.setdefault("FORGEFLOW_POLICY_CONFIG_DIR", str(config_dir))
     os.environ.setdefault("FORGEFLOW_POLICY_STATE_DIR", str(state_dir))
     os.environ.setdefault("OPEN_SWE_LOCAL_PROJECTS_FILE", str(config_dir / "projects.json"))
@@ -292,21 +520,48 @@ async def run_once(*, port: int, config_dir: Path, state_dir: Path) -> int:
     return 0
 
 
+async def run_once(*, port: int, config_dir: Path, state_dir: Path) -> int:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = state_dir / "project-supervisor.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("project_supervisor=already-running")
+            return 0
+        try:
+            return await _run_once_locked(port=port, config_dir=config_dir, state_dir=state_dir)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=58810)
     parser.add_argument(
         "--config-dir",
         type=Path,
-        default=Path(os.environ.get("FORGEFLOW_POLICY_CONFIG_DIR", Path.home() / ".config/forgeflow-policy")),
+        default=Path(
+            os.environ.get(
+                "FORGEFLOW_POLICY_CONFIG_DIR", Path.home() / ".config/forgeflow-policy"
+            )
+        ),
     )
     parser.add_argument(
         "--state-dir",
         type=Path,
-        default=Path(os.environ.get("FORGEFLOW_POLICY_STATE_DIR", Path.home() / ".local/share/forgeflow-policy")),
+        default=Path(
+            os.environ.get(
+                "FORGEFLOW_POLICY_STATE_DIR", Path.home() / ".local/share/forgeflow-policy"
+            )
+        ),
     )
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(run_once(port=args.port, config_dir=args.config_dir, state_dir=args.state_dir)))
+    raise SystemExit(
+        asyncio.run(
+            run_once(port=args.port, config_dir=args.config_dir, state_dir=args.state_dir)
+        )
+    )
 
 
 if __name__ == "__main__":

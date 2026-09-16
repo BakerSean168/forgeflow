@@ -30,11 +30,45 @@
       "plan_paths": [
         "docs/plan/active/current.md"
       ],
-      "objective": "Continue the repository-owned canonical implementation plan by selecting one dependency-ready incomplete ticket.",
+      "objective": "Continue the repository-owned canonical implementation plan. Multiple configured lanes may run concurrently, but each lane must keep its own ownership boundary and delivery evidence.",
       "acceptance_criteria": [
-        "The selected ticket is implemented and validated."
+        "The selected lane is implemented and validated."
       ],
-      "auto_merge_ready": false
+      "auto_merge_ready": false,
+      "max_parallel_mutations": 4,
+      "lanes": [
+        {
+          "key": "domain-a",
+          "objective": "Own the Domain A ticket from the canonical plan end to end.",
+          "match_terms": [
+            "DOMAIN-A"
+          ],
+          "completion_markers": [
+            "DOMAIN-A DONE"
+          ]
+        },
+        {
+          "key": "domain-b",
+          "objective": "Own Domain B after Domain A is accepted.",
+          "depends_on": [
+            "domain-a"
+          ],
+          "match_terms": [
+            "DOMAIN-B"
+          ]
+        },
+        {
+          "key": "domain-c",
+          "objective": "Own Domain C independently.",
+          "conflicts_with": [
+            "domain-d"
+          ]
+        },
+        {
+          "key": "domain-d",
+          "objective": "Own Domain D independently unless Domain C is active."
+        }
+      ]
     }
   }
 ]
