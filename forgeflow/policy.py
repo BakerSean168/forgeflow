@@ -250,19 +250,51 @@ def tick_resource_wait(
     return result
 
 
+def _is_legacy_codebuddy_resource_misclassification(
+    state: ForgeFlowState, code: str
+) -> bool:
+    """Recognize only pre-rate-limit-fix CodeBuddy escalations with zero delivery evidence."""
+
+    if code not in {"EXTERNAL_AGENT_STOP_REFUSAL", "CODEBUDDY_BOOTSTRAP_SEAL_FAILED"}:
+        return False
+    if (
+        state.get("implementation_route_id") != "codebuddy-account-primary"
+        or state.get("implementation_runtime") != "EXTERNAL_ACP"
+    ):
+        return False
+    return not any(
+        (
+            state.get("workspace_path"),
+            state.get("pr_url"),
+            state.get("pr_number"),
+            state.get("observed_head_sha"),
+            state.get("ci_head_sha"),
+            state.get("reviewed_head_sha"),
+        )
+    )
+
+
 def recover_resource_escalation(state: ForgeFlowState) -> ForgeFlowState:
     """Explicitly recover only escalations known to be resource availability failures."""
     _require_status(state, "ESCALATED")
     code = state.get("last_failure_code") or ""
+    legacy_codebuddy = _is_legacy_codebuddy_resource_misclassification(state, code)
     recoverable = {
         "OPENSWE_PROVIDER_UNAVAILABLE",
         "IMPLEMENTATION_ROUTE_UNAVAILABLE",
         "IMPLEMENTATION_ROUTE_EXHAUSTED",
         "REVIEWER_PROVIDER_UNAVAILABLE",
     }
-    if code not in recoverable:
+    if code not in recoverable and not legacy_codebuddy:
         raise PolicyViolation(f"escalation is not resource-recoverable: {code or 'unknown'}")
-    if code in {"IMPLEMENTATION_ROUTE_UNAVAILABLE", "IMPLEMENTATION_ROUTE_EXHAUSTED"}:
+    if legacy_codebuddy:
+        # Before the CodeBuddy quota classifier existed, 429 provider refusal was
+        # charged to the engineering retry budget as a generic refusal/seal failure.
+        # With no workspace or delivery evidence there is nothing to adopt, so
+        # normalize to clean route reselection and refund those resource retries.
+        code = "IMPLEMENTATION_ROUTE_EXHAUSTED"
+        resume = "NEW"
+    elif code in {"IMPLEMENTATION_ROUTE_UNAVAILABLE", "IMPLEMENTATION_ROUTE_EXHAUSTED"}:
         resume = "NEW"
     elif state.get("implementation_phase") == "REPAIR":
         resume = "REPAIRING"
@@ -271,6 +303,8 @@ def recover_resource_escalation(state: ForgeFlowState) -> ForgeFlowState:
     else:
         resume = "IMPLEMENTING"
     result = enter_resource_wait(state, code, resume_status=resume)
+    if legacy_codebuddy:
+        result["run_retry_count"] = 0
     result["recover_requested"] = False
     # The escalated objective may still carry the id of a cron that has already
     # been deleted. Force normal cron discovery/recreation on the recovery run.
