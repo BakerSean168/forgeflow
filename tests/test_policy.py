@@ -280,6 +280,69 @@ def test_only_resource_escalations_can_be_explicitly_recovered() -> None:
         recover_resource_escalation(state)
 
 
+def _legacy_codebuddy_escalation(code: str):
+    state = initial_state(objective="x", repo_owner="o", repo_name="r")
+    state["status"] = "ESCALATED"
+    state["implementation_route_id"] = "codebuddy-account-primary"
+    state["implementation_runtime"] = "EXTERNAL_ACP"
+    state["implementation_run_id"] = "legacy-run"
+    state["run_retry_count"] = 2
+    state["last_failure_code"] = code
+    return state
+
+
+@pytest.mark.parametrize(
+    "code", ["EXTERNAL_AGENT_STOP_REFUSAL", "CODEBUDDY_BOOTSTRAP_SEAL_FAILED"]
+)
+def test_legacy_codebuddy_resource_misclassification_can_be_recovered_without_evidence(
+    code: str,
+) -> None:
+    from forgeflow.policy import recover_resource_escalation
+
+    recovered = recover_resource_escalation(_legacy_codebuddy_escalation(code))
+
+    assert recovered["status"] == "WAITING_FOR_RESOURCE"
+    assert recovered["resource_resume_status"] == "NEW"
+    assert recovered["last_failure_code"] == "IMPLEMENTATION_ROUTE_EXHAUSTED"
+    assert recovered["implementation_run_id"] is None
+    assert recovered["implementation_operation_key"] is None
+    assert recovered["run_retry_count"] == 0
+    assert recovered["recover_requested"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workspace_path", "/tmp/existing-worktree"),
+        ("pr_url", PR),
+        ("pr_number", 1),
+        ("observed_head_sha", HEAD_A),
+        ("ci_head_sha", HEAD_A),
+        ("reviewed_head_sha", HEAD_A),
+    ],
+)
+def test_legacy_codebuddy_recovery_refuses_states_with_adoptable_evidence(
+    field: str, value: object
+) -> None:
+    from forgeflow.policy import PolicyViolation, recover_resource_escalation
+
+    state = _legacy_codebuddy_escalation("EXTERNAL_AGENT_STOP_REFUSAL")
+    state[field] = value  # type: ignore[literal-required]
+
+    with pytest.raises(PolicyViolation):
+        recover_resource_escalation(state)
+
+
+def test_legacy_codebuddy_recovery_does_not_generalize_generic_refusal() -> None:
+    from forgeflow.policy import PolicyViolation, recover_resource_escalation
+
+    state = _legacy_codebuddy_escalation("EXTERNAL_AGENT_STOP_REFUSAL")
+    state["implementation_route_id"] = "antigravity-account-primary"
+
+    with pytest.raises(PolicyViolation):
+        recover_resource_escalation(state)
+
+
 def test_successful_implementation_evidence_resets_resource_backoff_epoch() -> None:
     state = initial_state(objective="x", repo_owner="o", repo_name="r")
     state = start_implementation(state)
