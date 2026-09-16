@@ -149,3 +149,20 @@ def test_parse_task_graph_rejects_boolean_schema_version() -> None:
     raw["schema_version"] = True
     with pytest.raises(ValueError, match="schema_version must be 1"):
         parse_task_graph(raw)
+
+
+def test_task_route_preference_is_execution_semantics_without_changing_legacy_fingerprint() -> None:
+    baseline = parse_task_graph(_graph())
+    baseline_fingerprint = baseline.execution_fingerprint(baseline.tasks[0])
+
+    routed_raw = _graph()
+    routed_raw["tasks"][0]["preferred_implementation_route_id"] = "openswe-current"
+    routed = parse_task_graph(routed_raw)
+
+    assert routed.tasks[0].preferred_implementation_route_id == "openswe-current"
+    assert routed.execution_fingerprint(routed.tasks[0]) != baseline_fingerprint
+
+    revision_only = _graph()
+    revision_only["revision"] = 2
+    unchanged = parse_task_graph(revision_only)
+    assert unchanged.execution_fingerprint(unchanged.tasks[0]) == baseline_fingerprint

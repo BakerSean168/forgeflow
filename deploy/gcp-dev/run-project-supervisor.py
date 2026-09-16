@@ -405,6 +405,11 @@ async def _create_objective(
             "repo_name": config.repo,
             "base_ref": config.base_ref,
             "workspace_path": None,
+            **(
+                {"preferred_implementation_route_id": lane.preferred_implementation_route_id}
+                if isinstance(lane, TaskSpec) and lane.preferred_implementation_route_id
+                else {}
+            ),
         },
         config={"configurable": {"thread_id": thread_id}},
         metadata={

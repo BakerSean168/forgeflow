@@ -71,7 +71,15 @@ Each Task contains:
 - exact `verification_commands`;
 - `depends_on` for hard acceptance prerequisites;
 - `conflicts_with` for semantic conflicts that cannot run concurrently;
-- `mutation_keys` for deterministic exclusive ownership domains.
+- `mutation_keys` for deterministic exclusive ownership domains;
+- optional `preferred_implementation_route_id` for a Task-scoped initial implementation route preference.
+
+
+Task-scoped route preference is an execution hint, not a hard lock. When the preferred route is eligible,
+it wins the Task's initial route selection. If that route is excluded or unavailable, ForgeFlow keeps the
+existing route-fallback policy and deterministically selects another eligible IMPLEMENT route. This lets a
+single TaskGraph intentionally split work across resources (for example, ChatGPT Team and CodeBuddy)
+without changing project-wide route priority. Omitting the field preserves the legacy Task fingerprint.
 
 TaskGraph deliberately does **not** support legacy `match_terms` or plan-text completion markers. A
 TaskGraph writer must carry current semantic fingerprint metadata, and Task completion must come from

@@ -52,6 +52,7 @@ _TASK_FIELDS = frozenset(
         "depends_on",
         "conflicts_with",
         "mutation_keys",
+        "preferred_implementation_route_id",
     }
 )
 
@@ -74,6 +75,7 @@ class TaskSpec:
     depends_on: tuple[str, ...]
     conflicts_with: tuple[str, ...]
     mutation_keys: tuple[str, ...]
+    preferred_implementation_route_id: str | None = None
 
     @property
     def key(self) -> str:
@@ -114,6 +116,12 @@ class TaskGraphSpec:
         task, while any change to architecture, ownership, steps, verification,
         or acceptance yields a different identity and fails closed.
         """
+        task_payload = asdict(task)
+        if task.preferred_implementation_route_id is None:
+            # Preserve V1 fingerprints for existing graphs that do not opt into
+            # task-scoped routing. Route preference is execution semantics only
+            # when explicitly authored.
+            task_payload.pop("preferred_implementation_route_id", None)
         payload = {
             "schema_version": self.schema_version,
             "graph_id": self.graph_id,
@@ -123,7 +131,7 @@ class TaskGraphSpec:
             "protected_contracts": self.protected_contracts,
             "non_goals": self.non_goals,
             "acceptance_criteria": self.acceptance_criteria,
-            "task": asdict(task),
+            "task": task_payload,
         }
         canonical = json.dumps(
             payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
@@ -229,6 +237,11 @@ def _task(raw: object, *, graph_id: str, index: int) -> TaskSpec:
             label=f"{label} mutation_keys",
             required=True,
             normalize_case=True,
+        ),
+        preferred_implementation_route_id=(
+            _required_text(raw, "preferred_implementation_route_id", label=label)
+            if raw.get("preferred_implementation_route_id") is not None
+            else None
         ),
     )
 

@@ -82,7 +82,11 @@ class FakeServices:
         owner: str | None = None,
         repo: str | None = None,
         exclude_ids: frozenset[str] = frozenset(),
+        preferred_route_id: str | None = None,
     ) -> RouteDefinition | None:
+        for route in (self.selected_route, self.fallback_route):
+            if route is not None and route.id == preferred_route_id and route.id not in exclude_ids:
+                return route
         if self.selected_route.id not in exclude_ids:
             return self.selected_route
         if self.fallback_route is not None and self.fallback_route.id not in exclude_ids:
@@ -350,6 +354,29 @@ async def test_reconcile_bootstrap_performs_only_one_external_mutation_per_invoc
     assert services.actions[-1].startswith("dispatch_child:implementation:policy-1:retry:0")
     assert len(services.actions) == 3
     assert state["status"] == "IMPLEMENTING"
+
+
+@pytest.mark.asyncio
+async def test_task_preferred_implementation_route_wins_initial_selection() -> None:
+    openswe = RouteDefinition(
+        "openswe-current", "IMPLEMENT", 10, "OPEN_SWE", "current-model-policy"
+    )
+    codebuddy = RouteDefinition(
+        "codebuddy-account-primary",
+        "IMPLEMENT",
+        30,
+        "EXTERNAL_ACP",
+        "codebuddy-account",
+        adapter="codebuddy",
+    )
+    services = FakeServices(selected_route=openswe, fallback_route=codebuddy)
+    state = _base_state()
+    state["preferred_implementation_route_id"] = codebuddy.id
+
+    selected = await reconcile_once(state, policy_thread_id="policy-route", services=services)
+
+    assert selected["implementation_route_id"] == codebuddy.id
+    assert selected["implementation_runtime"] == "EXTERNAL_ACP"
 
 
 @pytest.mark.asyncio
