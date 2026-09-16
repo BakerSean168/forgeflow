@@ -255,7 +255,11 @@ def _is_legacy_codebuddy_resource_misclassification(
 ) -> bool:
     """Recognize only pre-rate-limit-fix CodeBuddy escalations with zero delivery evidence."""
 
-    if code not in {"EXTERNAL_AGENT_STOP_REFUSAL", "CODEBUDDY_BOOTSTRAP_SEAL_FAILED"}:
+    if code not in {
+        "EXTERNAL_AGENT_STOP_REFUSAL",
+        "CODEBUDDY_BOOTSTRAP_SEAL_FAILED",
+        "EXTERNAL_AGENT_RESULT_MISSING",
+    }:
         return False
     if (
         state.get("implementation_route_id") != "codebuddy-account-primary"
