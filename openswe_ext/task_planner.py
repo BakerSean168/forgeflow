@@ -58,8 +58,6 @@ class PlannedTaskOutput(BaseModel):
     depends_on: list[str] = Field(default_factory=list, max_length=12)
     conflicts_with: list[str] = Field(default_factory=list, max_length=12)
     mutation_keys: list[str] = Field(min_length=1, max_length=12)
-    match_terms: list[str] = Field(default_factory=list, max_length=8)
-    completion_markers: list[str] = Field(default_factory=list, max_length=8)
 
 
 class TaskGraphPlanningOutput(BaseModel):

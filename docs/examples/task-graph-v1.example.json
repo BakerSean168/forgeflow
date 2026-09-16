@@ -65,11 +65,7 @@
       "mutation_keys": [
         "contract:shared-domain",
         "domain:shared"
-      ],
-      "match_terms": [
-        "DOMAIN-1001"
-      ],
-      "completion_markers": []
+      ]
     },
     {
       "id": "DOMAIN-1002",
@@ -111,11 +107,7 @@
       "conflicts_with": [],
       "mutation_keys": [
         "domain:planner"
-      ],
-      "match_terms": [
-        "DOMAIN-1002"
-      ],
-      "completion_markers": []
+      ]
     }
   ]
 }

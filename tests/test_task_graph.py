@@ -42,7 +42,6 @@ def _graph() -> dict:
                 "depends_on": [],
                 "conflicts_with": [],
                 "mutation_keys": ["contract:routine", "domain:routine"],
-                "match_terms": ["ROUTINE-2201"],
             },
             {
                 "id": "PLANNER-2301",
@@ -94,6 +93,13 @@ def test_execution_fingerprint_ignores_revision_but_tracks_semantic_changes() ->
         third.tasks[0]
     )
 
+    context_changed = _graph()
+    context_changed["context_refs"] = ["docs/adr/other-system.md"]
+    fourth = parse_task_graph(context_changed)
+    assert first.execution_fingerprint(first.tasks[0]) != fourth.execution_fingerprint(
+        fourth.tasks[0]
+    )
+
 
 def test_parse_task_graph_rejects_dependency_cycle() -> None:
     raw = _graph()
@@ -113,6 +119,14 @@ def test_parse_task_graph_rejects_unknown_fields() -> None:
     raw = _graph()
     raw["tasks"][0]["magic_priority"] = 99
     with pytest.raises(ValueError, match="unknown fields: magic_priority"):
+        parse_task_graph(raw)
+
+
+@pytest.mark.parametrize("field", ["match_terms", "completion_markers"])
+def test_parse_task_graph_rejects_legacy_lane_adoption_fields(field: str) -> None:
+    raw = _graph()
+    raw["tasks"][0][field] = ["legacy shortcut"]
+    with pytest.raises(ValueError, match=f"unknown fields: {field}"):
         parse_task_graph(raw)
 
 

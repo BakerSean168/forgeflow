@@ -71,9 +71,12 @@ Each Task contains:
 - exact `verification_commands`;
 - `depends_on` for hard acceptance prerequisites;
 - `conflicts_with` for semantic conflicts that cannot run concurrently;
-- `mutation_keys` for deterministic exclusive ownership domains;
-- optional `match_terms` for adopting legacy writers;
-- optional `completion_markers` for compatibility with repository plan evidence.
+- `mutation_keys` for deterministic exclusive ownership domains.
+
+TaskGraph deliberately does **not** support legacy `match_terms` or plan-text completion markers. A
+TaskGraph writer must carry current semantic fingerprint metadata, and Task completion must come from
+exact-head CI/review evidence already accepted onto the configured base. Legacy adoption shortcuts stay
+confined to the old inline-lane compatibility format.
 
 See [`examples/task-graph-v1.example.json`](./examples/task-graph-v1.example.json).
 
@@ -109,11 +112,13 @@ TaskGraph V1 fails closed before any writer starts when, among other cases:
   `mutation_keys`;
 - a context reference escapes the repository or a configured repository reference is missing;
 - both legacy inline `lanes` and a first-class `task_graph_path` are configured;
-- a running Task cannot prove the current TaskGraph semantic fingerprint and therefore cannot be safely adopted.
+- a running Task cannot prove the current TaskGraph semantic fingerprint and therefore cannot be safely adopted;
+- Task entries attempt to use legacy lane-only adoption/completion fields such as `match_terms`.
 
 Task execution identity is derived from a deterministic semantic fingerprint over the graph objective,
-architecture decisions, protected contracts, non-goals, graph acceptance criteria, and the complete
-Task specification. `revision` and planning provenance are deliberately excluded from that fingerprint.
+global context references, architecture decisions, protected contracts, non-goals, graph acceptance
+criteria, and the complete Task specification. `revision` and planning provenance are deliberately
+excluded from that fingerprint.
 A revision-only edit can therefore reuse an identical in-flight or accepted Task, while any execution-
 relevant semantic change creates a new identity even when someone forgot to bump the revision. An
 older or otherwise unknown writer without the current semantic fingerprint blocks parallel expansion.
@@ -213,8 +218,9 @@ ForgeFlow invents work -> ForgeFlow immediately executes it
 ## Legacy lanes
 
 Inline `continuous_supervisor.lanes` remain a compatibility input for already-running deployments.
-They are projected into the same bounded scheduler, but they do not carry the richer system context,
-ownership, and verification contract of TaskGraph V1.
+They are projected into the same bounded scheduler and may retain legacy `match_terms` / plan completion
+markers, but those shortcuts never apply to TaskGraph V1. Legacy lanes do not carry the richer system
+context, fingerprinted ownership, and verification contract of TaskGraph V1.
 
 New project work should use `task_graph_path`. A project must not configure both formats at the same
 time.

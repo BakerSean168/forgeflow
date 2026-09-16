@@ -183,25 +183,23 @@ def _thread_lane_key(
     known = {task.key for task in tasks}
 
     task_id = str(metadata.get("task_id") or "").strip().casefold()
-    if task_id:
-        if task_id not in known:
+    if config.task_graph is not None:
+        if not task_id or task_id not in known:
             return None
-        if config.task_graph is not None:
-            graph_id = str(metadata.get("task_graph_id") or "").strip()
-            fingerprint = str(metadata.get("task_fingerprint") or "").strip()
-            current = config.task_graph.task(task_id)
-            expected_fingerprint = config.task_graph.execution_fingerprint(current)
-            if graph_id != config.task_graph.graph_id or fingerprint != expected_fingerprint:
-                return None
+        graph_id = str(metadata.get("task_graph_id") or "").strip()
+        fingerprint = str(metadata.get("task_fingerprint") or "").strip()
+        current = config.task_graph.task(task_id)
+        expected_fingerprint = config.task_graph.execution_fingerprint(current)
+        if graph_id != config.task_graph.graph_id or fingerprint != expected_fingerprint:
+            return None
         return task_id
 
     metadata_key = str(metadata.get("lane_key") or "").strip().casefold()
     if metadata_key in known:
         return metadata_key
 
-    # Compatibility adoption for objectives created before first-class TaskGraph
-    # metadata existed. A unique match term may claim the old writer; ambiguous
-    # ownership stays unknown and therefore blocks automatic expansion.
+    # Legacy inline-lane compatibility only. TaskGraph mode never adopts an
+    # unfingerprinted writer by lane key or objective text.
     objective = str(_values(row).get("objective") or "").casefold()
     if not objective:
         return None
@@ -225,9 +223,7 @@ def _select_lane_thread(
     return _select_project_thread(_lane_rows(rows, config, lane_key), config)
 
 
-def _lane_marker_complete(
-    lane: ContinuousLaneConfig | TaskSpec, plan_text: str
-) -> bool:
+def _lane_marker_complete(lane: ContinuousLaneConfig, plan_text: str) -> bool:
     if not lane.completion_markers:
         return False
     folded = plan_text.casefold()
@@ -258,7 +254,7 @@ def _lane_complete(
     rows: list[Mapping[str, Any]],
     plan_text: str,
 ) -> bool:
-    if _lane_marker_complete(lane, plan_text):
+    if isinstance(lane, ContinuousLaneConfig) and _lane_marker_complete(lane, plan_text):
         return True
     return _lane_thread_complete(config, _select_lane_thread(rows, config, lane.key))
 

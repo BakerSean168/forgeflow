@@ -630,7 +630,6 @@ def _task_graph_config(
                     "depends_on": [],
                     "conflicts_with": [],
                     "mutation_keys": ["contract:routine"],
-                    "match_terms": ["ROUTINE-2201"],
                 },
                 {
                     "id": "PLANNER-2301",
@@ -847,6 +846,24 @@ async def test_task_graph_mutation_keys_implicitly_prevent_parallel_overlap(tmp_
     result = await module.supervise_project(client, "assistant", cfg)
     assert len(client.runs.calls) == 1
     assert "notif-1:mutation-conflicts:routine-2201" in result
+
+
+@pytest.mark.asyncio
+async def test_task_graph_lane_key_without_fingerprint_blocks_expansion(tmp_path: Path) -> None:
+    cfg = _task_graph_config(tmp_path)
+    client = FakeClient(
+        [
+            _thread(
+                "IMPLEMENTING",
+                thread_id="legacy-lane-key-only",
+                lane_key="routine-2201",
+                objective="ROUTINE-2201 legacy lane writer",
+            )
+        ]
+    )
+    result = await module.supervise_project(client, "assistant", cfg)
+    assert "blocked=unknown-active:1" in result
+    assert client.runs.calls == []
 
 
 @pytest.mark.asyncio

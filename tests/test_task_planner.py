@@ -58,8 +58,6 @@ def _output(*, context_ref: str = "docs/adr/system.md") -> TaskGraphPlanningOutp
                     "depends_on": [],
                     "conflicts_with": [],
                     "mutation_keys": ["contract:routine"],
-                    "match_terms": ["ROUTINE-2201"],
-                    "completion_markers": [],
                 }
             ],
         }

@@ -52,8 +52,6 @@ _TASK_FIELDS = frozenset(
         "depends_on",
         "conflicts_with",
         "mutation_keys",
-        "match_terms",
-        "completion_markers",
     }
 )
 
@@ -76,8 +74,6 @@ class TaskSpec:
     depends_on: tuple[str, ...]
     conflicts_with: tuple[str, ...]
     mutation_keys: tuple[str, ...]
-    match_terms: tuple[str, ...]
-    completion_markers: tuple[str, ...]
 
     @property
     def key(self) -> str:
@@ -122,6 +118,7 @@ class TaskGraphSpec:
             "schema_version": self.schema_version,
             "graph_id": self.graph_id,
             "objective": self.objective,
+            "context_refs": self.context_refs,
             "architecture_decisions": self.architecture_decisions,
             "protected_contracts": self.protected_contracts,
             "non_goals": self.non_goals,
@@ -232,12 +229,6 @@ def _task(raw: object, *, graph_id: str, index: int) -> TaskSpec:
             label=f"{label} mutation_keys",
             required=True,
             normalize_case=True,
-        ),
-        match_terms=_strings(
-            raw.get("match_terms", [task_id]), label=f"{label} match_terms"
-        ),
-        completion_markers=_strings(
-            raw.get("completion_markers"), label=f"{label} completion_markers"
         ),
     )
 

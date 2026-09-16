@@ -610,13 +610,15 @@ TaskGraph changes the decomposition boundary without weakening delivery policy:
   neither declares an explicit conflict.
 - Active Task writers must resolve to the current TaskGraph `graph_id` and deterministic execution
   fingerprint. A revision-only change may adopt an otherwise identical Task; any semantic change to
-  global architecture/acceptance or the Task specification changes the fingerprint. Unknown or
-  unfingerprinted writers block automatic expansion instead of being guessed around.
-- Legacy writers created before TaskGraph metadata may be adopted only through one unambiguous
-  `match_terms` match. Ambiguous ownership remains blocked.
-- Dependencies are considered complete only through configured repository evidence or a `READY`
-  objective whose observed, CI, and reviewed heads are all non-empty, identical, and already on the
-  configured base branch.
+  global context references, architecture/acceptance, or the Task specification changes the
+  fingerprint. Unknown or unfingerprinted writers block automatic expansion instead of being guessed
+  around.
+- TaskGraph mode never adopts an unfingerprinted legacy writer from `lane_key` or objective text.
+  Legacy `match_terms` adoption is confined to the old inline-lane compatibility format; unknown
+  writers block TaskGraph parallel expansion.
+- TaskGraph dependencies are complete only through a fingerprint-valid `READY` objective whose
+  observed, CI, and reviewed heads are all non-empty, identical, and already on the configured base
+  branch. Legacy plan-text completion markers are not accepted for TaskGraph tasks.
 - CI/review stages conservatively keep their mutation reservation because a later repair may reopen
   mutation.
 - Every Task still follows implementation -> verification -> PR -> exact-head CI -> independent
