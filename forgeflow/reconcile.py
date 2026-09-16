@@ -69,7 +69,11 @@ from forgeflow.policy import (
     tick_resource_wait,
 )
 from forgeflow.projects import load_repository_policy, resolve_project_route
-from forgeflow.prompts.implementation import build_implementation_prompt, operation_trailer
+from forgeflow.prompts.implementation import (
+    build_delivery_checkpoint_prompt,
+    build_implementation_prompt,
+    operation_trailer,
+)
 from forgeflow.prompts.repair import build_ci_repair_prompt, build_review_repair_prompt
 from forgeflow.proposals import dynamic_project_lines
 from forgeflow.routing import (
@@ -896,27 +900,40 @@ async def _adopt_or_dispatch_initial(
     if run_id is None and attempt_finished:
         return escalate(state, "ATTEMPT_LEDGER_COMPLETED_WITHOUT_CHILD_RUN")
     if run_id is None:
-        run_id = await services.dispatch_implementation(
-            thread_id=thread_id,
-            route_id=route_id,
-            runtime=runtime,
-            objective=build_implementation_prompt(
-                objective=_required(state, "objective"),
+        objective = _required(state, "objective")
+        if (
+            runtime == "OPEN_SWE"
+            and state.get("run_retry_count", 0) > 0
+            and state.get("last_failure_code") == "NO_PROGRESS_NO_TRACKED_PR"
+        ):
+            dispatch_prompt = build_delivery_checkpoint_prompt(
+                objective=objective,
+                operation_key=operation_key,
+                base_ref=_required(state, "base_ref"),
+            )
+        else:
+            dispatch_prompt = build_implementation_prompt(
+                objective=objective,
                 operation_key=operation_key,
                 base_ref=_required(state, "base_ref"),
                 project_learning=(
                     *project_learning_lines(
                         owner=_required(state, "repo_owner"),
                         repo=_required(state, "repo_name"),
-                        objective=_required(state, "objective"),
+                        objective=objective,
                     ),
                     *dynamic_project_lines(
                         owner=_required(state, "repo_owner"),
                         repo=_required(state, "repo_name"),
-                        objective=_required(state, "objective"),
+                        objective=objective,
                     ),
                 ),
-            ),
+            )
+        run_id = await services.dispatch_implementation(
+            thread_id=thread_id,
+            route_id=route_id,
+            runtime=runtime,
+            objective=dispatch_prompt,
             repo_owner=_required(state, "repo_owner"),
             repo_name=_required(state, "repo_name"),
             base_ref=_required(state, "base_ref"),

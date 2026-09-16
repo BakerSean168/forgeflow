@@ -760,6 +760,35 @@ async def test_initial_dispatch_includes_operation_trailer_requirement() -> None
 
 
 @pytest.mark.asyncio
+async def test_no_tracked_pr_retry_dispatches_delivery_checkpoint_instead_of_full_reimplementation() -> None:
+    prompts = []
+
+    class CaptureServices(FakeServices):
+        async def dispatch_implementation(self, **kwargs):
+            prompts.append(kwargs["objective"])
+            return await super().dispatch_implementation(**kwargs)
+
+    services = CaptureServices(cron_id="cron-1", implementation_thread="implementation-thread")
+    state = _base_state("IMPLEMENTING")
+    state.update(
+        implementation_thread_id="implementation-thread",
+        implementation_route_id="openswe-current",
+        implementation_runtime="OPEN_SWE",
+        run_retry_count=1,
+        last_failure_code="NO_PROGRESS_NO_TRACKED_PR",
+    )
+
+    result = await reconcile_once(state, policy_thread_id="policy-1", services=services)
+
+    assert result["implementation_operation_key"] == "implementation:policy-1:retry:1"
+    assert len(prompts) == 1
+    assert "delivery-checkpoint recovery retry" in prompts[0]
+    assert "Do not restart broad implementation" in prompts[0]
+    assert "ForgeFlow-Operation: implementation:policy-1:retry:1" in prompts[0]
+    assert "ForgeFlow invariant preflight" not in prompts[0]
+
+
+@pytest.mark.asyncio
 async def test_default_preflight_moves_blocking_sandbox_probe_off_event_loop(monkeypatch) -> None:
     import threading
 
