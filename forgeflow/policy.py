@@ -288,23 +288,42 @@ def recover_resource_escalation(state: ForgeFlowState) -> ForgeFlowState:
     if code not in recoverable and not legacy_codebuddy:
         raise PolicyViolation(f"escalation is not resource-recoverable: {code or 'unknown'}")
     if legacy_codebuddy:
-        # Before the CodeBuddy quota classifier existed, 429 provider refusal was
+        # Before the CodeBuddy quota classifier existed, provider refusal was
         # charged to the engineering retry budget as a generic refusal/seal failure.
-        # With no workspace or delivery evidence there is nothing to adopt, so
-        # normalize to clean route reselection and refund those resource retries.
-        code = "IMPLEMENTATION_ROUTE_EXHAUSTED"
-        resume = "NEW"
-    elif code in {"IMPLEMENTATION_ROUTE_UNAVAILABLE", "IMPLEMENTATION_ROUTE_EXHAUSTED"}:
-        resume = "NEW"
-    elif state.get("implementation_phase") == "REPAIR":
-        resume = "REPAIRING"
-    elif code == "REVIEWER_PROVIDER_UNAVAILABLE":
-        resume = "REVIEWING"
-    else:
-        resume = "IMPLEMENTING"
-    result = enter_resource_wait(state, code, resume_status=resume)
-    if legacy_codebuddy:
+        # No delivery evidence exists, but deterministic child operation keys from
+        # those attempts do. Resume directly at NEW while excluding this failed
+        # route so reconciliation cannot re-adopt an old CodeBuddy child run.
+        result = deepcopy(state)
+        failed = list(
+            dict.fromkeys(
+                [
+                    *state.get("implementation_failed_route_ids", []),
+                    "codebuddy-account-primary",
+                ]
+            )
+        )
+        result["status"] = "NEW"
+        result["implementation_failed_route_ids"] = failed
+        result["implementation_route_id"] = None
+        result["implementation_runtime"] = None
+        result["implementation_thread_id"] = None
+        result["implementation_run_id"] = None
+        result["implementation_operation_key"] = None
         result["run_retry_count"] = 0
+        result["resource_retry_count"] = state.get("resource_retry_count", 0) + 1
+        result["resource_wait_count"] = 0
+        result["resource_resume_status"] = None
+        result["last_failure_code"] = "IMPLEMENTATION_ROUTE_EXHAUSTED"
+    else:
+        if code in {"IMPLEMENTATION_ROUTE_UNAVAILABLE", "IMPLEMENTATION_ROUTE_EXHAUSTED"}:
+            resume = "NEW"
+        elif state.get("implementation_phase") == "REPAIR":
+            resume = "REPAIRING"
+        elif code == "REVIEWER_PROVIDER_UNAVAILABLE":
+            resume = "REVIEWING"
+        else:
+            resume = "IMPLEMENTING"
+        result = enter_resource_wait(state, code, resume_status=resume)
     result["recover_requested"] = False
     # The escalated objective may still carry the id of a cron that has already
     # been deleted. Force normal cron discovery/recreation on the recovery run.

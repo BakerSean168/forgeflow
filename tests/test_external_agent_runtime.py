@@ -20,7 +20,8 @@ class FakeThreads:
         )
         return self.records[kwargs["thread_id"]]
 
-    async def get(self, thread_id):
+    async def get(self, thread_id, **kwargs):
+        del kwargs
         return self.records[thread_id]
 
     async def get_state(self, thread_id):
@@ -131,6 +132,42 @@ async def test_external_runtime_maps_blocked_graph_result_to_child_failure() -> 
     snapshot = await runtime.read_run(thread_id=thread_id, run_id=run_id)
     assert snapshot.status == "error"
     assert snapshot.failure_code == "ANTIGRAVITY_TIMEOUT"
+    assert snapshot.failure_class == "ROUTE_AVAILABILITY"
+
+
+@pytest.mark.asyncio
+async def test_external_runtime_reads_terminal_values_from_thread_when_checkpoint_is_empty() -> None:
+    client = FakeClient()
+    runtime = ExternalAgentChildRuntime(client)
+    thread_id = await runtime.ensure_thread(
+        policy_thread_id="policy-idle",
+        route_id="codebuddy-account-primary",
+        repo_owner="o",
+        repo_name="r",
+        objective="implement x",
+    )
+    run_id = await runtime.dispatch(
+        thread_id=thread_id,
+        route_id="codebuddy-account-primary",
+        objective="implement x",
+        repo_owner="o",
+        repo_name="r",
+        base_ref="main",
+        operation_key="op:idle",
+        phase="IMPLEMENT",
+    )
+    client.runs.records[(thread_id, run_id)]["status"] = "success"
+    client.threads.states[thread_id] = {"values": {}}
+    client.threads.records[thread_id]["values"] = {
+        "external_status": "BLOCKED",
+        "failure_code": "CODEBUDDY_RATE_LIMITED",
+        "failure_class": "ROUTE_AVAILABILITY",
+    }
+
+    snapshot = await runtime.read_run(thread_id=thread_id, run_id=run_id)
+
+    assert snapshot.status == "error"
+    assert snapshot.failure_code == "CODEBUDDY_RATE_LIMITED"
     assert snapshot.failure_class == "ROUTE_AVAILABILITY"
 
 

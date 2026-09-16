@@ -301,12 +301,17 @@ def test_legacy_codebuddy_resource_misclassification_can_be_recovered_without_ev
 
     recovered = recover_resource_escalation(_legacy_codebuddy_escalation(code))
 
-    assert recovered["status"] == "WAITING_FOR_RESOURCE"
-    assert recovered["resource_resume_status"] == "NEW"
+    assert recovered["status"] == "NEW"
+    assert recovered["resource_resume_status"] is None
     assert recovered["last_failure_code"] == "IMPLEMENTATION_ROUTE_EXHAUSTED"
+    assert recovered["implementation_failed_route_ids"] == ["codebuddy-account-primary"]
+    assert recovered["implementation_route_id"] is None
+    assert recovered["implementation_runtime"] is None
+    assert recovered["implementation_thread_id"] is None
     assert recovered["implementation_run_id"] is None
     assert recovered["implementation_operation_key"] is None
     assert recovered["run_retry_count"] == 0
+    assert recovered["resource_retry_count"] == 1
     assert recovered["recover_requested"] is False
 
 

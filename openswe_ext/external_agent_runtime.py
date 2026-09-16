@@ -170,9 +170,17 @@ class ExternalAgentChildRuntime:
 
     async def _state_values(self, thread_id: str) -> Mapping[str, Any]:
         state = await self._client.threads.get_state(thread_id)
-        if not isinstance(state, Mapping):
+        if isinstance(state, Mapping):
+            values = state.get("values")
+            if isinstance(values, Mapping) and values:
+                return values
+        # Local-dev LangGraph can expose an empty checkpoint view after an idle
+        # terminal child run while the thread resource still carries its durable
+        # channel values. Reuse only the same child thread's values.
+        thread = await self._client.threads.get(thread_id, include=["values"])
+        if not isinstance(thread, Mapping):
             return {}
-        values = state.get("values")
+        values = thread.get("values")
         return values if isinstance(values, Mapping) else {}
 
 
