@@ -61,6 +61,8 @@ class FakeServices:
     attempt_started: dict[tuple[str, str], bool] = field(default_factory=dict)
     attempt_start_calls: list[tuple[str, str, str | None]] = field(default_factory=list)
     attempt_finish_calls: list[dict[str, object]] = field(default_factory=list)
+    continuation_id: str | None = None
+    continuation_capture_calls: list[tuple[str, str, str, str]] = field(default_factory=list)
 
     async def preflight_repository(self, state: ForgeFlowState) -> RepositoryPreflight:
         return RepositoryPreflight(status=self.preflight_status)  # type: ignore[arg-type]
@@ -101,6 +103,17 @@ class FakeServices:
 
     def automatic_route_fallback_enabled(self) -> bool:
         return self.route_fallback_enabled
+
+    async def capture_implementation_continuation(
+        self,
+        *,
+        thread_id: str,
+        runtime: str,
+        repo_name: str,
+        operation_key: str,
+    ) -> str | None:
+        self.continuation_capture_calls.append((thread_id, runtime, repo_name, operation_key))
+        return self.continuation_id
 
     async def openswe_attempt_status(self, *, route_id: str, operation_key: str) -> str:
         value = self.attempt_started.get((route_id, operation_key))
@@ -193,8 +206,9 @@ class FakeServices:
         base_ref: str,
         operation_key: str,
         workspace_path: str | None,
+        continuation_id: str | None,
     ) -> str:
-        del thread_id, route_id, runtime, objective, repo_owner, repo_name, base_ref, workspace_path
+        del thread_id, route_id, runtime, objective, repo_owner, repo_name, base_ref, workspace_path, continuation_id
         return self._dispatch_child(operation_key, crash_attr="crash_child_once")
 
     async def dispatch_repair(
@@ -1090,6 +1104,7 @@ async def test_openswe_provider_outage_falls_through_to_external_agent_route() -
     )
     services.child_status["openswe-run"] = "error"
     services.child_failure_code["openswe-run"] = "OPENSWE_PROVIDER_UNAVAILABLE"
+    services.continuation_id = "a" * 32
 
     fallback = await reconcile_once(
         state, policy_thread_id="policy-openswe-provider-outage", services=services
@@ -1102,6 +1117,10 @@ async def test_openswe_provider_outage_falls_through_to_external_agent_route() -
     assert fallback["implementation_thread_id"] is None
     assert fallback["implementation_run_id"] is None
     assert fallback["last_failure_code"] == "OPENSWE_PROVIDER_UNAVAILABLE"
+    assert fallback["implementation_continuation_id"] == "a" * 32
+    assert services.continuation_capture_calls == [
+        ("openswe-thread", "OPEN_SWE", "r", "op:openswe-provider-outage")
+    ]
     assert services.attempt_finish_calls[-1]["route_id"] == openswe.id
     assert services.attempt_finish_calls[-1]["outcome"] == "FAILED"
     assert services.attempt_finish_calls[-1]["failure_class"] == "ROUTE_AVAILABILITY"

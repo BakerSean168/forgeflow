@@ -77,6 +77,7 @@ class ForgeFlowState(TypedDict, total=False):
     implementation_run_id: str | None
     implementation_operation_key: str | None
     implementation_phase: Literal["INITIAL", "REPAIR"]
+    implementation_continuation_id: str | None
     pr_url: str | None
     pr_number: int
     observed_head_sha: str
@@ -125,6 +126,7 @@ def initial_state(*, objective: str, repo_owner: str, repo_name: str, base_ref: 
         "preferred_implementation_route_id": None,
         "run_retry_count": 0,
         "implementation_failed_route_ids": [],
+        "implementation_continuation_id": None,
         "repair_round": 0,
         "reviewer_retry_count": 0,
         "reviewer_retry_pending": False,

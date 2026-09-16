@@ -40,6 +40,7 @@ class FakeRuns:
             "run_id": self.next_id,
             "status": "pending",
             "metadata": kwargs.get("metadata") or {},
+            "input": kwargs.get("input") or {},
         }
         return self.records[(thread_id, self.next_id)]
 
@@ -81,7 +82,9 @@ async def test_external_runtime_dispatches_idempotent_operation_and_projects_pr_
         base_ref="main",
         operation_key="op:1",
         phase="IMPLEMENT",
+        continuation_id="a" * 32,
     )
+    assert client.runs.records[(thread_id, run_id)]["input"]["continuation_id"] == "a" * 32
     assert await runtime.find_run_by_operation(thread_id=thread_id, operation_key="op:1") == run_id
 
     client.runs.records[(thread_id, run_id)]["status"] = "success"
