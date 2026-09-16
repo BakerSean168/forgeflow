@@ -203,6 +203,7 @@ class DefaultExternalAgentGraphServices:
                 operation_key=request["operation_key"],
                 phase=request["phase"],
                 test_command=project.test_command,
+                allow_dirty_workspace=bool(continuation_id),
             )
             allowed_project = f"{request["owner"]}/{request["repo"]}"
             # Adapter construction performs strict filesystem path validation
