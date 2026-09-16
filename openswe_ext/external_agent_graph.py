@@ -395,6 +395,9 @@ def build_external_agent_graph(*, services: ExternalAgentGraphServices | None = 
             "route_id": state["route_id"],
             "phase": state["phase"],
         }
+        continuation_id = state.get("continuation_id")
+        if continuation_id is not None:
+            request["continuation_id"] = continuation_id
         return asdict(await resolved.run(request))
 
     builder = StateGraph(ExternalAgentGraphState, input_schema=ExternalAgentGraphInput)
