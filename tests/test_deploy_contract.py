@@ -71,6 +71,15 @@ def test_example_project_manifest_documents_external_agent_validation_command() 
     assert payload[0]["external_agent_test_command"] == ["uv", "run", "pytest", "-q"]
 
 
+def test_example_project_manifest_prefers_task_graph_with_ai_decomposition_disabled() -> None:
+    payload = json.loads(Path("deploy/gcp-dev/projects.example.json").read_text(encoding="utf-8"))
+    supervisor = payload[0]["continuous_supervisor"]
+    assert supervisor["task_graph_path"] == "docs/plan/active/current.tasks.json"
+    assert supervisor["max_parallel_mutations"] == 4
+    assert supervisor["ai_decomposition_enabled"] is False
+    assert "lanes" not in supervisor
+
+
 def test_operator_api_is_mounted_inside_the_existing_openswe_webapp() -> None:
     root = DEPLOY.parents[1]
     config = json.loads((root / "langgraph.json").read_text(encoding="utf-8"))
@@ -143,3 +152,4 @@ def test_project_supervisor_is_stateless_opt_in_and_runs_frequently() -> None:
     assert "enable --now forgeflow-project-supervisor.timer" in installer
     assert memoflow["continuous_supervisor"]["enabled"] is False
     assert memoflow["continuous_supervisor"]["auto_merge_ready"] is True
+    assert memoflow["continuous_supervisor"]["ai_decomposition_enabled"] is False

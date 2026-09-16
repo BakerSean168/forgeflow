@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "graph_id": "example-vnext",
+  "revision": 1,
+  "title": "Example vNext execution graph",
+  "objective": "Complete the vNext refactor as one coherent architecture without breaking protected contracts.",
+  "planned_by": "chatgpt-web",
+  "context_refs": [
+    "docs/plan/active/current.md",
+    "docs/adr/system-boundary.md"
+  ],
+  "architecture_decisions": [
+    "The domain service remains the durable state owner.",
+    "The web layer consumes the domain contract and does not duplicate ownership."
+  ],
+  "protected_contracts": [
+    "Existing public API routes remain compatible unless an explicit migration task retires them.",
+    "Exact-head CI and independent review remain required before acceptance."
+  ],
+  "non_goals": [
+    "Do not restore retired compatibility models.",
+    "Do not combine unrelated cleanup into implementation tasks."
+  ],
+  "acceptance_criteria": [
+    "All graph tasks are accepted on their exact reviewed heads.",
+    "Repository-wide required checks pass after integration."
+  ],
+  "tasks": [
+    {
+      "id": "DOMAIN-1001",
+      "title": "Stabilize the shared domain contract",
+      "goal": "Establish the shared contract that downstream services must consume.",
+      "why_now": "Downstream work would otherwise optimize against an unstable boundary.",
+      "risk": "high",
+      "scope": [
+        "Shared domain contract and its canonical adapter."
+      ],
+      "out_of_scope": [
+        "Feature-specific UI polish."
+      ],
+      "context_refs": [
+        "docs/adr/system-boundary.md"
+      ],
+      "protected_contracts": [
+        "There is exactly one durable owner for the shared domain state."
+      ],
+      "implementation_steps": [
+        "Characterize the current contract with focused tests.",
+        "Implement the smallest coherent migration to the target boundary.",
+        "Remove only duplicate ownership made obsolete by the migration."
+      ],
+      "integration_notes": [
+        "DOMAIN-1002 consumes this contract and must not duplicate it."
+      ],
+      "acceptance_criteria": [
+        "Focused contract tests pass.",
+        "No duplicate domain owner remains in the changed scope."
+      ],
+      "verification_commands": [
+        "pnpm test:domain",
+        "pnpm typecheck"
+      ],
+      "depends_on": [],
+      "conflicts_with": [],
+      "mutation_keys": [
+        "contract:shared-domain",
+        "domain:shared"
+      ],
+      "match_terms": [
+        "DOMAIN-1001"
+      ],
+      "completion_markers": []
+    },
+    {
+      "id": "DOMAIN-1002",
+      "title": "Migrate the downstream planner",
+      "goal": "Move the planner onto the stabilized shared contract.",
+      "why_now": "The shared contract must be accepted before planner migration can be safe.",
+      "risk": "medium",
+      "scope": [
+        "Planner service and planner-to-domain adapter."
+      ],
+      "out_of_scope": [
+        "Notification behavior."
+      ],
+      "context_refs": [
+        "docs/plan/active/current.md",
+        "docs/adr/system-boundary.md"
+      ],
+      "protected_contracts": [
+        "Planner does not become a second durable state owner."
+      ],
+      "implementation_steps": [
+        "Switch planner reads/writes to the shared contract.",
+        "Delete planner-local compatibility code only after parity tests pass."
+      ],
+      "integration_notes": [
+        "Keep notification integration untouched unless required by the shared contract."
+      ],
+      "acceptance_criteria": [
+        "Planner focused tests pass against the new contract.",
+        "No retired compatibility path is reachable."
+      ],
+      "verification_commands": [
+        "pnpm test:planner",
+        "pnpm typecheck"
+      ],
+      "depends_on": [
+        "DOMAIN-1001"
+      ],
+      "conflicts_with": [],
+      "mutation_keys": [
+        "domain:planner"
+      ],
+      "match_terms": [
+        "DOMAIN-1002"
+      ],
+      "completion_markers": []
+    }
+  ]
+}
