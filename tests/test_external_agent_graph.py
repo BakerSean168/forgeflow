@@ -25,6 +25,23 @@ def _input():
     }
 
 
+def test_external_graph_forwards_continuation_id_to_execution_service() -> None:
+    services = FakeServices(
+        ExternalAgentGraphResult(
+            external_status="BLOCKED",
+            failure_code="TEST_STOP",
+            failure_class="UNCLASSIFIED",
+            attempt_id="attempt",
+        )
+    )
+    payload = _input()
+    payload["continuation_id"] = "a" * 32
+
+    asyncio.run(build_external_agent_graph(services=services).ainvoke(payload))
+
+    assert services.requests[0]["continuation_id"] == "a" * 32
+
+
 def test_external_graph_persists_normalized_success_result() -> None:
     services = FakeServices(
         ExternalAgentGraphResult(
