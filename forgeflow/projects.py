@@ -21,6 +21,8 @@ from forgeflow.task_graph import TaskGraphSpec, TaskSpec, load_task_graph
 class ExternalAgentProjectConfig:
     cwd: Path
     test_command: tuple[str, ...]
+    prepare_command: tuple[str, ...] | None = None
+    package_manager: str | None = None
 
 
 def _project_entry(owner: str, repo: str) -> dict | None:
@@ -65,12 +67,24 @@ def load_external_agent_project_config(owner: str, repo: str) -> ExternalAgentPr
         return None
     cwd = raw.get("cwd")
     command = raw.get("external_agent_test_command")
+    prepare = raw.get("external_agent_prepare_command")
+    package_manager = raw.get("external_agent_package_manager")
     if not isinstance(cwd, str) or not cwd.strip():
         return None
     if (
         not isinstance(command, list)
         or not command
         or any(not isinstance(item, str) or not item.strip() for item in command)
+    ):
+        return None
+    if prepare is not None and (
+        not isinstance(prepare, list)
+        or not prepare
+        or any(not isinstance(item, str) or not item.strip() for item in prepare)
+    ):
+        return None
+    if package_manager is not None and (
+        not isinstance(package_manager, str) or not package_manager.strip()
     ):
         return None
     path = Path(cwd).expanduser()
@@ -83,6 +97,8 @@ def load_external_agent_project_config(owner: str, repo: str) -> ExternalAgentPr
     return ExternalAgentProjectConfig(
         cwd=resolved,
         test_command=tuple(item.strip() for item in command),
+        prepare_command=(tuple(item.strip() for item in prepare) if prepare is not None else None),
+        package_manager=(package_manager.strip() if isinstance(package_manager, str) else None),
     )
 
 

@@ -22,6 +22,8 @@ class ExternalAgentExecutionRequest:
     operation_key: str
     phase: ExternalAgentPhase
     test_command: tuple[str, ...]
+    prepare_command: tuple[str, ...] | None = None
+    allow_existing_changes: bool = False
 
     @property
     def project(self) -> str:

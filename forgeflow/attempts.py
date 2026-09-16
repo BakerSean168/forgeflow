@@ -13,8 +13,36 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO, Literal
 
-AttemptEventKind = Literal["STARTED", "FINISHED"]
+AttemptEventKind = Literal["STARTED", "FINISHED", "WORKSPACE_CHECKPOINT", "WORKSPACE_CLEANED"]
 AttemptOutcome = Literal["SUCCEEDED", "FAILED", "BLOCKED"]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceCheckpoint:
+    recovery_key: str
+    attempt_id: str
+    route_id: str
+    operation_key: str
+    owner: str
+    repo: str
+    base_ref: str
+    workspace_id: str
+    workspace_relpath: str
+    source_revision: str
+    source_origin: str
+    changed_files: tuple[str, ...]
+    diff_sha256: str
+    checkpointed_at: str
+    failure_code: str | None
+    failure_stage: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class FailureDiagnostics:
+    stage: str | None = None
+    exception_type: str | None = None
+    errno: int | None = None
+    evidence: str | None = None
 
 
 class AttemptLedgerError(RuntimeError):
@@ -100,6 +128,116 @@ class AttemptLedger:
             if len(finishes) > 1:
                 raise AttemptLedgerError("ATTEMPT_LEDGER_DUPLICATE_FINISH")
             return AttemptStatus(handle=handle, finished=bool(finishes))
+
+    def workspace_checkpoint(self, *, recovery_key: str) -> WorkspaceCheckpoint | None:
+        """Return the latest active external workspace checkpoint for an objective."""
+        if not recovery_key.strip():
+            raise ValueError("recovery key is required")
+        with self._locked_file() as file:
+            rows = _read_rows(file)
+        latest: WorkspaceCheckpoint | None = None
+        for row in rows:
+            if row.get("event") == "WORKSPACE_CLEANED" and row.get("recovery_key") == recovery_key:
+                latest = None
+            elif row.get("event") == "WORKSPACE_CHECKPOINT" and row.get("recovery_key") == recovery_key:
+                latest = _checkpoint_from_row(row)
+        return latest
+
+    def checkpoint_workspace(
+        self,
+        *,
+        recovery_key: str,
+        attempt_id: str,
+        route_id: str,
+        operation_key: str,
+        owner: str,
+        repo: str,
+        base_ref: str,
+        workspace_id: str,
+        workspace_relpath: str,
+        source_revision: str,
+        source_origin: str,
+        changed_files: tuple[str, ...],
+        diff_sha256: str,
+        failure_code: str | None = None,
+        failure_stage: str | None = None,
+        diagnostics: FailureDiagnostics | None = None,
+    ) -> None:
+        """Append one private, provenance-bound recovery checkpoint."""
+        values = (
+            recovery_key, attempt_id, route_id, operation_key, owner, repo, base_ref,
+            workspace_id, workspace_relpath, source_revision, source_origin, diff_sha256,
+        )
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            raise AttemptLedgerError("ATTEMPT_LEDGER_WORKSPACE_PROVENANCE_INVALID")
+        if (
+            len(source_revision) != 40
+            or any(character not in "0123456789abcdefABCDEF" for character in source_revision)
+            or len(diff_sha256) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in diff_sha256)
+        ):
+            raise AttemptLedgerError("ATTEMPT_LEDGER_WORKSPACE_DIGEST_INVALID")
+        if not workspace_relpath.startswith("forgeflow-external-") or "/" in workspace_relpath:
+            raise AttemptLedgerError("ATTEMPT_LEDGER_WORKSPACE_PATH_INVALID")
+        if any(not isinstance(item, str) or not item.strip() or item.startswith("/") for item in changed_files):
+            raise AttemptLedgerError("ATTEMPT_LEDGER_WORKSPACE_FILES_INVALID")
+        payload: dict[str, object] = {
+            "version": 1,
+            "event": "WORKSPACE_CHECKPOINT",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "recovery_key": recovery_key,
+            "attempt_id": attempt_id,
+            "route_id": route_id,
+            "operation_key": operation_key,
+            "owner": owner,
+            "repo": repo,
+            "base_ref": base_ref,
+            "workspace_id": workspace_id,
+            "workspace_relpath": workspace_relpath,
+            "source_revision": source_revision,
+            "source_origin": source_origin,
+            "changed_files": list(changed_files),
+            "diff_sha256": diff_sha256,
+            "failure_code": failure_code,
+            "failure_stage": failure_stage,
+        }
+        if diagnostics is not None:
+            payload.update(
+                {
+                    "exception_type": diagnostics.exception_type,
+                    "errno": diagnostics.errno,
+                    "terminal_evidence": diagnostics.evidence,
+                }
+            )
+        self._append(payload)
+
+    def clean_workspace_checkpoint(self, *, recovery_key: str, reason: str) -> None:
+        """Record irreversible cleanup of all checkpoints for an objective."""
+        if not recovery_key.strip() or not reason.strip():
+            raise ValueError("checkpoint cleanup identity is required")
+        self._append(
+            {
+                "version": 1,
+                "event": "WORKSPACE_CLEANED",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "recovery_key": recovery_key,
+                "reason": reason[:160],
+            }
+        )
+
+    def recovery_checkpoint_count(self, *, recovery_key: str) -> int:
+        """Count retained checkpoints since the last cleanup marker."""
+        with self._locked_file() as file:
+            rows = _read_rows(file)
+        count = 0
+        for row in rows:
+            if row.get("recovery_key") != recovery_key:
+                continue
+            if row.get("event") == "WORKSPACE_CLEANED":
+                count = 0
+            elif row.get("event") == "WORKSPACE_CHECKPOINT":
+                count += 1
+        return count
 
     def start(
         self,
@@ -190,6 +328,7 @@ class AttemptLedger:
         result_revision: str | None = None,
         external_session_id: str | None = None,
         external_conversation_id: str | None = None,
+        diagnostics: FailureDiagnostics | None = None,
     ) -> None:
         payload = _finish_payload(
             handle,
@@ -200,6 +339,7 @@ class AttemptLedger:
             result_revision=result_revision,
             external_session_id=external_session_id,
             external_conversation_id=external_conversation_id,
+            diagnostics=diagnostics,
         )
         self._append(payload)
 
@@ -215,6 +355,7 @@ class AttemptLedger:
         result_revision: str | None = None,
         external_session_id: str | None = None,
         external_conversation_id: str | None = None,
+        diagnostics: FailureDiagnostics | None = None,
     ) -> str:
         """Idempotently close the unique attempt for one operation key."""
         with self._locked_file() as file:
@@ -407,6 +548,7 @@ def _finish_payload(
     result_revision: str | None,
     external_session_id: str | None = None,
     external_conversation_id: str | None = None,
+    diagnostics: FailureDiagnostics | None = None,
 ) -> dict[str, object]:
     if outcome == "SUCCEEDED" and failure_class is not None:
         raise ValueError("successful attempt cannot have failure_class")
@@ -437,7 +579,54 @@ def _finish_payload(
         "result_revision": result_revision,
         "external_session_id": external_session_id,
         "external_conversation_id": external_conversation_id,
+        "diagnostics": _diagnostics_payload(diagnostics),
     }
+
+
+def _diagnostics_payload(diagnostics: FailureDiagnostics | None) -> dict[str, object] | None:
+    if diagnostics is None:
+        return None
+    return {
+        "stage": diagnostics.stage[:80] if isinstance(diagnostics.stage, str) else None,
+        "exception_type": diagnostics.exception_type[:120]
+        if isinstance(diagnostics.exception_type, str)
+        else None,
+        "errno": diagnostics.errno,
+        "evidence": diagnostics.evidence[:160] if isinstance(diagnostics.evidence, str) else None,
+    }
+
+
+def _checkpoint_from_row(row: dict[str, object]) -> WorkspaceCheckpoint:
+    required = (
+        "recovery_key", "attempt_id", "route_id", "operation_key", "owner", "repo",
+        "base_ref", "workspace_id", "workspace_relpath", "source_revision", "source_origin",
+        "changed_files", "diff_sha256", "timestamp",
+    )
+    if any(not isinstance(row.get(key), str) or not str(row[key]).strip() for key in required):
+        raise AttemptLedgerError("ATTEMPT_LEDGER_WORKSPACE_CHECKPOINT_INVALID")
+    changed_files = row["changed_files"]
+    if not isinstance(changed_files, list) or any(
+        not isinstance(item, str) or not item.strip() or item.startswith("/") for item in changed_files
+    ):
+        raise AttemptLedgerError("ATTEMPT_LEDGER_WORKSPACE_CHECKPOINT_INVALID")
+    return WorkspaceCheckpoint(
+        recovery_key=row["recovery_key"],
+        attempt_id=row["attempt_id"],
+        route_id=row["route_id"],
+        operation_key=row["operation_key"],
+        owner=row["owner"],
+        repo=row["repo"],
+        base_ref=row["base_ref"],
+        workspace_id=row["workspace_id"],
+        workspace_relpath=row["workspace_relpath"],
+        source_revision=row["source_revision"],
+        source_origin=row["source_origin"],
+        changed_files=tuple(changed_files),
+        diff_sha256=row["diff_sha256"],
+        checkpointed_at=row["timestamp"],
+        failure_code=row.get("failure_code") if isinstance(row.get("failure_code"), str) else None,
+        failure_stage=row.get("failure_stage") if isinstance(row.get("failure_stage"), str) else None,
+    )
 
 
 def _read_rows(file: IO[str]) -> list[dict[str, object]]:
@@ -543,6 +732,20 @@ def _require_finish_compatible(
         raise AttemptLedgerError("ATTEMPT_LEDGER_FINISH_CONVERSATION_MISMATCH")
 
 
+def _validate_workspace_event(row: dict[str, object]) -> None:
+    event = row.get("event")
+    if not isinstance(row.get("timestamp"), str):
+        raise AttemptLedgerError("ATTEMPT_LEDGER_TIMESTAMP_INVALID")
+    _row_timestamp(row)
+    if not isinstance(row.get("recovery_key"), str) or not row["recovery_key"].strip():
+        raise AttemptLedgerError("ATTEMPT_LEDGER_WORKSPACE_CHECKPOINT_INVALID")
+    if event == "WORKSPACE_CLEANED":
+        if not isinstance(row.get("reason"), str) or not row["reason"].strip():
+            raise AttemptLedgerError("ATTEMPT_LEDGER_WORKSPACE_CLEANUP_INVALID")
+        return
+    _checkpoint_from_row(row)
+
+
 def _row_timestamp(row: dict[str, object]) -> tuple[str, datetime]:
     raw = row.get("timestamp")
     if not isinstance(raw, str):
@@ -603,6 +806,9 @@ def _summarize_routes(
 
     for row in rows:
         event = row.get("event")
+        if event in {"WORKSPACE_CHECKPOINT", "WORKSPACE_CLEANED"}:
+            _validate_workspace_event(row)
+            continue
         route_id = row.get("route_id")
         attempt_id = row.get("attempt_id")
         if event not in {"STARTED", "FINISHED"}:
@@ -762,6 +968,8 @@ __all__ = [
     "AttemptLedgerError",
     "AttemptOutcome",
     "AttemptStatus",
+    "FailureDiagnostics",
     "OpenAttempt",
     "RouteAttemptSummary",
+    "WorkspaceCheckpoint",
 ]
