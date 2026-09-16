@@ -58,6 +58,7 @@ class ForgeFlowInput(TypedDict, total=False):
     repo_name: str
     base_ref: str
     workspace_path: str | None
+    preferred_implementation_route_id: str | None
     cancel_requested: bool
     recover_requested: bool
 
@@ -68,6 +69,7 @@ class ForgeFlowState(TypedDict, total=False):
     repo_name: str
     base_ref: str
     workspace_path: str | None
+    preferred_implementation_route_id: str | None
     implementation_route_id: str
     implementation_runtime: Literal["OPEN_SWE", "EXTERNAL_ACP"]
     implementation_failed_route_ids: list[str]
@@ -120,6 +122,7 @@ def initial_state(*, objective: str, repo_owner: str, repo_name: str, base_ref: 
         "repo_owner": repo_owner,
         "repo_name": repo_name,
         "base_ref": base_ref,
+        "preferred_implementation_route_id": None,
         "run_retry_count": 0,
         "implementation_failed_route_ids": [],
         "repair_round": 0,

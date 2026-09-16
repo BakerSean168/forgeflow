@@ -9,6 +9,7 @@ import asyncio
 import os
 from collections.abc import Mapping
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -105,6 +106,7 @@ class PolicyServices(Protocol):
         owner: str | None = None,
         repo: str | None = None,
         exclude_ids: frozenset[str] = frozenset(),
+        preferred_route_id: str | None = None,
     ) -> RouteDefinition | None: ...
 
     def select_repair_route(self) -> RouteDefinition | None: ...
@@ -284,9 +286,21 @@ class DefaultPolicyServices:
         owner: str | None = None,
         repo: str | None = None,
         exclude_ids: frozenset[str] = frozenset(),
+        preferred_route_id: str | None = None,
     ) -> RouteDefinition | None:
         registry = self._route_registry()
         try:
+            if preferred_route_id:
+                try:
+                    preferred = registry.get(preferred_route_id)
+                except KeyError as exc:
+                    raise RouteConfigError(f"unknown preferred implementation route: {preferred_route_id}") from exc
+                if preferred.role != "IMPLEMENT":
+                    raise RouteConfigError(
+                        f"preferred implementation route {preferred_route_id} has role {preferred.role}"
+                    )
+                if preferred.id not in exclude_ids and preferred.eligible(now=datetime.now(UTC)):
+                    return preferred
             if owner and repo:
                 return resolve_project_route(
                     registry,
@@ -759,6 +773,7 @@ async def _reconcile_new(
                 owner=_required(state, "repo_owner"),
                 repo=_required(state, "repo_name"),
                 exclude_ids=frozenset(state.get("implementation_failed_route_ids", [])),
+                preferred_route_id=state.get("preferred_implementation_route_id"),
             )
         )
         if route is None:
@@ -841,6 +856,7 @@ def _fallback_implementation_route(
         owner=_required(state, "repo_owner"),
         repo=_required(state, "repo_name"),
         exclude_ids=frozenset(failed),
+        preferred_route_id=state.get("preferred_implementation_route_id"),
     )
     if route is None:
         return enter_resource_wait(
@@ -1466,6 +1482,7 @@ def _normalize_state(raw: ForgeFlowState) -> ForgeFlowState:
     state.setdefault("cancel_requested", False)
     state.setdefault("recover_requested", False)
     state.setdefault("implementation_failed_route_ids", [])
+    state.setdefault("preferred_implementation_route_id", None)
     state.setdefault("resource_resume_status", None)
     state.setdefault("resource_retry_count", 0)
     state.setdefault("resource_wait_count", 0)

@@ -595,6 +595,7 @@ def _task_graph_config(
     *,
     revision: int = 1,
     global_contract: str = "Do not resurrect retired Task DAG semantics.",
+    routine_route: str | None = None,
 ) -> ContinuousProjectConfig:
     plan = tmp_path / "docs/plan/active/current.md"
     plan.parent.mkdir(parents=True, exist_ok=True)
@@ -630,6 +631,11 @@ def _task_graph_config(
                     "depends_on": [],
                     "conflicts_with": [],
                     "mutation_keys": ["contract:routine"],
+                    **(
+                        {"preferred_implementation_route_id": routine_route}
+                        if routine_route
+                        else {}
+                    ),
                 },
                 {
                     "id": "PLANNER-2301",
@@ -771,6 +777,19 @@ async def test_task_graph_supervisor_dispatches_only_dependency_ready_task(tmp_p
     assert "contract:routine" in objective
     assert "pnpm test:routine" in objective
     assert "planner-2301:depends-on:routine-2201" in result
+
+
+@pytest.mark.asyncio
+async def test_task_graph_supervisor_projects_task_route_preference_into_policy_input(tmp_path: Path) -> None:
+    cfg = _task_graph_config(tmp_path, routine_route="openswe-current")
+    client = FakeClient([])
+
+    await module.supervise_project(client, "assistant", cfg)
+
+    assert len(client.runs.calls) == 1
+    _, _, call = client.runs.calls[0]
+    assert call["input"]["preferred_implementation_route_id"] == "openswe-current"
+    assert call["metadata"]["task_id"] == "ROUTINE-2201"
 
 
 @pytest.mark.asyncio
