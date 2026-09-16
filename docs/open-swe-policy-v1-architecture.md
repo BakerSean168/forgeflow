@@ -587,7 +587,9 @@ Explicitly retired contracts:
 Repositories may opt into `continuous_supervisor` in the existing project manifest. This is a
 stateless one-shot driver, not a second workflow database or project queue. Every invocation reads
 only: (1) repository-owned configured active plan paths, (2) ForgeFlow LangGraph objective threads,
-and (3) authoritative GitHub PR state. It performs at most one bounded action per project.
+and (3) authoritative GitHub PR state.
+
+The default behavior remains the original single-objective continuation contract:
 
 - An active objective, including `WAITING_FOR_RESOURCE`, is left alone.
 - A whitelisted resource-only `ESCALATED` objective receives the explicit `recover_requested` command.
@@ -598,8 +600,36 @@ and (3) authoritative GitHub PR state. It performs at most one bounded action pe
   exists, the supervisor creates exactly one next objective whose implementation agent must select a
   dependency-ready ticket from that repository plan.
 
-This gives unattended overnight progression without duplicating task truth inside ForgeFlow. Removing
-or archiving the configured plan file is the deterministic stop signal.
+Projects with an explicit decomposition may additionally configure bounded parallel mutation lanes:
+
+- `max_parallel_mutations` defaults to `1` and is fail-closed to the range `1..4`.
+- `lanes[]` gives each mutation lane a stable key, bounded objective, optional lane-specific acceptance
+  criteria, dependency keys, conflict keys, legacy objective match terms, and optional plan completion
+  markers.
+- Every started lane is a distinct ForgeFlow objective and therefore gets an independent Open SWE
+  thread/sandbox. Synchronous Open SWE subagents remain free for analysis, but they are not used as
+  concurrent writers against one filesystem.
+- Existing active objectives without a known lane key block new lane dispatch until they are matched or
+  become inactive. This fail-closed rule prevents a new supervisor configuration from guessing around a
+  legacy/manual writer whose ownership boundary is unknown.
+- Dependencies must be complete before a lane starts. Completion is proven either by configured
+  repository-plan evidence or by an exact-head `READY` lane whose accepted head is already on the
+  configured base branch.
+- Conflicts are enforced in both directions before dispatch. Agents are additionally instructed to
+  stop without mutation if live repository evidence contradicts configured readiness.
+- The configured number is a ceiling, not a target. A project with capacity `4` may intentionally run
+  only one or two writers when dependencies, conflicts, resource state, or ownership boundaries require it.
+- Lane lifecycle reservations are conservative: an active objective continues to occupy capacity while
+  it is in CI/review so a later repair cannot unexpectedly exceed the configured mutation ceiling.
+
+This model deliberately separates **decomposition** from **execution safety**. Today a repository or
+operator can declare the lane graph explicitly. A future planner may propose the same lane schema from a
+large objective, but it does not get to bypass the supervisor's hard `1..4` capacity, dependency,
+conflict, exact-head CI/review, or isolated-workspace rules.
+
+This gives unattended progression and bounded multi-lane throughput without duplicating product task
+truth inside ForgeFlow. Removing or archiving the configured plan file remains the deterministic stop
+signal.
 
 ## 18. Current repository layout
 

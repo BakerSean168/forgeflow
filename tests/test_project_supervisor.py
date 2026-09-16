@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from forgeflow.adapters.github import PullRequestEvidence
-from forgeflow.projects import ContinuousProjectConfig, load_continuous_project_configs
+from forgeflow.projects import (
+    ContinuousLaneConfig,
+    ContinuousProjectConfig,
+    load_continuous_project_configs,
+)
 
 SCRIPT = Path(__file__).resolve().parents[1] / "deploy/gcp-dev/run-project-supervisor.py"
 spec = importlib.util.spec_from_file_location("forgeflow_project_supervisor_cli", SCRIPT)
@@ -65,7 +69,7 @@ def _config(tmp_path: Path, *, auto_merge=True) -> ContinuousProjectConfig:
     )
 
 
-def _thread(status: str, *, thread_id: str = "policy-1", source: str = "hermes", **values):
+def _thread(status: str, *, thread_id: str = "policy-1", source: str = "hermes", lane_key: str | None = None, **values):
     defaults = {
         "objective": "Continue canonical plan",
         "repo_owner": "BakerSean168",
@@ -73,16 +77,19 @@ def _thread(status: str, *, thread_id: str = "policy-1", source: str = "hermes",
         "base_ref": "feat/convergence",
     }
     defaults.update(values)
+    metadata = {
+        "graph_id": "forgeflow",
+        "project_key": "memoflow",
+        "source": source,
+        "repo": {"owner": "BakerSean168", "name": "memoflow"},
+    }
+    if lane_key is not None:
+        metadata["lane_key"] = lane_key
     return {
         "thread_id": thread_id,
         "status": "idle",
         "values": {"status": status, **defaults},
-        "metadata": {
-            "graph_id": "forgeflow",
-            "project_key": "memoflow",
-            "source": source,
-            "repo": {"owner": "BakerSean168", "name": "memoflow"},
-        },
+        "metadata": metadata,
     }
 
 
@@ -268,3 +275,290 @@ async def test_malformed_graph_error_shell_does_not_mask_recoverable_objective(t
     result = await module.supervise_project(client, "assistant", _config(tmp_path))
     assert result == "recovering:OPENSWE_PROVIDER_UNAVAILABLE"
     assert client.runs.calls[0][0] == "routine-349"
+
+
+def _lane(
+    key: str,
+    *,
+    depends_on: tuple[str, ...] = (),
+    conflicts_with: tuple[str, ...] = (),
+    completion_markers: tuple[str, ...] = (),
+) -> ContinuousLaneConfig:
+    return ContinuousLaneConfig(
+        key=key,
+        objective=f"Own {key} only",
+        acceptance_criteria=(f"{key} is validated",),
+        depends_on=depends_on,
+        conflicts_with=conflicts_with,
+        match_terms=(key,),
+        completion_markers=completion_markers,
+    )
+
+
+def _parallel_config(
+    tmp_path: Path,
+    *,
+    max_parallel: int = 4,
+    lanes: tuple[ContinuousLaneConfig, ...] | None = None,
+) -> ContinuousProjectConfig:
+    plan = tmp_path / "docs/plan/active/current.md"
+    plan.parent.mkdir(parents=True, exist_ok=True)
+    if not plan.exists():
+        plan.write_text("# plan\n", encoding="utf-8")
+    return ContinuousProjectConfig(
+        project_key="memoflow",
+        owner="BakerSean168",
+        repo="memoflow",
+        cwd=tmp_path,
+        base_ref="feat/convergence",
+        plan_paths=(plan,),
+        objective="Continue the canonical plan",
+        acceptance_criteria=("CI passes",),
+        auto_merge_ready=True,
+        max_parallel_mutations=max_parallel,
+        lanes=lanes
+        or (
+            _lane("routine"),
+            _lane("notification"),
+            _lane("portability"),
+            _lane("home"),
+            _lane("ai"),
+        ),
+    )
+
+
+def test_load_continuous_project_configs_parses_bounded_parallel_lanes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "memoflow"
+    repo.mkdir()
+    manifest = tmp_path / "projects.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "project_key": "memoflow",
+                    "repo": "BakerSean168/memoflow",
+                    "cwd": str(repo),
+                    "continuous_supervisor": {
+                        "enabled": True,
+                        "base_ref": "feat/convergence",
+                        "plan_paths": ["docs/plan/active/current.md"],
+                        "objective": "Continue canonical plan",
+                        "max_parallel_mutations": 4,
+                        "lanes": [
+                            {
+                                "key": "routine",
+                                "objective": "Finish ROUTINE-2201",
+                                "match_terms": ["ROUTINE-2201"],
+                                "completion_markers": ["ROUTINE-2201 DONE"],
+                            },
+                            {
+                                "key": "planner",
+                                "objective": "Finish PLAN-2301",
+                                "depends_on": ["routine"],
+                                "conflicts_with": [],
+                            },
+                        ],
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPEN_SWE_LOCAL_PROJECTS_FILE", str(manifest))
+    configs = load_continuous_project_configs()
+    assert len(configs) == 1
+    cfg = configs[0]
+    assert cfg.max_parallel_mutations == 4
+    assert [lane.key for lane in cfg.lanes] == ["routine", "planner"]
+    assert cfg.lanes[1].depends_on == ("routine",)
+    assert cfg.lanes[0].match_terms == ("ROUTINE-2201",)
+
+
+def test_load_continuous_project_configs_rejects_parallelism_above_four(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "memoflow"
+    repo.mkdir()
+    manifest = tmp_path / "projects.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "project_key": "memoflow",
+                    "repo": "BakerSean168/memoflow",
+                    "cwd": str(repo),
+                    "continuous_supervisor": {
+                        "enabled": True,
+                        "base_ref": "feat/convergence",
+                        "plan_paths": ["docs/plan/active/current.md"],
+                        "objective": "Continue canonical plan",
+                        "max_parallel_mutations": 5,
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPEN_SWE_LOCAL_PROJECTS_FILE", str(manifest))
+    with pytest.raises(ValueError, match="1 to 4"):
+        load_continuous_project_configs()
+
+
+@pytest.mark.asyncio
+async def test_parallel_supervisor_fills_at_most_four_mutation_slots(tmp_path: Path) -> None:
+    client = FakeClient([])
+    cfg = _parallel_config(tmp_path, max_parallel=4)
+    result = await module.supervise_project(client, "assistant", cfg)
+    assert "parallel:active=4/4" in result
+    assert len(client.runs.calls) == 4
+    lane_keys = [call[2]["metadata"]["lane_key"] for call in client.runs.calls]
+    assert lane_keys == ["routine", "notification", "portability", "home"]
+    assert all(call[2]["input"]["workspace_path"] is None for call in client.runs.calls)
+
+
+@pytest.mark.asyncio
+async def test_parallel_supervisor_unknown_active_writer_blocks_new_lanes(tmp_path: Path) -> None:
+    client = FakeClient(
+        [
+            _thread(
+                "IMPLEMENTING",
+                thread_id="legacy-writer",
+                objective="A legacy broad objective with no configured lane marker",
+            )
+        ]
+    )
+    cfg = _parallel_config(tmp_path, max_parallel=4)
+    result = await module.supervise_project(client, "assistant", cfg)
+    assert "parallel:active=1/4" in result
+    assert "blocked=unknown-active:1" in result
+    assert client.runs.calls == []
+
+
+@pytest.mark.asyncio
+async def test_parallel_supervisor_does_not_start_dependency_before_completion(
+    tmp_path: Path,
+) -> None:
+    cfg = _parallel_config(
+        tmp_path,
+        lanes=(
+            _lane("routine"),
+            _lane("planner", depends_on=("routine",)),
+        ),
+    )
+    client = FakeClient([])
+    result = await module.supervise_project(client, "assistant", cfg)
+    assert len(client.runs.calls) == 1
+    assert client.runs.calls[0][2]["metadata"]["lane_key"] == "routine"
+    assert "planner:depends-on:routine" in result
+
+
+@pytest.mark.asyncio
+async def test_parallel_supervisor_ready_lane_requires_exact_head_evidence_before_unlock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    head = "a" * 40
+    cfg = _parallel_config(
+        tmp_path,
+        lanes=(
+            _lane("routine"),
+            _lane("planner", depends_on=("routine",)),
+        ),
+    )
+    client = FakeClient(
+        [
+            _thread(
+                "READY",
+                thread_id="routine-ready",
+                lane_key="routine",
+                observed_head_sha=head,
+                ci_head_sha=head,
+                reviewed_head_sha="b" * 40,
+                pr_url="https://github.com/BakerSean168/memoflow/pull/1",
+            )
+        ]
+    )
+    monkeypatch.setattr(module, "_head_is_on_base", lambda config, sha: True)
+    result = await module.supervise_project(client, "assistant", cfg)
+    assert client.runs.calls == []
+    assert "planner:depends-on:routine" in result
+    assert "routine:READY" in result
+
+
+@pytest.mark.asyncio
+async def test_parallel_supervisor_completion_marker_unlocks_dependency(tmp_path: Path) -> None:
+    cfg = _parallel_config(
+        tmp_path,
+        lanes=(
+            _lane("routine", completion_markers=("ROUTINE-2201 DONE",)),
+            _lane("planner", depends_on=("routine",)),
+        ),
+    )
+    cfg.plan_paths[0].write_text("# plan\nROUTINE-2201 DONE\n", encoding="utf-8")
+    client = FakeClient([])
+    result = await module.supervise_project(client, "assistant", cfg)
+    assert len(client.runs.calls) == 1
+    assert client.runs.calls[0][2]["metadata"]["lane_key"] == "planner"
+    assert "created=planner:" in result
+
+
+@pytest.mark.asyncio
+async def test_parallel_supervisor_respects_bidirectional_conflict_guard(tmp_path: Path) -> None:
+    cfg = _parallel_config(
+        tmp_path,
+        lanes=(
+            _lane("scheduler", conflicts_with=("planner",)),
+            _lane("planner"),
+            _lane("notification"),
+        ),
+    )
+    client = FakeClient([])
+    result = await module.supervise_project(client, "assistant", cfg)
+    assert len(client.runs.calls) == 2
+    lane_keys = [call[2]["metadata"]["lane_key"] for call in client.runs.calls]
+    assert lane_keys == ["scheduler", "notification"]
+    assert "planner:conflicts:scheduler" in result
+
+
+@pytest.mark.asyncio
+async def test_parallel_supervisor_adopts_legacy_lane_by_match_term(tmp_path: Path) -> None:
+    cfg = _parallel_config(
+        tmp_path,
+        lanes=(
+            ContinuousLaneConfig(
+                key="routine",
+                objective="Finish routine",
+                acceptance_criteria=(),
+                depends_on=(),
+                conflicts_with=(),
+                match_terms=("ROUTINE-2201",),
+                completion_markers=(),
+            ),
+            _lane("notification"),
+        ),
+    )
+    client = FakeClient(
+        [
+            _thread(
+                "IMPLEMENTING",
+                thread_id="legacy-routine",
+                objective="Continue MemoFlow ROUTINE-2201 repair",
+            )
+        ]
+    )
+    result = await module.supervise_project(client, "assistant", cfg)
+    assert len(client.runs.calls) == 1
+    assert client.runs.calls[0][2]["metadata"]["lane_key"] == "notification"
+    assert "parallel:active=2/4" in result
+
+
+@pytest.mark.asyncio
+async def test_parallel_lane_replay_uses_stable_thread_identity(tmp_path: Path) -> None:
+    cfg = _parallel_config(tmp_path, lanes=(_lane("notification"),))
+    lane = cfg.lanes[0]
+    client = FakeClient([])
+    first = await module._create_objective(client, "assistant", cfg, lane)
+    second = await module._create_objective(client, "assistant", cfg, lane)
+    assert first == second
+    assert client.runs.calls[0][0] == client.runs.calls[1][0] == first

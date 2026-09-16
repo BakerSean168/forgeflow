@@ -134,6 +134,17 @@ __all__ = [
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuousLaneConfig:
+    key: str
+    objective: str
+    acceptance_criteria: tuple[str, ...]
+    depends_on: tuple[str, ...]
+    conflicts_with: tuple[str, ...]
+    match_terms: tuple[str, ...]
+    completion_markers: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuousProjectConfig:
     project_key: str
     owner: str
@@ -144,13 +155,98 @@ class ContinuousProjectConfig:
     objective: str
     acceptance_criteria: tuple[str, ...]
     auto_merge_ready: bool
+    max_parallel_mutations: int = 1
+    lanes: tuple[ContinuousLaneConfig, ...] = ()
+
+
+def _string_list(value: object, *, label: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError(f"{label} must be a list of strings")
+    return tuple(dict.fromkeys(item.strip() for item in value if item.strip()))
+
+
+def _continuous_lanes(
+    spec: dict[str, object], *, repo_full: str
+) -> tuple[ContinuousLaneConfig, ...]:
+    raw_lanes = spec.get("lanes", [])
+    if raw_lanes is None:
+        return ()
+    if not isinstance(raw_lanes, list):
+        raise TypeError(f"continuous supervisor {repo_full} lanes must be a list")
+
+    lanes: list[ContinuousLaneConfig] = []
+    seen: set[str] = set()
+    for raw_lane in raw_lanes:
+        if not isinstance(raw_lane, dict):
+            raise TypeError(f"continuous supervisor {repo_full} lane must be an object")
+        key = str(raw_lane.get("key") or "").strip().casefold()
+        objective = str(raw_lane.get("objective") or "").strip()
+        if not key or not objective:
+            raise ValueError(f"continuous supervisor {repo_full} lane requires key/objective")
+        if key in seen:
+            raise ValueError(f"continuous supervisor {repo_full} has duplicate lane {key}")
+        seen.add(key)
+        criteria = _string_list(
+            raw_lane.get("acceptance_criteria"),
+            label=f"continuous supervisor {repo_full} lane {key} acceptance_criteria",
+        )
+        depends_on = tuple(
+            item.casefold()
+            for item in _string_list(
+                raw_lane.get("depends_on"),
+                label=f"continuous supervisor {repo_full} lane {key} depends_on",
+            )
+        )
+        conflicts_with = tuple(
+            item.casefold()
+            for item in _string_list(
+                raw_lane.get("conflicts_with"),
+                label=f"continuous supervisor {repo_full} lane {key} conflicts_with",
+            )
+        )
+        match_terms = _string_list(
+            raw_lane.get("match_terms", [key]),
+            label=f"continuous supervisor {repo_full} lane {key} match_terms",
+        )
+        completion_markers = _string_list(
+            raw_lane.get("completion_markers"),
+            label=f"continuous supervisor {repo_full} lane {key} completion_markers",
+        )
+        lanes.append(
+            ContinuousLaneConfig(
+                key=key,
+                objective=objective,
+                acceptance_criteria=criteria,
+                depends_on=depends_on,
+                conflicts_with=conflicts_with,
+                match_terms=match_terms,
+                completion_markers=completion_markers,
+            )
+        )
+
+    known = {lane.key for lane in lanes}
+    for lane in lanes:
+        unknown = (set(lane.depends_on) | set(lane.conflicts_with)) - known
+        if unknown:
+            raise ValueError(
+                f"continuous supervisor {repo_full} lane {lane.key} references unknown lanes: "
+                + ", ".join(sorted(unknown))
+            )
+        if lane.key in lane.depends_on or lane.key in lane.conflicts_with:
+            raise ValueError(
+                f"continuous supervisor {repo_full} lane {lane.key} cannot depend/conflict with itself"
+            )
+    return tuple(lanes)
 
 
 def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
     """Load opt-in unattended project continuation from the existing project manifest.
 
-    The supervisor owns no second queue/database. Repository plan files remain the
-    task truth; LangGraph objective threads remain the execution truth.
+    Repository plan files remain task truth and LangGraph objective threads remain
+    execution truth. Optional lane configuration adds bounded, dependency-aware
+    parallelism without creating a second task database.
     """
     raw_path = os.environ.get("OPEN_SWE_LOCAL_PROJECTS_FILE", "").strip()
     if not raw_path:
@@ -183,14 +279,24 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
         paths = spec.get("plan_paths")
         criteria = spec.get("acceptance_criteria", [])
         auto_merge = spec.get("auto_merge_ready", False)
+        max_parallel = spec.get("max_parallel_mutations", 1)
+        if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= 4:
+            raise ValueError(
+                f"continuous supervisor {repo_full} max_parallel_mutations must be an integer from 1 to 4"
+            )
         if not project_key or not base_ref or not objective:
             raise ValueError(f"continuous supervisor {repo_full} has incomplete configuration")
-        if not isinstance(paths, list) or not paths or any(not isinstance(item, str) or not item.strip() for item in paths):
+        if not isinstance(paths, list) or not paths or any(
+            not isinstance(item, str) or not item.strip() for item in paths
+        ):
             raise ValueError(f"continuous supervisor {repo_full} requires plan_paths")
         if not isinstance(criteria, list) or any(not isinstance(item, str) for item in criteria):
-            raise ValueError(f"continuous supervisor {repo_full} acceptance_criteria must be strings")
+            raise ValueError(
+                f"continuous supervisor {repo_full} acceptance_criteria must be strings"
+            )
         if not isinstance(auto_merge, bool):
             raise TypeError(f"continuous supervisor {repo_full} auto_merge_ready must be boolean")
+        lanes = _continuous_lanes(spec, repo_full=repo_full)
         plan_paths = tuple((cwd / item).resolve(strict=False) for item in paths)
         if any(cwd not in path.parents and path != cwd for path in plan_paths):
             raise ValueError(f"continuous supervisor {repo_full} plan path escapes repository")
@@ -205,9 +311,15 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
                 objective=objective,
                 acceptance_criteria=tuple(item.strip() for item in criteria if item.strip()),
                 auto_merge_ready=auto_merge,
+                max_parallel_mutations=max_parallel,
+                lanes=lanes,
             )
         )
     return tuple(configs)
 
 
-__all__ += ["ContinuousProjectConfig", "load_continuous_project_configs"]
+__all__ += [
+    "ContinuousLaneConfig",
+    "ContinuousProjectConfig",
+    "load_continuous_project_configs",
+]
