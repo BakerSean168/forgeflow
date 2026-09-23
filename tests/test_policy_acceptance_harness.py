@@ -82,6 +82,53 @@ def test_adopt_existing_worktree_rejects_foreign_repository(tmp_path: Path) -> N
         module.adopt_existing_worktree(workspace, "BakerSean168/BodySense")
 
 
+def test_resume_state_validation_accepts_exact_repo_base_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "phase-03"
+    values = {
+        "repo_owner": "BakerSean168",
+        "repo_name": "BodySense",
+        "base_ref": "refactor/bodysense-vnext",
+        "workspace_path": str(workspace),
+    }
+    module.validate_resumed_policy_state(
+        values,
+        owner="BakerSean168",
+        repo="BodySense",
+        base_ref="refactor/bodysense-vnext",
+        worktree=workspace,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("repo_owner", "other"),
+        ("repo_name", "OtherRepo"),
+        ("base_ref", "main"),
+        ("workspace_path", "/tmp/other-worktree"),
+    ],
+)
+def test_resume_state_validation_fails_closed_on_identity_drift(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    workspace = tmp_path / "phase-03"
+    values = {
+        "repo_owner": "BakerSean168",
+        "repo_name": "BodySense",
+        "base_ref": "refactor/bodysense-vnext",
+        "workspace_path": str(workspace),
+    }
+    values[field] = value
+    with pytest.raises(RuntimeError, match=field):
+        module.validate_resumed_policy_state(
+            values,
+            owner="BakerSean168",
+            repo="BodySense",
+            base_ref="refactor/bodysense-vnext",
+            worktree=workspace,
+        )
+
+
 def test_acceptance_terminal_set_treats_ready_as_evidence_not_runtime_terminal() -> None:
     assert module.TERMINAL_FOR_ACCEPTANCE == {"READY", "ESCALATED", "CANCELLED"}
 
