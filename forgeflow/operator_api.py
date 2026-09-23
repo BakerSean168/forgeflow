@@ -34,6 +34,7 @@ from forgeflow.routing import (
     RouteRegistry,
     load_route_registry,
 )
+from forgeflow.task_graph import TaskGraphSpec, load_task_graph
 from openswe_ext.operator_projection import (
     LAST_MODEL_ERROR_KEY,
     implementation_profile,
@@ -113,6 +114,102 @@ def _project_key(raw: Mapping[str, Any]) -> str:
     return _PROJECT_KEY_RE.sub("-", source.casefold()).strip("-")
 
 
+def _project_relative_path(cwd: Path, raw_path: str) -> Path:
+    path = (cwd / raw_path).resolve(strict=False)
+    if path != cwd and cwd not in path.parents:
+        raise ValueError("project-relative path escapes repository")
+    return path
+
+
+def _supervisor_manifest_view(raw: Mapping[str, Any]) -> dict[str, Any]:
+    spec = raw.get("continuous_supervisor")
+    if not isinstance(spec, Mapping):
+        return {
+            "configured": False,
+            "enabled": False,
+            "baseRef": None,
+            "planPaths": [],
+            "planActive": False,
+            "taskGraph": None,
+            "configurationError": None,
+            "planningStatus": "NOT_CONFIGURED",
+            "progress": None,
+        }
+
+    enabled = spec.get("enabled") is True
+    base_ref = str(spec.get("base_ref") or raw.get("default_branch") or "main").strip()
+    raw_paths = spec.get("plan_paths")
+    plan_paths = (
+        [item.strip() for item in raw_paths if isinstance(item, str) and item.strip()]
+        if isinstance(raw_paths, list)
+        else []
+    )
+    cwd_raw = raw.get("cwd")
+    cwd = (
+        Path(cwd_raw).expanduser().resolve(strict=False)
+        if isinstance(cwd_raw, str) and cwd_raw.strip()
+        else None
+    )
+    configuration_error: str | None = None
+    plan_active = False
+    if cwd is None:
+        configuration_error = "project cwd is unavailable"
+    elif not isinstance(raw_paths, list) or len(plan_paths) != len(raw_paths) or not plan_paths:
+        configuration_error = "continuous supervisor plan_paths are invalid"
+    else:
+        try:
+            plan_active = any(_project_relative_path(cwd, item).is_file() for item in plan_paths)
+        except ValueError as exc:
+            configuration_error = str(exc)
+
+    task_graph_view: dict[str, Any] | None = None
+    raw_graph_path = spec.get("task_graph_path")
+    if isinstance(raw_graph_path, str) and raw_graph_path.strip():
+        graph_path_text = raw_graph_path.strip()
+        task_graph_view = {
+            "path": graph_path_text,
+            "graphId": None,
+            "revision": None,
+            "taskCount": None,
+        }
+        if cwd is not None:
+            try:
+                graph_path = _project_relative_path(cwd, graph_path_text)
+                if graph_path.is_file():
+                    graph = load_task_graph(graph_path)
+                    task_graph_view.update(
+                        {
+                            "graphId": graph.graph_id,
+                            "revision": graph.revision,
+                            "taskCount": len(graph.tasks),
+                        }
+                    )
+                elif plan_active and configuration_error is None:
+                    configuration_error = "configured TaskGraph is unavailable"
+            except ValueError as exc:
+                if configuration_error is None:
+                    configuration_error = str(exc)
+
+    planning_status = (
+        "CONFIG_ERROR"
+        if configuration_error
+        else "INACTIVE"
+        if not plan_active
+        else "PENDING"
+    )
+    return {
+        "configured": True,
+        "enabled": enabled,
+        "baseRef": base_ref or None,
+        "planPaths": plan_paths,
+        "planActive": plan_active,
+        "taskGraph": task_graph_view,
+        "configurationError": configuration_error,
+        "planningStatus": planning_status,
+        "progress": None,
+    }
+
+
 def _load_projects() -> list[dict[str, Any]]:
     path = _manifest_path()
     if path is None:
@@ -153,6 +250,7 @@ def _load_projects() -> list[dict[str, Any]]:
                 ]
                 if isinstance(raw.get("required_checks", []), list)
                 else [],
+                "supervisor": _supervisor_manifest_view(raw),
             }
         )
     return projects
@@ -357,6 +455,168 @@ def _project_views() -> list[dict[str, Any]]:
     return projects
 
 
+def _project_task_graph(project: Mapping[str, Any]) -> TaskGraphSpec | None:
+    supervisor = project.get("supervisor")
+    if not isinstance(supervisor, Mapping):
+        return None
+    task_graph = supervisor.get("taskGraph")
+    if not isinstance(task_graph, Mapping):
+        return None
+    raw_path = task_graph.get("path")
+    cwd_raw = project.get("cwd")
+    if not (
+        isinstance(raw_path, str)
+        and raw_path
+        and isinstance(cwd_raw, str)
+        and cwd_raw
+    ):
+        return None
+    cwd = Path(cwd_raw).expanduser().resolve(strict=False)
+    try:
+        path = _project_relative_path(cwd, raw_path)
+        if not path.is_file():
+            return None
+        return load_task_graph(path)
+    except ValueError:
+        return None
+
+
+def _local_head_is_on_base(project: Mapping[str, Any], head_sha: str, base_ref: str) -> bool:
+    cwd_raw = project.get("cwd")
+    if not (
+        isinstance(cwd_raw, str)
+        and cwd_raw
+        and isinstance(head_sha, str)
+        and head_sha
+        and isinstance(base_ref, str)
+        and base_ref
+    ):
+        return False
+    cwd = Path(cwd_raw).expanduser().resolve(strict=False)
+    if not cwd.is_dir():
+        return False
+    for candidate in (f"refs/remotes/origin/{base_ref}", f"refs/heads/{base_ref}"):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(cwd), "merge-base", "--is-ancestor", head_sha, candidate],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode == 0:
+            return True
+    return False
+
+
+def _project_supervisor_progress(
+    project: Mapping[str, Any],
+    objectives: list[dict[str, Any]],
+) -> dict[str, Any]:
+    supervisor = project.get("supervisor")
+    if not isinstance(supervisor, Mapping):
+        return {
+            "configured": False,
+            "enabled": False,
+            "baseRef": None,
+            "planPaths": [],
+            "planActive": False,
+            "taskGraph": None,
+            "configurationError": None,
+            "planningStatus": "NOT_CONFIGURED",
+            "progress": None,
+        }
+    result = dict(supervisor)
+    if not result.get("configured"):
+        return result
+    if result.get("configurationError"):
+        result["planningStatus"] = "CONFIG_ERROR"
+        return result
+    if not result.get("planActive"):
+        result["planningStatus"] = "INACTIVE"
+        return result
+
+    graph = _project_task_graph(project)
+    if graph is None:
+        result["planningStatus"] = "PENDING"
+        return result
+
+    expected = {
+        task.key: graph.execution_fingerprint(task)
+        for task in graph.tasks
+    }
+    latest: dict[str, dict[str, Any]] = {}
+    for objective in objectives:
+        if objective.get("projectKey") != project.get("projectKey"):
+            continue
+        if objective.get("taskGraphId") != graph.graph_id:
+            continue
+        task_id = objective.get("taskId")
+        fingerprint = objective.get("taskFingerprint")
+        if not isinstance(task_id, str):
+            continue
+        key = task_id.casefold()
+        if key not in expected or fingerprint != expected[key] or key in latest:
+            continue
+        latest[key] = objective
+
+    active = ready = blocked = completed = 0
+    base_ref = str(result.get("baseRef") or project.get("defaultBaseRef") or "main")
+    for task in graph.tasks:
+        objective = latest.get(task.key)
+        if objective is None:
+            continue
+        status = str(objective.get("status") or "NEW")
+        if status in _ACTIVE_STATUSES:
+            active += 1
+            continue
+        if status in {"ESCALATED", "CANCELLED"}:
+            blocked += 1
+            continue
+        if status != "READY":
+            blocked += 1
+            continue
+        head = objective.get("observedHeadSha")
+        ci_head = objective.get("ciHeadSha")
+        reviewed_head = objective.get("reviewedHeadSha")
+        exact_head = (
+            isinstance(head, str)
+            and bool(head)
+            and head == ci_head == reviewed_head
+        )
+        if not exact_head:
+            blocked += 1
+            continue
+        if _local_head_is_on_base(project, head, base_ref):
+            completed += 1
+        else:
+            ready += 1
+
+    total = len(graph.tasks)
+    pending = total - active - ready - blocked - completed
+    result["progress"] = {
+        "total": total,
+        "active": active,
+        "ready": ready,
+        "blocked": blocked,
+        "completedOnBase": completed,
+        "pending": pending,
+    }
+    if completed == total:
+        result["planningStatus"] = "COMPLETE"
+    elif blocked:
+        result["planningStatus"] = "BLOCKED"
+    elif active:
+        result["planningStatus"] = "RUNNING"
+    elif ready:
+        result["planningStatus"] = "READY"
+    else:
+        result["planningStatus"] = "PENDING"
+    return result
+
+
 def _objective_repository(values: Mapping[str, Any], metadata: Mapping[str, Any]) -> tuple[Any, Any]:
     owner = values.get("repo_owner")
     repo = values.get("repo_name")
@@ -412,6 +672,12 @@ def _objective_view(thread: Mapping[str, Any], lookup: Mapping[str, str], *, ful
         "prUrl": values.get("pr_url"),
         "prNumber": values.get("pr_number"),
         "observedHeadSha": values.get("observed_head_sha"),
+        "ciHeadSha": values.get("ci_head_sha"),
+        "reviewedHeadSha": values.get("reviewed_head_sha"),
+        "taskId": metadata.get("task_id"),
+        "taskGraphId": metadata.get("task_graph_id"),
+        "taskGraphRevision": metadata.get("task_graph_revision"),
+        "taskFingerprint": metadata.get("task_fingerprint"),
         "createdAt": thread.get("created_at"),
         "updatedAt": thread.get("updated_at"),
         "threadStatus": thread.get("status"),
@@ -1047,8 +1313,10 @@ async def summary(authorization: str | None = Header(default=None)) -> dict[str,
     client = _client()
     latest: dict[str, dict[str, Any]] = {}
     active: list[dict[str, Any]] = []
+    objective_views: list[dict[str, Any]] = []
     for thread in await _search_threads(limit=None):
         view = _objective_view(thread, lookup)
+        objective_views.append(view)
         key = view["projectKey"]
         needs_enrichment = bool(view["active"] or (isinstance(key, str) and key not in latest))
         enriched = await _enrich_objective(client, view) if needs_enrichment else view
@@ -1056,7 +1324,14 @@ async def summary(authorization: str | None = Header(default=None)) -> dict[str,
             active.append(enriched)
         if isinstance(key, str) and key not in latest:
             latest[key] = enriched
-    project_views = [dict(project, latestObjective=latest.get(project["projectKey"])) for project in projects]
+    project_views = [
+        dict(
+            project,
+            supervisor=_project_supervisor_progress(project, objective_views),
+            latestObjective=latest.get(project["projectKey"]),
+        )
+        for project in projects
+    ]
     resources = await _list_resources_payload(
         authorization, tolerate_attempt_ledger_errors=True
     )
