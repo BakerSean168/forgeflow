@@ -76,3 +76,21 @@ def test_operations_runbook_defines_active_work_and_safe_closure() -> None:
     assert "check-runtime-units.py" in operations
     assert "docs/plan/archive/" in operations
     assert "operations.md" in docs_index
+
+
+def test_task_graph_docs_define_explicit_activation_and_summary_projection() -> None:
+    task_graph = (REPO / "docs/task-graph-v1.md").read_text(encoding="utf-8")
+    operations = (REPO / "docs/operations.md").read_text(encoding="utf-8")
+    architecture = (REPO / "docs/open-swe-policy-v1-architecture.md").read_text(
+        encoding="utf-8"
+    )
+    assert '"task_graph_id": "example-vnext"' in task_graph
+    assert '"task_graph_revision": 1' in task_graph
+    assert "LEGACY_UNBOUND" in task_graph
+    assert "continuous_supervisor.enabled: true" in task_graph
+    assert "activation binding does not start timers" in task_graph.lower()
+    assert "Operator summary projection" in operations
+    assert "completed-on-base" in operations
+    assert "git fetch" in operations
+    assert "task-graph-complete" in architecture
+    assert "activation binding" in architecture

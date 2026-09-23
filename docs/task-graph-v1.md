@@ -183,6 +183,10 @@ local project manifest:
     "base_ref": "feat/convergence",
     "plan_paths": ["docs/plan/active/current.md"],
     "task_graph_path": "docs/plan/active/current.tasks.json",
+    "activation": {
+      "task_graph_id": "example-vnext",
+      "task_graph_revision": 1
+    },
     "max_parallel_mutations": 4,
     "ai_decomposition_enabled": false,
     "auto_merge_ready": true
@@ -192,6 +196,27 @@ local project manifest:
 
 The local manifest remains deployment configuration. The repository-owned TaskGraph remains planning
 truth.
+
+### Explicit activation binding
+
+For new TaskGraph-backed unattended workflows, bind operator authorization to the reviewed graph
+identity and revision:
+
+```json
+"activation": {
+  "task_graph_id": "example-vnext",
+  "task_graph_revision": 1
+}
+```
+
+When the binding is present, ForgeFlow fails closed if either value differs from the currently loaded
+TaskGraph. Updating the TaskGraph revision therefore requires an explicit manifest re-activation
+before unattended dispatch resumes. Existing TaskGraph projects without this field remain supported
+during migration and are surfaced by the operator API as `LEGACY_UNBOUND`; inline legacy lanes do
+not use this binding.
+
+The activation binding does not start timers, enable projects, or mutate planning truth. Execution
+still requires `continuous_supervisor.enabled: true` and the project-supervisor timer to be active.
 
 ## Optional AI decomposition
 

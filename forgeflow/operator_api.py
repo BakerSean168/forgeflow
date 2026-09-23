@@ -26,7 +26,10 @@ from langgraph_sdk.errors import NotFoundError
 from pydantic import BaseModel, Field
 
 from forgeflow.attempts import AttemptLedger, AttemptLedgerError, RouteAttemptSummary
-from forgeflow.projects import load_project_route_preferences
+from forgeflow.projects import (
+    load_project_route_preferences,
+    parse_task_graph_activation,
+)
 from forgeflow.resource_probes import ResourceProbeStore, ResourceProbeStoreError
 from forgeflow.routing import (
     RouteConfigError,
@@ -131,6 +134,11 @@ def _supervisor_manifest_view(raw: Mapping[str, Any]) -> dict[str, Any]:
             "planPaths": [],
             "planActive": False,
             "taskGraph": None,
+            "activation": {
+                "status": "NOT_APPLICABLE",
+                "taskGraphId": None,
+                "taskGraphRevision": None,
+            },
             "configurationError": None,
             "planningStatus": "NOT_CONFIGURED",
             "progress": None,
@@ -190,6 +198,55 @@ def _supervisor_manifest_view(raw: Mapping[str, Any]) -> dict[str, Any]:
                 if configuration_error is None:
                     configuration_error = str(exc)
 
+    activation_view = {
+        "status": "NOT_APPLICABLE",
+        "taskGraphId": None,
+        "taskGraphRevision": None,
+    }
+    repo_full = str(raw.get("repo") or "unknown")
+    try:
+        activation = parse_task_graph_activation(dict(spec), repo_full=repo_full)
+    except (TypeError, ValueError) as exc:
+        activation = None
+        activation_view["status"] = "INVALID"
+        if configuration_error is None:
+            configuration_error = str(exc)
+    else:
+        if activation is not None:
+            activation_view.update(
+                {
+                    "taskGraphId": activation.graph_id,
+                    "taskGraphRevision": activation.revision,
+                }
+            )
+            if task_graph_view is None:
+                activation_view["status"] = "INVALID"
+                if configuration_error is None:
+                    configuration_error = (
+                        f"continuous supervisor {repo_full} activation requires task_graph_path"
+                    )
+            elif (
+                task_graph_view.get("graphId") is not None
+                and (
+                    activation.graph_id != task_graph_view.get("graphId")
+                    or activation.revision != task_graph_view.get("revision")
+                )
+            ):
+                activation_view["status"] = "MISMATCH"
+                if configuration_error is None:
+                    configuration_error = (
+                        f"continuous supervisor {repo_full} activation does not match "
+                        "the configured TaskGraph"
+                    )
+            elif task_graph_view.get("graphId") is None:
+                activation_view["status"] = "EXPLICIT_BOUND"
+            elif enabled and plan_active:
+                activation_view["status"] = "EXPLICIT_ACTIVE"
+            else:
+                activation_view["status"] = "EXPLICIT_BOUND"
+        elif task_graph_view is not None:
+            activation_view["status"] = "LEGACY_UNBOUND"
+
     planning_status = (
         "CONFIG_ERROR"
         if configuration_error
@@ -204,6 +261,7 @@ def _supervisor_manifest_view(raw: Mapping[str, Any]) -> dict[str, Any]:
         "planPaths": plan_paths,
         "planActive": plan_active,
         "taskGraph": task_graph_view,
+        "activation": activation_view,
         "configurationError": configuration_error,
         "planningStatus": planning_status,
         "progress": None,
@@ -524,6 +582,11 @@ def _project_supervisor_progress(
             "planPaths": [],
             "planActive": False,
             "taskGraph": None,
+            "activation": {
+                "status": "NOT_APPLICABLE",
+                "taskGraphId": None,
+                "taskGraphRevision": None,
+            },
             "configurationError": None,
             "planningStatus": "NOT_CONFIGURED",
             "progress": None,

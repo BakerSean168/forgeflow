@@ -75,6 +75,10 @@ def test_example_project_manifest_prefers_task_graph_with_ai_decomposition_disab
     payload = json.loads(Path("deploy/gcp-dev/projects.example.json").read_text(encoding="utf-8"))
     supervisor = payload[0]["continuous_supervisor"]
     assert supervisor["task_graph_path"] == "docs/plan/active/current.tasks.json"
+    assert supervisor["activation"] == {
+        "task_graph_id": "example-vnext",
+        "task_graph_revision": 1,
+    }
     assert supervisor["max_parallel_mutations"] == 4
     assert supervisor["ai_decomposition_enabled"] is False
     assert "lanes" not in supervisor

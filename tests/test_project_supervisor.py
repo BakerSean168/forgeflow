@@ -757,6 +757,7 @@ def test_load_continuous_project_configs_reads_repository_task_graph(
         "Deployment contract remains valid.",
     )
     assert cfg.ai_decomposition_enabled is False
+    assert cfg.activation is None
 
 
 @pytest.mark.asyncio
@@ -1082,3 +1083,141 @@ async def test_archived_plan_stops_before_missing_task_graph_is_loaded(
     result = await module.supervise_project(client, "assistant", configs[0])
     assert result == "plan-complete"
     assert client.runs.calls == []
+
+
+def _write_activation_project(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    activation,
+) -> None:
+    repo = tmp_path / "activation-project"
+    plan = repo / "docs/plan/active/current.md"
+    graph_path = repo / "docs/plan/active/current.tasks.json"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("# active\n", encoding="utf-8")
+    graph_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "graph_id": "activation-v1",
+                "revision": 7,
+                "title": "Activation",
+                "objective": "Test activation binding.",
+                "planned_by": "chatgpt-web",
+                "context_refs": [],
+                "architecture_decisions": ["Activation is explicit."],
+                "protected_contracts": ["No implicit plan drift."],
+                "non_goals": [],
+                "acceptance_criteria": ["Activation matches."],
+                "tasks": [
+                    {
+                        "id": "TASK-1",
+                        "title": "Task",
+                        "goal": "Execute one task.",
+                        "why_now": "Validate activation.",
+                        "risk": "low",
+                        "scope": ["Activation."],
+                        "out_of_scope": [],
+                        "context_refs": [],
+                        "protected_contracts": [],
+                        "implementation_steps": ["Run task."],
+                        "integration_notes": [],
+                        "acceptance_criteria": ["Task accepted."],
+                        "verification_commands": ["pytest -q"],
+                        "depends_on": [],
+                        "conflicts_with": [],
+                        "mutation_keys": ["contract:activation"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    supervisor = {
+        "enabled": True,
+        "base_ref": "main",
+        "plan_paths": ["docs/plan/active/current.md"],
+        "task_graph_path": "docs/plan/active/current.tasks.json",
+        "max_parallel_mutations": 1,
+        "auto_merge_ready": False,
+        "ai_decomposition_enabled": False,
+    }
+    if activation is not None:
+        supervisor["activation"] = activation
+    manifest = tmp_path / "activation-projects.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "project_key": "activation",
+                    "repo": "BakerSean168/activation",
+                    "cwd": str(repo),
+                    "continuous_supervisor": supervisor,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPEN_SWE_LOCAL_PROJECTS_FILE", str(manifest))
+
+
+def test_task_graph_explicit_activation_matching_revision_loads(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_activation_project(
+        tmp_path,
+        monkeypatch,
+        activation={
+            "task_graph_id": "activation-v1",
+            "task_graph_revision": 7,
+        },
+    )
+
+    configs = load_continuous_project_configs()
+
+    assert len(configs) == 1
+    activation = configs[0].activation
+    assert activation is not None
+    assert activation.graph_id == "activation-v1"
+    assert activation.revision == 7
+
+
+@pytest.mark.parametrize(
+    "activation",
+    [
+        {"task_graph_id": "wrong-graph", "task_graph_revision": 7},
+        {"task_graph_id": "activation-v1", "task_graph_revision": 8},
+    ],
+)
+def test_task_graph_explicit_activation_mismatch_fails_closed(
+    tmp_path: Path, monkeypatch, activation
+) -> None:
+    _write_activation_project(tmp_path, monkeypatch, activation=activation)
+
+    with pytest.raises(ValueError, match="activation does not match"):
+        load_continuous_project_configs()
+
+
+@pytest.mark.parametrize(
+    ("activation", "error_type"),
+    [
+        (["not-an-object"], TypeError),
+        ({"task_graph_id": "activation-v1"}, ValueError),
+        (
+            {
+                "task_graph_id": "activation-v1",
+                "task_graph_revision": 7,
+                "unexpected": True,
+            },
+            ValueError,
+        ),
+    ],
+)
+def test_task_graph_explicit_activation_malformed_fails_closed(
+    tmp_path: Path, monkeypatch, activation, error_type
+) -> None:
+    _write_activation_project(tmp_path, monkeypatch, activation=activation)
+
+    with pytest.raises(error_type):
+        load_continuous_project_configs()

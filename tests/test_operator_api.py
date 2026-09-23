@@ -971,7 +971,11 @@ def test_operator_cancel_patches_checkpoint_without_replacing_objective_state(
 
 
 def _task_graph_operator_fixture(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, enabled: bool = True
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    enabled: bool = True,
+    activation: dict | None = None,
 ):
     from forgeflow.task_graph import load_task_graph
 
@@ -1035,6 +1039,17 @@ def _task_graph_operator_fixture(
         ),
         encoding="utf-8",
     )
+    supervisor = {
+        "enabled": enabled,
+        "base_ref": "main",
+        "plan_paths": ["docs/plan/active/current.md"],
+        "task_graph_path": "docs/plan/active/current.tasks.json",
+        "max_parallel_mutations": 4,
+        "auto_merge_ready": True,
+        "ai_decomposition_enabled": False,
+    }
+    if activation is not None:
+        supervisor["activation"] = activation
     manifest = tmp_path / "projects-progress.json"
     manifest.write_text(
         json.dumps(
@@ -1045,15 +1060,7 @@ def _task_graph_operator_fixture(
                     "repo": "BakerSean168/workflow",
                     "cwd": str(repo),
                     "default_branch": "main",
-                    "continuous_supervisor": {
-                        "enabled": enabled,
-                        "base_ref": "main",
-                        "plan_paths": ["docs/plan/active/current.md"],
-                        "task_graph_path": "docs/plan/active/current.tasks.json",
-                        "max_parallel_mutations": 4,
-                        "auto_merge_ready": True,
-                        "ai_decomposition_enabled": False,
-                    },
+                    "continuous_supervisor": supervisor,
                 }
             ]
         ),
@@ -1152,6 +1159,7 @@ def test_summary_projects_bounded_task_graph_progress(
     assert supervisor["taskGraph"]["graphId"] == "operator-progress"
     assert supervisor["taskGraph"]["revision"] == 3
     assert supervisor["taskGraph"]["taskCount"] == 4
+    assert supervisor["activation"]["status"] == "LEGACY_UNBOUND"
     assert supervisor["planningStatus"] == "BLOCKED"
     assert supervisor["progress"] == {
         "total": 4,
@@ -1208,3 +1216,79 @@ def test_summary_projects_disabled_task_graph_without_starting_it(
     assert supervisor["planningStatus"] == "PENDING"
     assert supervisor["progress"]["pending"] == 4
     assert client.runs.calls == []
+
+
+def test_summary_projects_matching_explicit_task_graph_activation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo, _graph, _head = _task_graph_operator_fixture(
+        tmp_path,
+        monkeypatch,
+        activation={
+            "task_graph_id": "operator-progress",
+            "task_graph_revision": 3,
+        },
+    )
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+    activation = payload["projects"][0]["supervisor"]["activation"]
+
+    assert activation == {
+        "status": "EXPLICIT_ACTIVE",
+        "taskGraphId": "operator-progress",
+        "taskGraphRevision": 3,
+    }
+
+
+def test_summary_surfaces_task_graph_activation_mismatch_as_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo, _graph, _head = _task_graph_operator_fixture(
+        tmp_path,
+        monkeypatch,
+        activation={
+            "task_graph_id": "operator-progress",
+            "task_graph_revision": 4,
+        },
+    )
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+    supervisor = payload["projects"][0]["supervisor"]
+
+    assert supervisor["activation"]["status"] == "MISMATCH"
+    assert supervisor["planningStatus"] == "CONFIG_ERROR"
+    assert "activation does not match" in supervisor["configurationError"]
+
+
+def test_summary_task_graph_progress_never_fetches_git_remotes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo, graph, base_head = _task_graph_operator_fixture(tmp_path, monkeypatch)
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    _add_task_objective(
+        client, graph, "DONE-1", status="READY", thread_id="done-read-only", head=base_head
+    )
+
+    original_run = subprocess.run
+    git_calls: list[list[str]] = []
+
+    def recording_run(command, *args, **kwargs):
+        if isinstance(command, list) and command and command[0] == "git":
+            git_calls.append(command)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(api.subprocess, "run", recording_run)
+
+    asyncio.run(api.summary(authorization="Bearer secret"))
+
+    assert git_calls
+    assert all("fetch" not in command for command in git_calls)
+    assert any("merge-base" in command and "--is-ancestor" in command for command in git_calls)
