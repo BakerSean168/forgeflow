@@ -33,6 +33,9 @@ The cycle is complete when:
   configured active plan, TaskGraph identity/revision, or per-task progress.
 - `continuous_supervisor.enabled=true` is an explicit project-level switch, but it is not bound to
   the specific TaskGraph revision that was reviewed when execution was authorized.
+- The current config loader resolves and loads `task_graph_path` before the supervisor evaluates the
+  active-plan stop signal. If a completed plan and its TaskGraph are archived together, a configured
+  project can fail during config loading instead of returning `plan-complete`.
 
 ## Architecture decisions
 
@@ -72,7 +75,8 @@ Acceptance evidence:
 - all completed TaskGraph tasks return `task-graph-complete`;
 - no new objective is created;
 - READY-but-unmerged tasks do not count as complete;
-- legacy lane behavior remains unchanged.
+- legacy lane behavior remains unchanged;
+- an inactive/archived plan returns `plan-complete` even when its former TaskGraph path no longer exists.
 
 ## Phase 2 — Operator planning/progress projection
 

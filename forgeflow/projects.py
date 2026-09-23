@@ -259,7 +259,11 @@ def _repo_path(cwd: Path, value: str, *, label: str) -> Path:
 
 
 def _load_project_task_graph(
-    spec: dict[str, object], *, cwd: Path, repo_full: str
+    spec: dict[str, object],
+    *,
+    cwd: Path,
+    repo_full: str,
+    load: bool = True,
 ) -> tuple[Path | None, TaskGraphSpec | None]:
     raw_path = spec.get("task_graph_path")
     if raw_path is None:
@@ -271,6 +275,8 @@ def _load_project_task_graph(
         raw_path.strip(),
         label=f"continuous supervisor {repo_full} task graph path",
     )
+    if not load:
+        return path, None
     graph = load_task_graph(path)
     refs = set(graph.context_refs)
     for task in graph.tasks:
@@ -323,12 +329,6 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
         owner, repo = repo_full.split("/", 1)
         project_key = str(raw.get("project_key") or repo).strip().casefold()
         base_ref = str(spec.get("base_ref") or raw.get("default_branch") or "main").strip()
-        task_graph_path, task_graph = _load_project_task_graph(
-            spec, cwd=cwd, repo_full=repo_full
-        )
-        objective = str(spec.get("objective") or "").strip()
-        if task_graph is not None:
-            objective = task_graph.objective
         paths = spec.get("plan_paths")
         criteria = spec.get("acceptance_criteria", [])
         auto_merge = spec.get("auto_merge_ready", False)
@@ -338,7 +338,7 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
             raise ValueError(
                 f"continuous supervisor {repo_full} max_parallel_mutations must be an integer from 1 to 4"
             )
-        if not project_key or not base_ref or not objective:
+        if not project_key or not base_ref:
             raise ValueError(f"continuous supervisor {repo_full} has incomplete configuration")
         if not isinstance(ai_decomposition_enabled, bool):
             raise TypeError(
@@ -354,11 +354,6 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
             )
         if not isinstance(auto_merge, bool):
             raise TypeError(f"continuous supervisor {repo_full} auto_merge_ready must be boolean")
-        lanes = _continuous_lanes(spec, repo_full=repo_full)
-        if task_graph is not None and lanes:
-            raise ValueError(
-                f"continuous supervisor {repo_full} cannot configure both lanes and task_graph_path"
-            )
         plan_paths = tuple(
             _repo_path(
                 cwd,
@@ -367,6 +362,23 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
             )
             for item in paths
         )
+        plan_active = any(path.is_file() for path in plan_paths)
+        task_graph_path, task_graph = _load_project_task_graph(
+            spec,
+            cwd=cwd,
+            repo_full=repo_full,
+            load=plan_active,
+        )
+        objective = str(spec.get("objective") or "").strip()
+        if task_graph is not None:
+            objective = task_graph.objective
+        if plan_active and not objective:
+            raise ValueError(f"continuous supervisor {repo_full} has incomplete configuration")
+        lanes = _continuous_lanes(spec, repo_full=repo_full)
+        if task_graph_path is not None and lanes:
+            raise ValueError(
+                f"continuous supervisor {repo_full} cannot configure both lanes and task_graph_path"
+            )
         combined_criteria = tuple(item.strip() for item in criteria if item.strip())
         if task_graph is not None:
             combined_criteria = tuple(

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "graph_id": "forgeflow-workflow-lifecycle-v2",
-  "revision": 1,
+  "revision": 2,
   "title": "ForgeFlow workflow lifecycle v2",
   "objective": "Make TaskGraph completion, operator progress visibility, and unattended execution activation explicit without adding a second state store.",
   "planned_by": "chatgpt-web",
@@ -66,6 +66,7 @@
         "Add failing tests for all-complete TaskGraph and READY-but-not-on-base cases.",
         "Introduce the smallest explicit TaskGraph completion branch after deterministic completion calculation.",
         "Keep merge/recovery processing behavior unchanged for incomplete graphs.",
+        "Make inactive-plan detection occur before TaskGraph loading so archived plan and graph paths stop cleanly.",
         "Run focused supervisor tests and diff checks."
       ],
       "integration_notes": [
@@ -74,7 +75,8 @@
       "acceptance_criteria": [
         "All tasks complete on base returns task-graph-complete.",
         "READY but not on base does not return task-graph-complete.",
-        "No child run is dispatched for a completed graph."
+        "No child run is dispatched for a completed graph.",
+        "An inactive plan returns plan-complete even when the configured TaskGraph file has been archived."
       ],
       "verification_commands": [
         "uv run pytest tests/test_project_supervisor.py -q",

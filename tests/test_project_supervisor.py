@@ -954,3 +954,131 @@ async def test_task_graph_replay_identity_tracks_semantics_not_revision(tmp_path
 
     assert first == repeated == revision_only
     assert semantic_change != first
+
+
+@pytest.mark.asyncio
+async def test_task_graph_all_tasks_completed_on_base_returns_explicit_complete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cfg = _task_graph_config(tmp_path)
+    graph = cfg.task_graph
+    assert graph is not None
+    rows = []
+    for index, task in enumerate(graph.tasks, start=1):
+        head = str(index) * 40
+        rows.append(
+            _thread(
+                "READY",
+                thread_id=f"task-{index}",
+                task_id=task.id,
+                task_graph_id=graph.graph_id,
+                task_graph_revision=graph.revision,
+                task_fingerprint=graph.execution_fingerprint(task),
+                pr_url=f"https://github.com/BakerSean168/memoflow/pull/{index}",
+                observed_head_sha=head,
+                ci_head_sha=head,
+                reviewed_head_sha=head,
+            )
+        )
+    client = FakeClient(rows)
+    monkeypatch.setattr(module, "_head_is_on_base", lambda _config, _head: True)
+
+    result = await module.supervise_project(client, "assistant", cfg)
+
+    assert result == "task-graph-complete"
+    assert client.runs.calls == []
+
+
+@pytest.mark.asyncio
+async def test_task_graph_ready_but_not_on_base_is_not_complete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cfg = _task_graph_config(tmp_path)
+    graph = cfg.task_graph
+    assert graph is not None
+    first, second = graph.tasks
+    first_head = "a" * 40
+    second_head = "b" * 40
+    rows = [
+        _thread(
+            "READY",
+            thread_id="task-first",
+            task_id=first.id,
+            task_graph_id=graph.graph_id,
+            task_graph_revision=graph.revision,
+            task_fingerprint=graph.execution_fingerprint(first),
+            pr_url="https://github.com/BakerSean168/memoflow/pull/1",
+            observed_head_sha=first_head,
+            ci_head_sha=first_head,
+            reviewed_head_sha=first_head,
+        ),
+        _thread(
+            "READY",
+            thread_id="task-second",
+            task_id=second.id,
+            task_graph_id=graph.graph_id,
+            task_graph_revision=graph.revision,
+            task_fingerprint=graph.execution_fingerprint(second),
+            pr_url="https://github.com/BakerSean168/memoflow/pull/2",
+            observed_head_sha=second_head,
+            ci_head_sha=second_head,
+            reviewed_head_sha=second_head,
+        ),
+    ]
+    client = FakeClient(rows)
+    monkeypatch.setattr(
+        module,
+        "_head_is_on_base",
+        lambda _config, head: head == first_head,
+    )
+
+    async def keep_ready(_config, _values):
+        return "ready:awaiting-merge"
+
+    monkeypatch.setattr(module, "_advance_ready", keep_ready)
+
+    result = await module.supervise_project(client, "assistant", cfg)
+
+    assert result != "task-graph-complete"
+    assert "planner-2301:READY" in result
+    assert client.runs.calls == []
+
+
+@pytest.mark.asyncio
+async def test_archived_plan_stops_before_missing_task_graph_is_loaded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "memoflow"
+    repo.mkdir()
+    manifest = tmp_path / "projects.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "project_key": "memoflow",
+                    "repo": "BakerSean168/memoflow",
+                    "cwd": str(repo),
+                    "continuous_supervisor": {
+                        "enabled": True,
+                        "base_ref": "feat/convergence",
+                        "plan_paths": ["docs/plan/active/current.md"],
+                        "task_graph_path": "docs/plan/active/current.tasks.json",
+                        "max_parallel_mutations": 4,
+                        "auto_merge_ready": True,
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPEN_SWE_LOCAL_PROJECTS_FILE", str(manifest))
+
+    configs = load_continuous_project_configs()
+
+    assert len(configs) == 1
+    assert configs[0].task_graph is None
+    assert configs[0].task_graph_path == repo / "docs/plan/active/current.tasks.json"
+    client = FakeClient([])
+    result = await module.supervise_project(client, "assistant", configs[0])
+    assert result == "plan-complete"
+    assert client.runs.calls == []
