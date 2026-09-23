@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "graph_id": "forgeflow-post-v2-operational-hardening",
+  "revision": 1,
+  "title": "ForgeFlow post-v2 operational hardening",
+  "objective": "Eliminate the remaining operational ambiguity around runtime-unit drift and stale worktree state without expanding ForgeFlow runtime ownership.",
+  "planned_by": "chatgpt-web",
+  "context_refs": [
+    "docs/plan/active/2026-09-23-post-v2-operational-hardening.md",
+    "docs/open-swe-policy-v1-architecture.md",
+    "docs/task-graph-v1.md"
+  ],
+  "architecture_decisions": [
+    "ForgeFlow remains a thin quality-policy layer over Open SWE and LangGraph.",
+    "Runtime health inspection is read-only and must not silently activate or deactivate project supervision.",
+    "Git worktree cleanup is repository maintenance rather than ForgeFlow execution-state ownership.",
+    "ForgeFlow does not opt itself into continuous supervision unless an operator explicitly chooses that execution mode."
+  ],
+  "protected_contracts": [
+    "Exact-head CI and independent review remain mandatory before READY.",
+    "Open SWE owns implementation and reviewer execution plus sandbox and workspace lifecycle.",
+    "No operational health output may expose secrets.",
+    "Existing systemd user-unit names and timer cadences remain stable."
+  ],
+  "non_goals": [
+    "Do not enable ForgeFlow self-supervision.",
+    "Do not resume another project's autonomous execution.",
+    "Do not redesign model routing, reviewer policy, TaskGraph scheduling, or provider fallback.",
+    "Do not add automatic deletion of arbitrary worktrees or remote branches."
+  ],
+  "acceptance_criteria": [
+    "Required ForgeFlow user-unit inactivity is detected deterministically by a reusable read-only health check.",
+    "Installation asserts the required runtime units are active after enabling them.",
+    "Repository documentation defines evidence-based active-work and safe worktree-closure rules.",
+    "Focused deployment and documentation checks, Ruff, the full pytest suite, and git diff --check pass."
+  ],
+  "tasks": [
+    {
+      "id": "FF-OPS-1001",
+      "title": "Make deployed runtime-unit health observable",
+      "goal": "Add a deterministic read-only health check for required ForgeFlow user services and timers and enforce that postcondition at the end of installation.",
+      "why_now": "The project-supervisor timer was observed enabled but inactive while the policy service remained healthy, and the current deployment surface does not expose that lifecycle drift as a reusable acceptance check.",
+      "risk": "medium",
+      "scope": [
+        "GCP Dev deployment and runtime health tooling under deploy/gcp-dev.",
+        "Installer postcondition after user timers are enabled.",
+        "Focused deployment and deploy-contract tests."
+      ],
+      "out_of_scope": [
+        "Automatically starting or stopping project supervision outside installation.",
+        "Changing timer cadence or project scheduling semantics.",
+        "Adding a second control plane or runtime state store."
+      ],
+      "context_refs": [
+        "docs/plan/active/2026-09-23-post-v2-operational-hardening.md",
+        "docs/open-swe-policy-v1-architecture.md"
+      ],
+      "protected_contracts": [
+        "Health inspection is read-only and prints no secret values.",
+        "Existing unit names and deployment ownership remain unchanged.",
+        "ForgeFlow policy remains loopback-only."
+      ],
+      "implementation_steps": [
+        "Characterize the required deployed user units and the enabled-but-inactive failure case with focused tests.",
+        "Implement the smallest reusable read-only runtime-unit health checker using systemd user-unit state.",
+        "Invoke the checker as an installer postcondition after required timers are enabled.",
+        "Cover healthy and inactive-unit behavior without making tests depend on the host systemd instance.",
+        "Update deployment documentation only where needed to describe the new acceptance surface."
+      ],
+      "integration_notes": [
+        "The checker reports lifecycle drift but does not become an execution scheduler.",
+        "Project-level continuous_supervisor configuration remains independent from user-unit health."
+      ],
+      "acceptance_criteria": [
+        "A required inactive unit or timer produces non-zero status and identifies the failed unit.",
+        "All required active units produce success.",
+        "Installer tests prove the postcondition is invoked after timer enablement.",
+        "Focused deployment tests, Ruff, full pytest, and git diff --check pass."
+      ],
+      "verification_commands": [
+        "uv run pytest tests/test_deployment.py tests/test_deploy_contract.py -q",
+        "uv run ruff check deploy/gcp-dev tests/test_deployment.py tests/test_deploy_contract.py",
+        "uv run pytest -q",
+        "git diff --check"
+      ],
+      "depends_on": [],
+      "conflicts_with": [],
+      "mutation_keys": [
+        "deploy:gcp-dev",
+        "contract:runtime-health"
+      ]
+    },
+    {
+      "id": "FF-DOC-1002",
+      "title": "Define active-work and worktree closure contract",
+      "goal": "Document how operators distinguish active implementation state from stale worktrees and the evidence required before cleanup.",
+      "why_now": "A large number of clean historical worktrees made completed September work look active even though no LangGraph runs or implementation processes were running.",
+      "risk": "low",
+      "scope": [
+        "ForgeFlow operations and maintenance documentation.",
+        "Documentation links needed to make the closure contract discoverable.",
+        "Documentation characterization tests if the repository uses them for required references."
+      ],
+      "out_of_scope": [
+        "Automatic worktree deletion.",
+        "Remote branch garbage collection.",
+        "Changing Open SWE sandbox or workspace ownership."
+      ],
+      "context_refs": [
+        "docs/plan/active/2026-09-23-post-v2-operational-hardening.md",
+        "docs/open-swe-policy-v1-architecture.md",
+        "docs/task-graph-v1.md"
+      ],
+      "protected_contracts": [
+        "TaskGraph remains planning truth and LangGraph threads remain execution truth.",
+        "Open SWE retains sandbox and workspace lifecycle ownership.",
+        "No cleanup instruction may discard dirty work or an active process workspace."
+      ],
+      "implementation_steps": [
+        "Add a concise operations runbook defining active plan, active TaskGraph, runtime thread and run, PR, and worktree evidence separately.",
+        "Define safe worktree-removal checks: clean status, no live process cwd, and merged, closed, or superseded delivery evidence.",
+        "Document that worktree count is not a proxy for active task count.",
+        "Document that ForgeFlow self-supervision remains opt-in rather than implied by an active plan.",
+        "Link the runbook from the appropriate documentation index and verify documentation checks."
+      ],
+      "integration_notes": [
+        "The runbook describes maintenance boundaries; it does not grant ForgeFlow new worktree ownership.",
+        "This task can execute independently from FF-OPS-1001 because it owns only documentation."
+      ],
+      "acceptance_criteria": [
+        "The active-work model distinguishes planning, execution, delivery, and filesystem evidence.",
+        "Safe cleanup requires clean, no-process, and delivery-closed evidence.",
+        "Self-supervision is explicitly opt-in.",
+        "Documentation tests, full pytest, and git diff --check pass."
+      ],
+      "verification_commands": [
+        "uv run pytest tests/test_documentation.py -q",
+        "uv run pytest -q",
+        "git diff --check"
+      ],
+      "depends_on": [],
+      "conflicts_with": [],
+      "mutation_keys": [
+        "docs:operations"
+      ]
+    }
+  ]
+}
