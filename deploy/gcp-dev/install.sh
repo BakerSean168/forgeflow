@@ -171,5 +171,6 @@ PY
 
 systemctl --user enable --now forgeflow-invariant-supervisor.timer
 systemctl --user enable --now forgeflow-project-supervisor.timer
+python3 "$root/deploy/gcp-dev/check-runtime-units.py"
 
 echo "ForgeFlow Policy service healthy on 127.0.0.1:$port"
