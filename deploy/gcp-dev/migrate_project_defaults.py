@@ -14,7 +14,7 @@ from typing import Any
 def _load_list(path: Path) -> list[Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, list):
-        raise ValueError(f"project config must be a JSON array: {path}")
+        raise TypeError(f"project config must be a JSON array: {path}")
     return payload
 
 
