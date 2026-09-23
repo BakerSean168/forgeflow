@@ -10,6 +10,7 @@ running topology.
 | --- | --- |
 | [`open-swe-policy-v1-architecture.md`](./open-swe-policy-v1-architecture.md) | Authoritative ownership, lifecycle, policy state, deployment shape, and acceptance contract. |
 | [`task-graph-v1.md`](./task-graph-v1.md) | Repository-owned execution-ready TaskGraph contract, bounded parallel scheduling, and disabled-by-default AI decomposition proposal flow. |
+| [`operations.md`](./operations.md) | Active-work evidence model, runtime-unit health, safe worktree closure, plan archival, and explicit self-supervision activation. |
 | [`reviewer-sandbox.md`](./reviewer-sandbox.md) | Self-hosted Open SWE Docker sandbox isolation, credentials, persistence, and GC. |
 | [`github-app.md`](./github-app.md) | Dedicated Open SWE GitHub App configuration and required-check policy. |
 | [`upstream.md`](./upstream.md) | Exact pinned Open SWE revision, consumed contracts, compatibility extensions, and upgrade rules. |
