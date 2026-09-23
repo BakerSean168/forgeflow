@@ -122,6 +122,30 @@ def adopt_existing_worktree(workspace: Path, repository: str) -> tuple[Path, str
     return resolved, branch
 
 
+def validate_resumed_policy_state(
+    values: dict[str, Any],
+    *,
+    owner: str,
+    repo: str,
+    base_ref: str,
+    worktree: Path,
+) -> None:
+    expected = {
+        "repo_owner": owner,
+        "repo_name": repo,
+        "base_ref": base_ref,
+        "workspace_path": str(worktree),
+    }
+    mismatches = [
+        key for key, expected_value in expected.items() if values.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "resume thread does not match requested repository/base/workspace: "
+            + ", ".join(mismatches)
+        )
+
+
 def extract_evidence(values: dict[str, Any], *, thread_id: str, worktree: Path) -> dict[str, Any]:
     evidence = {key: values.get(key) for key in EVIDENCE_KEYS}
     evidence["policy_thread_id"] = thread_id
@@ -231,7 +255,7 @@ async def run_acceptance(args: argparse.Namespace) -> int:
         worktree, branch_name = adopt_existing_worktree(
             Path(args.workspace_path), args.repository
         )
-    thread_id = str(uuid.uuid4())
+    thread_id = args.resume_thread_id or str(uuid.uuid4())
     evidence_path = state_dir / "acceptance" / f"{stamp}-{thread_id[:8]}.json"
 
     auth = (config_dir / "local-auth.secret").read_text(encoding="utf-8").strip()
@@ -240,25 +264,40 @@ async def run_acceptance(args: argparse.Namespace) -> int:
         headers={"Authorization": f"Bearer {auth}"},
     )
     assistant_id = await _assistant_id(client)
-    await client.threads.create(
-        thread_id=thread_id,
-        if_exists="raise",
-        metadata={
-            "source": "forgeflow-acceptance",
-            "repo": {"owner": owner, "name": repo},
-            "title": f"ForgeFlow acceptance {stamp}",
-        },
-    )
-    initial = {
-        "objective": objective,
-        "repo_owner": owner,
-        "repo_name": repo,
-        "base_ref": args.base_ref,
-        "workspace_path": str(worktree),
-    }
+    if args.resume_thread_id:
+        resumed_state = await client.threads.get_state(thread_id)
+        resumed_values = dict(resumed_state.get("values") or {})
+        if not resumed_values:
+            raise RuntimeError(f"resume thread has no durable state: {thread_id}")
+        validate_resumed_policy_state(
+            resumed_values,
+            owner=owner,
+            repo=repo,
+            base_ref=args.base_ref,
+            worktree=worktree,
+        )
+        initial: dict[str, Any] = {}
+        first = False
+    else:
+        await client.threads.create(
+            thread_id=thread_id,
+            if_exists="raise",
+            metadata={
+                "source": "forgeflow-acceptance",
+                "repo": {"owner": owner, "name": repo},
+                "title": f"ForgeFlow acceptance {stamp}",
+            },
+        )
+        initial = {
+            "objective": objective,
+            "repo_owner": owner,
+            "repo_name": repo,
+            "base_ref": args.base_ref,
+            "workspace_path": str(worktree),
+        }
+        first = True
     deadline = time.monotonic() + args.timeout_minutes * 60
     last_status: tuple[Any, ...] | None = None
-    first = True
     while True:
         if await _reconcile(client, thread_id, assistant_id, initial if first else {}):
             first = False
@@ -320,6 +359,10 @@ def main() -> None:
     parser.add_argument(
         "--workspace-path",
         help="Adopt this existing clean branch worktree instead of creating a throwaway one",
+    )
+    parser.add_argument(
+        "--resume-thread-id",
+        help="Resume an existing durable policy thread after validating repo/base/workspace identity",
     )
     parser.add_argument("--objective-file", required=True)
     parser.add_argument("--base-ref", default="main")
