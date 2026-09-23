@@ -1,6 +1,6 @@
 # ForgeFlow Post-v2 Operational Hardening
 
-> Status: active
+> Status: completed
 > Owner: ChatGPT Web planning/control plane
 > Created: 2026-09-23
 > Execution mode: planning truth only; ForgeFlow self-supervision is not enabled by this plan.
@@ -86,3 +86,17 @@ Acceptance evidence:
 ## Rollback and containment
 
 Both tasks are additive hardening. If runtime-health integration causes deployment regressions, remove the installer invocation while retaining the read-only checker and tests for diagnosis. Documentation changes can be reverted independently. No state migration is involved.
+
+## Closure evidence
+
+Completed on 2026-09-23.
+
+- FF-OPS-1001 added `deploy/gcp-dev/check-runtime-units.py`, made installation verify required user-unit health after enabling timers, and added behavior/contract tests.
+- The live read-only probe correctly classified `forgeflow-project-supervisor.timer` as `enabled` but `inactive` while the other required units were READY. The timer was intentionally not started because activating another project's autonomous execution is outside this plan.
+- FF-DOC-1002 added `docs/operations.md`, linked it from the documentation index, and added documentation characterization coverage for active-work evidence, safe worktree closure, explicit self-supervision, and plan archival.
+- The strengthened deployment Ruff gate exposed two pre-existing issues in `migrate_project_defaults.py`; both were fixed minimally (executable mode and a type-error contract).
+- Focused runtime/deployment tests: 35 passed.
+- Documentation tests: 7 passed.
+- Project migration tests: 3 passed.
+- Repository-wide tests: 543 passed with 6 upstream dependency warnings.
+- Repository-wide Ruff and `git diff --check` passed.
