@@ -1,6 +1,6 @@
 # ForgeFlow Workflow Lifecycle V2
 
-> Status: active
+> Status: completed
 > Owner: ChatGPT Web planning/control plane
 > Created: 2026-09-23
 > Execution mode: ChatGPT implementation; ForgeFlow self-supervision remains disabled.
@@ -117,3 +117,18 @@ Acceptance evidence:
 Each phase is additive. Completion projection can be reverted without changing persisted threads.
 Operator projection is read-only. Activation binding remains optional for legacy compatibility during
 this cycle, so rollback does not require rewriting existing project manifests.
+
+## Closure evidence
+
+Completed on 2026-09-23.
+
+- FF-WF-2001 added explicit `task-graph-complete` projection when every current TaskGraph task is exact-head accepted on the configured base and no active writer remains.
+- The same phase fixed archival stop semantics: an inactive plan now reaches `plan-complete` before a removed/archived TaskGraph file is required.
+- FF-WF-2002 extended `/forgeflow/api/v1/summary` with continuous-supervisor configuration, plan/TaskGraph identity, planning status, and bounded task progress counts (`active`, `ready`, `blocked`, `completedOnBase`, `pending`).
+- Operator progress uses current TaskGraph fingerprints plus local Git `merge-base --is-ancestor`; a regression test verifies GET summary never performs `git fetch`.
+- FF-WF-2003 added optional explicit TaskGraph activation binding (`task_graph_id` + `task_graph_revision`). Present mismatches fail closed before dispatch; legacy missing bindings remain compatible and surface as `LEGACY_UNBOUND`.
+- Example configuration, TaskGraph docs, operations runbook, and architecture documentation now describe the activation and progress contracts.
+- Focused workflow/operator/config/documentation suite: 89 tests passed before final read-only-boundary coverage; operator focused suite then passed 33 tests.
+- Repository-wide Ruff passed.
+- Repository-wide pytest passed: 560 tests, with 6 upstream dependency warnings.
+- `git diff --check` passed.
