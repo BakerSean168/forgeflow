@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "graph_id": "forgeflow-workflow-lifecycle-v2",
+  "revision": 1,
+  "title": "ForgeFlow workflow lifecycle v2",
+  "objective": "Make TaskGraph completion, operator progress visibility, and unattended execution activation explicit without adding a second state store.",
+  "planned_by": "chatgpt-web",
+  "context_refs": [
+    "docs/plan/active/2026-09-23-workflow-lifecycle-v2.md",
+    "docs/open-swe-policy-v1-architecture.md",
+    "docs/task-graph-v1.md",
+    "docs/operations.md"
+  ],
+  "architecture_decisions": [
+    "TaskGraph is planning truth, LangGraph is execution truth, and GitHub/base ancestry is delivery truth.",
+    "TaskGraph completion is a deterministic projection and is not persisted as a second lifecycle state.",
+    "Operator summary is read-only and performs no network fetch, merge, systemd mutation, or plan mutation.",
+    "Explicit TaskGraph activation binds unattended execution to a reviewed graph id and revision.",
+    "Legacy enabled TaskGraphs without activation binding remain compatible but are visibly classified as legacy unbound."
+  ],
+  "protected_contracts": [
+    "Exact-head CI and independent review remain required before acceptance.",
+    "READY is not equivalent to completed-on-base.",
+    "Unknown active writers continue to block parallel expansion.",
+    "ForgeFlow never archives or rewrites repository planning truth automatically.",
+    "Existing legacy lane projects remain valid."
+  ],
+  "non_goals": [
+    "Do not enable ForgeFlow self-supervision.",
+    "Do not activate another project's autonomous execution.",
+    "Do not redesign routing, review policy, sandbox ownership, or retry budgets.",
+    "Do not add a workflow database or automatic plan archival."
+  ],
+  "acceptance_criteria": [
+    "Completed TaskGraphs emit an explicit task-graph-complete supervisor result.",
+    "Operator summary exposes bounded supervisor, plan, TaskGraph, activation, and task-progress projections.",
+    "Explicit activation binding fails closed on TaskGraph id or revision drift while preserving legacy compatibility.",
+    "Focused tests, full pytest, Ruff, and git diff --check pass."
+  ],
+  "tasks": [
+    {
+      "id": "FF-WF-2001",
+      "title": "Project explicit TaskGraph completion",
+      "goal": "Return a deterministic terminal supervisor result when every TaskGraph task is accepted on the configured base branch.",
+      "why_now": "The scheduler already knows completion evidence but currently projects an ambiguous idle parallel result after all tasks finish.",
+      "risk": "medium",
+      "scope": [
+        "TaskGraph completion projection in deploy/gcp-dev/run-project-supervisor.py.",
+        "Focused project-supervisor characterization and regression tests."
+      ],
+      "out_of_scope": [
+        "Automatic plan archival.",
+        "Persisting a new completion record.",
+        "Changing legacy inline-lane completion semantics."
+      ],
+      "context_refs": [
+        "docs/plan/active/2026-09-23-workflow-lifecycle-v2.md",
+        "docs/task-graph-v1.md"
+      ],
+      "protected_contracts": [
+        "READY without base-branch ancestry is not complete.",
+        "No new objective is created after all TaskGraph tasks complete.",
+        "Legacy lane scheduling remains unchanged."
+      ],
+      "implementation_steps": [
+        "Add failing tests for all-complete TaskGraph and READY-but-not-on-base cases.",
+        "Introduce the smallest explicit TaskGraph completion branch after deterministic completion calculation.",
+        "Keep merge/recovery processing behavior unchanged for incomplete graphs.",
+        "Run focused supervisor tests and diff checks."
+      ],
+      "integration_notes": [
+        "FF-WF-2002 consumes the same completion semantics in the operator projection."
+      ],
+      "acceptance_criteria": [
+        "All tasks complete on base returns task-graph-complete.",
+        "READY but not on base does not return task-graph-complete.",
+        "No child run is dispatched for a completed graph."
+      ],
+      "verification_commands": [
+        "uv run pytest tests/test_project_supervisor.py -q",
+        "uv run ruff check deploy/gcp-dev/run-project-supervisor.py tests/test_project_supervisor.py",
+        "git diff --check"
+      ],
+      "depends_on": [],
+      "conflicts_with": [],
+      "mutation_keys": [
+        "contract:taskgraph-completion",
+        "deploy:project-supervisor"
+      ]
+    },
+    {
+      "id": "FF-WF-2002",
+      "title": "Expose supervisor and TaskGraph progress in operator summary",
+      "goal": "Make project planning/execution state directly observable from the existing operator summary.",
+      "why_now": "Operators currently have to combine plan files, LangGraph threads, Git state, and supervisor configuration manually to answer whether a project is actually progressing.",
+      "risk": "medium",
+      "scope": [
+        "Read-only project/supervisor projection in forgeflow/operator_api.py.",
+        "TaskGraph metadata and bounded per-project progress counts.",
+        "Operator API tests and current documentation."
+      ],
+      "out_of_scope": [
+        "Mutating systemd state.",
+        "Fetching remote Git refs from GET endpoints.",
+        "Adding a new control plane or dashboard database."
+      ],
+      "context_refs": [
+        "docs/plan/active/2026-09-23-workflow-lifecycle-v2.md",
+        "docs/operations.md",
+        "docs/open-swe-policy-v1-architecture.md"
+      ],
+      "protected_contracts": [
+        "Summary remains passive and bounded.",
+        "READY and completed-on-base remain distinct.",
+        "No secrets or full plan contents are exposed."
+      ],
+      "implementation_steps": [
+        "Add characterization tests for configured, disabled, unconfigured, active, READY, blocked, and completed TaskGraph projections.",
+        "Project sanitized supervisor metadata from the existing manifest.",
+        "Project TaskGraph progress from current ForgeFlow thread metadata and local base ancestry without network fetch.",
+        "Expose a stable planning status and counts in /summary.",
+        "Update operator documentation and run focused tests."
+      ],
+      "integration_notes": [
+        "Use the same graph id, revision, task id, and exact-head evidence already stored in thread metadata/state.",
+        "Do not treat missing local ancestry evidence as completion."
+      ],
+      "acceptance_criteria": [
+        "Summary exposes configured/enabled supervisor state and TaskGraph id/revision.",
+        "Task counts distinguish total, active, READY, blocked, and completedOnBase.",
+        "All completed tasks project planning status COMPLETE.",
+        "GET summary performs no git fetch or state mutation."
+      ],
+      "verification_commands": [
+        "uv run pytest tests/test_operator_api.py -q",
+        "uv run ruff check forgeflow/operator_api.py tests/test_operator_api.py",
+        "git diff --check"
+      ],
+      "depends_on": [
+        "FF-WF-2001"
+      ],
+      "conflicts_with": [],
+      "mutation_keys": [
+        "api:operator-summary",
+        "contract:taskgraph-progress"
+      ]
+    },
+    {
+      "id": "FF-WF-2003",
+      "title": "Bind unattended execution to an explicit TaskGraph activation",
+      "goal": "Allow an operator-approved TaskGraph id and revision to gate unattended execution so changed planning truth requires explicit re-activation.",
+      "why_now": "enabled=true authorizes unattended execution but does not identify which TaskGraph revision was actually reviewed when that authorization was granted.",
+      "risk": "medium",
+      "scope": [
+        "Continuous supervisor manifest parsing and validation.",
+        "Optional TaskGraph activation binding in project examples and documentation.",
+        "Operator projection of explicit, legacy-unbound, and mismatched activation states."
+      ],
+      "out_of_scope": [
+        "Requiring activation for legacy inline lanes.",
+        "Automatically editing project manifests.",
+        "Automatically enabling timers or projects."
+      ],
+      "context_refs": [
+        "docs/plan/active/2026-09-23-workflow-lifecycle-v2.md",
+        "docs/task-graph-v1.md",
+        "docs/operations.md"
+      ],
+      "protected_contracts": [
+        "Existing TaskGraph projects without activation remain executable during this migration cycle.",
+        "A present activation binding fails closed on graph-id or revision mismatch.",
+        "Activation never mutates plans, timers, or runtime state."
+      ],
+      "implementation_steps": [
+        "Add activation model/parser tests for matching, mismatched, malformed, and legacy-missing cases.",
+        "Add an optional activation binding to ContinuousProjectConfig and validate it against the loaded TaskGraph.",
+        "Classify missing binding as LEGACY_UNBOUND and matching binding as EXPLICIT_ACTIVE in operator projection.",
+        "Document the explicit activation contract in TaskGraph/operations docs and projects.example.json.",
+        "Run focused project, supervisor, operator, and documentation tests."
+      ],
+      "integration_notes": [
+        "Binding is graph id plus positive revision; semantic Task changes are expected to bump revision under repository planning governance.",
+        "This phase does not enable ForgeFlow's own continuous supervisor."
+      ],
+      "acceptance_criteria": [
+        "Matching binding permits normal config load.",
+        "Mismatched graph id or revision raises before dispatch.",
+        "Missing binding remains backward compatible and is visibly legacy-unbound.",
+        "Example configuration documents the new explicit activation shape."
+      ],
+      "verification_commands": [
+        "uv run pytest tests/test_projects.py tests/test_project_supervisor.py tests/test_operator_api.py tests/test_documentation.py -q",
+        "uv run ruff check forgeflow deploy/gcp-dev tests",
+        "uv run pytest -q",
+        "git diff --check"
+      ],
+      "depends_on": [
+        "FF-WF-2002"
+      ],
+      "conflicts_with": [],
+      "mutation_keys": [
+        "contract:continuous-supervisor",
+        "config:project-activation"
+      ]
+    }
+  ]
+}
