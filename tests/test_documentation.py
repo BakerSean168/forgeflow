@@ -58,3 +58,21 @@ def test_public_markdown_code_fences_are_balanced() -> None:
     for path in files:
         text = path.read_text(encoding="utf-8")
         assert text.count("```") % 2 == 0, path.relative_to(REPO)
+
+
+def test_operations_runbook_defines_active_work_and_safe_closure() -> None:
+    operations = (REPO / "docs/operations.md").read_text(encoding="utf-8")
+    normalized_operations = " ".join(operations.split())
+    docs_index = (REPO / "docs/README.md").read_text(encoding="utf-8")
+    assert "Worktree count is not active-task count" in operations
+    assert "git status --porcelain" in operations
+    assert "No live process has its current working directory inside the worktree" in operations
+    assert "merged, closed, or explicitly superseded" in operations
+    assert "continuous_supervisor.enabled: true" in operations
+    assert (
+        "does **not** authorize ForgeFlow to modify its own repository"
+        in normalized_operations
+    )
+    assert "check-runtime-units.py" in operations
+    assert "docs/plan/archive/" in operations
+    assert "operations.md" in docs_index
