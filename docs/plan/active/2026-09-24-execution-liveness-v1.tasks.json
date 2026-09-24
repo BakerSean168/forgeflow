@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "graph_id": "forgeflow-execution-liveness-v1",
+  "revision": 1,
+  "title": "ForgeFlow execution liveness v1",
+  "objective": "Separate durable active lifecycle state from actionable execution liveness and harden Policy graceful shutdown.",
+  "planned_by": "chatgpt-web",
+  "context_refs": [
+    "docs/plan/active/2026-09-24-execution-liveness-v1.md",
+    "docs/operations.md",
+    "docs/open-swe-policy-v1-architecture.md"
+  ],
+  "architecture_decisions": [
+    "LangGraph thread status remains durable lifecycle truth; liveness is a read-only operator projection.",
+    "Existing activeObjectiveCount remains backward-compatible while actionable and stale counts are added.",
+    "Only supervisor-owned active objectives whose configured plan is inactive are stale by this contract.",
+    "Policy shutdown tuning changes only systemd stop budget."
+  ],
+  "protected_contracts": [
+    "GET operator endpoints remain read-only.",
+    "No bulk cancellation or historical thread rewrite is introduced.",
+    "Project supervisor timer activation is unchanged.",
+    "Policy service remains loopback-only."
+  ],
+  "non_goals": [
+    "Do not cancel MemoFlow historical objectives automatically.",
+    "Do not enable continuous supervision.",
+    "Do not redesign LangGraph lifecycle statuses.",
+    "Do not upgrade LangGraph dependencies."
+  ],
+  "acceptance_criteria": [
+    "Summary distinguishes durable active, actionable active, and stale active objectives.",
+    "Manual objectives are not misclassified stale solely because continuous planning is inactive.",
+    "Policy stop timeout is 60 seconds and controlled restart is graceful.",
+    "Focused tests, full pytest, Ruff, and git diff --check pass."
+  ],
+  "tasks": [
+    {
+      "id": "FF-LIVE-3001",
+      "title": "Project effective objective liveness",
+      "goal": "Expose stale supervisor-owned objectives separately from actionable execution without rewriting durable thread state.",
+      "why_now": "Archived MemoFlow planning is correctly INACTIVE but four September 16 supervisor objectives still inflate the global active count.",
+      "risk": "medium",
+      "scope": [
+        "Operator summary objective liveness classification.",
+        "Durable/actionable/stale active counts.",
+        "Focused operator API tests and documentation."
+      ],
+      "out_of_scope": [
+        "Automatic cancellation.",
+        "Changing LangGraph status values.",
+        "Changing objective command semantics."
+      ],
+      "context_refs": [
+        "docs/plan/active/2026-09-24-execution-liveness-v1.md",
+        "docs/operations.md"
+      ],
+      "protected_contracts": [
+        "activeObjectiveCount preserves durable lifecycle meaning.",
+        "GET summary remains read-only.",
+        "Manual objectives remain actionable when appropriate."
+      ],
+      "implementation_steps": [
+        "Add failing tests for inactive-plan supervisor objectives and manual objectives.",
+        "Expose objective source metadata in the operator view.",
+        "Add liveness classification using sanitized project supervisor planning state.",
+        "Add actionableActiveObjectiveCount and staleActiveObjectiveCount while preserving activeObjectiveCount.",
+        "Document durable lifecycle versus effective execution liveness."
+      ],
+      "integration_notes": [
+        "Classification is a projection only and never updates LangGraph thread state."
+      ],
+      "acceptance_criteria": [
+        "Supervisor-owned active objective on inactive plan is STALE_PLAN_INACTIVE.",
+        "Manual active objective remains EFFECTIVE_ACTIVE.",
+        "Terminal objective is INACTIVE.",
+        "Summary counts accurately separate durable, actionable, and stale active rows."
+      ],
+      "verification_commands": [
+        "uv run pytest tests/test_operator_api.py -q",
+        "uv run ruff check forgeflow/operator_api.py tests/test_operator_api.py",
+        "git diff --check"
+      ],
+      "depends_on": [],
+      "conflicts_with": [],
+      "mutation_keys": [
+        "api:operator-summary",
+        "contract:objective-liveness"
+      ]
+    },
+    {
+      "id": "FF-OPS-3002",
+      "title": "Increase Policy graceful shutdown budget",
+      "goal": "Allow the LangGraph local Policy process enough time to finish its observed graceful shutdown path.",
+      "why_now": "A real restart reached graceful shutdown but systemd killed the old process exactly at the configured 30-second stop timeout.",
+      "risk": "low",
+      "scope": [
+        "forgeflow-policy.service template stop timeout.",
+        "Deployment contract tests.",
+        "Post-merge installed-unit reconciliation and controlled restart verification."
+      ],
+      "out_of_scope": [
+        "Changing kill signal.",
+        "Changing Restart policy.",
+        "Changing LangGraph versions.",
+        "Running the full installer that would activate project-supervisor timer."
+      ],
+      "context_refs": [
+        "docs/plan/active/2026-09-24-execution-liveness-v1.md"
+      ],
+      "protected_contracts": [
+        "Project supervisor timer remains inactive.",
+        "Service security hardening and loopback binding are unchanged."
+      ],
+      "implementation_steps": [
+        "Add or adjust deployment test asserting TimeoutStopSec=60.",
+        "Change only the Policy unit template from 30 to 60 seconds.",
+        "Run focused and full repository verification.",
+        "After merge, reconcile the installed unit directly, daemon-reload, and perform one controlled restart.",
+        "Verify no new stop-timeout/SIGKILL journal event and timer remains inactive."
+      ],
+      "integration_notes": [
+        "Do not invoke deploy/gcp-dev/install.sh for the live-unit reconciliation because it enables project-supervisor.timer."
+      ],
+      "acceptance_criteria": [
+        "Template and installed unit report TimeoutStopUSec=60s.",
+        "Controlled restart returns service to active state.",
+        "No new systemd stop-timeout/SIGKILL event occurs for that restart.",
+        "project-supervisor.timer remains inactive."
+      ],
+      "verification_commands": [
+        "uv run pytest tests/test_deployment.py tests/test_deploy_contract.py -q",
+        "uv run ruff check deploy/gcp-dev tests/test_deployment.py tests/test_deploy_contract.py",
+        "git diff --check"
+      ],
+      "depends_on": [],
+      "conflicts_with": [],
+      "mutation_keys": [
+        "deploy:forgeflow-policy-service"
+      ]
+    }
+  ]
+}
