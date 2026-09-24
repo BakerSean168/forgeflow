@@ -6,7 +6,7 @@
   "objective": "Separate durable active lifecycle state from actionable execution liveness and harden Policy graceful shutdown.",
   "planned_by": "chatgpt-web",
   "context_refs": [
-    "docs/plan/active/2026-09-24-execution-liveness-v1.md",
+    "docs/plan/archive/2026-09-24-execution-liveness-v1.md",
     "docs/operations.md",
     "docs/open-swe-policy-v1-architecture.md"
   ],
@@ -52,7 +52,7 @@
         "Changing objective command semantics."
       ],
       "context_refs": [
-        "docs/plan/active/2026-09-24-execution-liveness-v1.md",
+        "docs/plan/archive/2026-09-24-execution-liveness-v1.md",
         "docs/operations.md"
       ],
       "protected_contracts": [
@@ -106,7 +106,7 @@
         "Running the full installer that would activate project-supervisor timer."
       ],
       "context_refs": [
-        "docs/plan/active/2026-09-24-execution-liveness-v1.md"
+        "docs/plan/archive/2026-09-24-execution-liveness-v1.md"
       ],
       "protected_contracts": [
         "Project supervisor timer remains inactive.",

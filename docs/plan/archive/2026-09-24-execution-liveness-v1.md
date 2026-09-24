@@ -1,6 +1,6 @@
 # ForgeFlow Execution Liveness V1
 
-> Status: active
+> Status: completed
 > Owner: ChatGPT Web
 > Created: 2026-09-24
 > Execution mode: ChatGPT implementation; ForgeFlow self-supervision remains disabled.
@@ -82,3 +82,19 @@ Acceptance evidence:
 - `uv run ruff check forgeflow openswe_ext deploy/gcp-dev tests`
 - `uv run pytest -q`
 - `git diff --check`
+
+## Closure evidence
+
+Completed on 2026-09-24.
+
+- FF-LIVE-3001 added read-only objective liveness projection to the operator summary. Durable `activeObjectiveCount` remains unchanged; `actionableActiveObjectiveCount` and `staleActiveObjectiveCount` now distinguish effective work from historical supervisor-owned rows.
+- Supervisor-owned active objectives whose configured plan is inactive are projected as `STALE_PLAN_INACTIVE`; manual/Hermes objectives remain `EFFECTIVE_ACTIVE` unless their own lifecycle is terminal.
+- Project supervisor summaries expose `staleActiveObjectiveCount` without rewriting LangGraph thread state or issuing cancel commands.
+- FF-OPS-3002 changed only `forgeflow-policy.service` `TimeoutStopSec` from 30s to 60s; signal, restart policy, loopback binding, and project-supervisor activation are unchanged.
+- The full suite initially exposed four stale reviewer-fallback tests because `openswe-reviewer-glm53` expired on 2026-09-23T16:00:00Z. Tests were made deterministic: default policy now expects the expired route to be excluded, while explicit future-expiry fixtures still cover fallback behavior.
+- Focused liveness/deployment/documentation checks: 74 passed.
+- Reviewer/model-routing expiry checks: 18 passed.
+- Repository-wide Ruff passed.
+- Repository-wide pytest passed: 563 tests, with 6 upstream dependency warnings.
+- `git diff --check` passed.
+- Live-unit 60-second stop-budget verification is performed after merge so the deployed unit is tested at the delivered exact head.
