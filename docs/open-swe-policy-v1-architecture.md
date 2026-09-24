@@ -139,6 +139,8 @@ The facade may create, read, reconcile, or cancel a Policy V1 objective and expo
 
 `/summary` also reconciles the ledger's currently open attempts against active Policy V1 objectives. A matching implementation/repair operation remains represented only by its durable objective. An open attempt that cannot be attributed to an active objective is surfaced separately as an **unattached execution anomaly** with bounded non-secret route/runtime/provenance fields; it is never promoted into `activeObjectives` and therefore never becomes a second task truth. The dashboard can warn about these rows so manual recovery scripts or accidental low-level execution are visible instead of silently disappearing. This projection reads the ledger only; it does not scan processes. If the ledger cannot be read, the unattached-execution status is explicitly `UNAVAILABLE` rather than reporting a false zero.
 
+The same `/summary` response projects repository planning status without becoming a planning owner. For each configured project it reports continuous-supervisor configuration, active plan paths, TaskGraph id/revision, activation binding state, and bounded task counts for active, READY, blocked, completed-on-base, and pending work. Task completion uses current TaskGraph fingerprints, exact-head READY evidence, and local base-branch ancestry only; GET requests do not fetch remotes, start timers, create objectives, merge code, or mutate plans.
+
 Model availability is deliberately explicit to avoid burning account quota through UI polling. `POST /forgeflow/api/v1/resources/{routeId}/probe` is operator-authenticated and currently supported for CodeBuddy. It runs one no-tools, one-turn probe against the configured exact model in a disposable empty directory, with project/local settings and session persistence excluded. Only `AVAILABLE/UNAVAILABLE`, probe time, duration, model id and a bounded failure code are atomically cached in a private `0600` state file; model text is discarded. Subsequent GET requests read that cache without another model request.
 
 ### Open SWE owns
@@ -623,6 +625,8 @@ TaskGraph changes the decomposition boundary without weakening delivery policy:
   mutation.
 - Every Task still follows implementation -> verification -> PR -> exact-head CI -> independent
   review -> repair -> re-review -> acceptance.
+- When every current TaskGraph task is accepted on the configured base and no active writer remains,
+  the supervisor projects `task-graph-complete`; it does not create another objective or archive the plan.
 
 The supervisor renders both global and Task-local planning context into each implementation objective:
 architecture decisions, protected contracts, non-goals, scope/exclusions, integration notes,
@@ -649,6 +653,13 @@ does not change `task_graph_path`, make itself canonical, or start mutation work
 AI decomposition interchangeable with ChatGPT-authored graphs without granting the planner execution
 authority.
 
+For new TaskGraph-backed unattended execution, the project manifest may include an explicit
+`activation` binding containing `task_graph_id` and `task_graph_revision`. When present, both must
+match the loaded TaskGraph or configuration fails closed before dispatch. This binds operator
+authorization to the reviewed planning revision without moving planning truth into the deployment
+manifest. Existing TaskGraph projects without the binding remain migration-compatible and surface as
+`LEGACY_UNBOUND`; legacy inline lanes do not require the binding.
+
 Inline `continuous_supervisor.lanes` remain a compatibility format for existing deployments. They are
 projected onto the same bounded scheduler, but new work should use `task_graph_path`; configuring both
 formats at once is rejected.
@@ -657,7 +668,9 @@ When no TaskGraph/lanes are configured, the legacy single-objective continuation
 active objectives are left alone, whitelisted resource escalations may be explicitly recovered, unsafe
 escalations remain blocked, and exact-head `READY` work may be auto-merged only when
 `auto_merge_ready` is enabled. Removing or archiving the configured active plan file remains the
-deterministic project stop signal.
+deterministic project stop signal. The loader checks that stop signal before requiring the former
+TaskGraph file, so archiving a completed plan and TaskGraph together does not turn a clean stop into a
+configuration failure.
 
 ## 18. Current repository layout
 

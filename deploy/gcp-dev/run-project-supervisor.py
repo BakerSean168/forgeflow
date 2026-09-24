@@ -524,6 +524,13 @@ async def _supervise_parallel_project(
         for lane in tasks
         if _lane_complete(config, lane, rows, plan_text)
     }
+    active = _active_rows(rows, config)
+    if (
+        config.task_graph is not None
+        and len(completed) == len(tasks)
+        and not active
+    ):
+        return "task-graph-complete"
 
     # Process terminal/recoverable lane state before opening new capacity. Keep
     # READY merges single-effect per invocation to preserve crash/replay safety.
@@ -544,7 +551,6 @@ async def _supervise_parallel_project(
             if result == "merged":
                 return f"parallel:merged:{lane.key}"
 
-    active = _active_rows(rows, config)
     active_lane_keys = {
         key
         for row in active

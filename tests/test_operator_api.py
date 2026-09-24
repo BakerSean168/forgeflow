@@ -968,3 +968,327 @@ def test_operator_cancel_patches_checkpoint_without_replacing_objective_state(
     assert values["workspace_path"] == "/tmp/existing"
     assert values["implementation_thread_id"] == "impl-1"
     assert client.runs.calls[-1][2]["input"] == {}
+
+
+def _task_graph_operator_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    enabled: bool = True,
+    activation: dict | None = None,
+):
+    from forgeflow.task_graph import load_task_graph
+
+    repo = tmp_path / "workflow-project"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    (repo / "baseline.txt").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "baseline.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "baseline"], check=True)
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    plan = repo / "docs/plan/active/current.md"
+    graph_path = repo / "docs/plan/active/current.tasks.json"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("# active plan\n", encoding="utf-8")
+    tasks = []
+    for index, task_id in enumerate(("DONE-1", "ACTIVE-2", "READY-3", "BLOCKED-4"), start=1):
+        tasks.append(
+            {
+                "id": task_id,
+                "title": task_id,
+                "goal": f"Complete {task_id}.",
+                "why_now": "Operator progress test.",
+                "risk": "medium",
+                "scope": [f"scope:{index}"],
+                "out_of_scope": [],
+                "context_refs": [],
+                "protected_contracts": [],
+                "implementation_steps": [f"Implement {task_id}."],
+                "integration_notes": [],
+                "acceptance_criteria": [f"{task_id} accepted."],
+                "verification_commands": ["pytest -q"],
+                "depends_on": [],
+                "conflicts_with": [],
+                "mutation_keys": [f"task:{index}"],
+            }
+        )
+    graph_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "graph_id": "operator-progress",
+                "revision": 3,
+                "title": "Operator progress",
+                "objective": "Expose TaskGraph progress.",
+                "planned_by": "chatgpt-web",
+                "context_refs": [],
+                "architecture_decisions": ["One progress projection."],
+                "protected_contracts": ["GET remains read-only."],
+                "non_goals": [],
+                "acceptance_criteria": ["Projection is accurate."],
+                "tasks": tasks,
+            }
+        ),
+        encoding="utf-8",
+    )
+    supervisor = {
+        "enabled": enabled,
+        "base_ref": "main",
+        "plan_paths": ["docs/plan/active/current.md"],
+        "task_graph_path": "docs/plan/active/current.tasks.json",
+        "max_parallel_mutations": 4,
+        "auto_merge_ready": True,
+        "ai_decomposition_enabled": False,
+    }
+    if activation is not None:
+        supervisor["activation"] = activation
+    manifest = tmp_path / "projects-progress.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "project_key": "workflow",
+                    "name": "Workflow",
+                    "repo": "BakerSean168/workflow",
+                    "cwd": str(repo),
+                    "default_branch": "main",
+                    "continuous_supervisor": supervisor,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPEN_SWE_LOCAL_PROJECTS_FILE", str(manifest))
+    monkeypatch.setenv("OPEN_SWE_LOCAL_AUTH_TOKEN", "secret")
+    return repo, load_task_graph(graph_path), head
+
+
+def _add_task_objective(
+    client: FakeClient,
+    graph,
+    task_id: str,
+    *,
+    status: str,
+    thread_id: str,
+    head: str | None = None,
+) -> None:
+    task = graph.task(task_id)
+    asyncio.run(
+        client.threads.create(
+            thread_id=thread_id,
+            graph_id="forgeflow",
+            metadata={
+                "project_key": "workflow",
+                "task_id": task.id,
+                "task_graph_id": graph.graph_id,
+                "task_graph_revision": graph.revision,
+                "task_fingerprint": graph.execution_fingerprint(task),
+            },
+        )
+    )
+    values = {
+        "repo_owner": "BakerSean168",
+        "repo_name": "workflow",
+        "objective": task.goal,
+        "status": status,
+        "base_ref": "main",
+    }
+    if head is not None:
+        values.update(
+            {
+                "observed_head_sha": head,
+                "ci_head_sha": head,
+                "reviewed_head_sha": head,
+            }
+        )
+    client.threads.rows[thread_id]["values"] = values
+
+
+def test_summary_marks_projects_without_supervisor_as_unconfigured(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+
+    body = next(row for row in payload["projects"] if row["projectKey"] == "bodysense")
+    assert body["supervisor"]["configured"] is False
+    assert body["supervisor"]["enabled"] is False
+    assert body["supervisor"]["planningStatus"] == "NOT_CONFIGURED"
+
+
+def test_summary_projects_bounded_task_graph_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo, graph, base_head = _task_graph_operator_fixture(tmp_path, monkeypatch)
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    _add_task_objective(
+        client, graph, "DONE-1", status="READY", thread_id="done", head=base_head
+    )
+    _add_task_objective(
+        client, graph, "ACTIVE-2", status="IMPLEMENTING", thread_id="active"
+    )
+    _add_task_objective(
+        client, graph, "READY-3", status="READY", thread_id="ready", head="b" * 40
+    )
+    _add_task_objective(
+        client, graph, "BLOCKED-4", status="ESCALATED", thread_id="blocked"
+    )
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+    project = payload["projects"][0]
+    supervisor = project["supervisor"]
+
+    assert supervisor["configured"] is True
+    assert supervisor["enabled"] is True
+    assert supervisor["baseRef"] == "main"
+    assert supervisor["planActive"] is True
+    assert supervisor["taskGraph"]["graphId"] == "operator-progress"
+    assert supervisor["taskGraph"]["revision"] == 3
+    assert supervisor["taskGraph"]["taskCount"] == 4
+    assert supervisor["activation"]["status"] == "LEGACY_UNBOUND"
+    assert supervisor["planningStatus"] == "BLOCKED"
+    assert supervisor["progress"] == {
+        "total": 4,
+        "active": 1,
+        "ready": 1,
+        "blocked": 1,
+        "completedOnBase": 1,
+        "pending": 0,
+    }
+
+
+def test_summary_reports_complete_only_when_all_task_heads_are_on_local_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo, graph, base_head = _task_graph_operator_fixture(tmp_path, monkeypatch)
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    for index, task in enumerate(graph.tasks):
+        _add_task_objective(
+            client,
+            graph,
+            task.id,
+            status="READY",
+            thread_id=f"complete-{index}",
+            head=base_head,
+        )
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+    supervisor = payload["projects"][0]["supervisor"]
+
+    assert supervisor["planningStatus"] == "COMPLETE"
+    assert supervisor["progress"]["completedOnBase"] == 4
+    assert supervisor["progress"]["ready"] == 0
+    assert supervisor["progress"]["pending"] == 0
+
+
+def test_summary_projects_disabled_task_graph_without_starting_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo, _graph, _head = _task_graph_operator_fixture(
+        tmp_path, monkeypatch, enabled=False
+    )
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+    supervisor = payload["projects"][0]["supervisor"]
+
+    assert supervisor["configured"] is True
+    assert supervisor["enabled"] is False
+    assert supervisor["planningStatus"] == "PENDING"
+    assert supervisor["progress"]["pending"] == 4
+    assert client.runs.calls == []
+
+
+def test_summary_projects_matching_explicit_task_graph_activation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo, _graph, _head = _task_graph_operator_fixture(
+        tmp_path,
+        monkeypatch,
+        activation={
+            "task_graph_id": "operator-progress",
+            "task_graph_revision": 3,
+        },
+    )
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+    activation = payload["projects"][0]["supervisor"]["activation"]
+
+    assert activation == {
+        "status": "EXPLICIT_ACTIVE",
+        "taskGraphId": "operator-progress",
+        "taskGraphRevision": 3,
+    }
+
+
+def test_summary_surfaces_task_graph_activation_mismatch_as_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo, _graph, _head = _task_graph_operator_fixture(
+        tmp_path,
+        monkeypatch,
+        activation={
+            "task_graph_id": "operator-progress",
+            "task_graph_revision": 4,
+        },
+    )
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+    supervisor = payload["projects"][0]["supervisor"]
+
+    assert supervisor["activation"]["status"] == "MISMATCH"
+    assert supervisor["planningStatus"] == "CONFIG_ERROR"
+    assert "activation does not match" in supervisor["configurationError"]
+
+
+def test_summary_task_graph_progress_never_fetches_git_remotes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo, graph, base_head = _task_graph_operator_fixture(tmp_path, monkeypatch)
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+    _add_task_objective(
+        client, graph, "DONE-1", status="READY", thread_id="done-read-only", head=base_head
+    )
+
+    original_run = subprocess.run
+    git_calls: list[list[str]] = []
+
+    def recording_run(command, *args, **kwargs):
+        if isinstance(command, list) and command and command[0] == "git":
+            git_calls.append(command)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(api.subprocess, "run", recording_run)
+
+    asyncio.run(api.summary(authorization="Bearer secret"))
+
+    assert git_calls
+    assert all("fetch" not in command for command in git_calls)
+    assert any("merge-base" in command and "--is-ancestor" in command for command in git_calls)

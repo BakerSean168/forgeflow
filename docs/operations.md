@@ -79,6 +79,21 @@ Unattended execution additionally requires project configuration with
 self-supervision is an explicit operator/execution-mode decision. A planning-only change must not
 silently alter either activation condition.
 
+For TaskGraph-backed unattended work, new configurations should also bind authorization to the
+reviewed graph identity and revision:
+
+```json
+"activation": {
+  "task_graph_id": "example-vnext",
+  "task_graph_revision": 1
+}
+```
+
+A present binding is fail-closed: changing the configured TaskGraph id or revision requires an
+operator to update the binding before dispatch can continue. Existing TaskGraph projects without the
+field are migration-compatible and appear as `LEGACY_UNBOUND` in the operator summary. The binding
+itself does not start the supervisor or mutate the TaskGraph.
+
 ## Runtime-unit health
 
 Use the read-only deployment health check:
@@ -101,3 +116,15 @@ runs the same checker as a postcondition after it explicitly enables the require
 
 An `enabled` but `inactive` timer is therefore visible as deployment/runtime drift instead of being
 mistaken for a healthy supervisor.
+
+## Operator summary projection
+
+`GET /forgeflow/api/v1/summary` projects the planning/execution boundary without becoming another
+state owner. Each project reports whether continuous supervision is configured/enabled, active plan
+paths, TaskGraph id/revision, activation state, and bounded progress counts for active, READY,
+blocked, completed-on-base, and pending tasks.
+
+The summary uses existing LangGraph thread metadata plus local Git ancestry only. It does not run
+`git fetch`, merge branches, start timers, create objectives, or rewrite repository plans. A
+TaskGraph reaches projected `COMPLETE` only when every current fingerprinted task has exact-head
+READY evidence and its accepted head is already on the locally known configured base.

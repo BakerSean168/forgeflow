@@ -146,6 +146,12 @@ class ContinuousLaneConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskGraphActivation:
+    graph_id: str
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuousProjectConfig:
     project_key: str
     owner: str
@@ -161,6 +167,7 @@ class ContinuousProjectConfig:
     task_graph_path: Path | None = None
     task_graph: TaskGraphSpec | None = None
     ai_decomposition_enabled: bool = False
+    activation: TaskGraphActivation | None = None
 
     @property
     def execution_tasks(self) -> tuple[ContinuousLaneConfig | TaskSpec, ...]:
@@ -175,6 +182,33 @@ def _string_list(value: object, *, label: str) -> tuple[str, ...]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError(f"{label} must be a list of strings")
     return tuple(dict.fromkeys(item.strip() for item in value if item.strip()))
+
+
+def parse_task_graph_activation(
+    spec: dict[str, object], *, repo_full: str
+) -> TaskGraphActivation | None:
+    raw = spec.get("activation")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError(f"continuous supervisor {repo_full} activation must be an object")
+    unknown = set(raw) - {"task_graph_id", "task_graph_revision"}
+    if unknown:
+        raise ValueError(
+            f"continuous supervisor {repo_full} activation has unknown fields: "
+            + ", ".join(sorted(str(item) for item in unknown))
+        )
+    graph_id = raw.get("task_graph_id")
+    revision = raw.get("task_graph_revision")
+    if not isinstance(graph_id, str) or not graph_id.strip():
+        raise ValueError(
+            f"continuous supervisor {repo_full} activation requires task_graph_id"
+        )
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise ValueError(
+            f"continuous supervisor {repo_full} activation requires positive task_graph_revision"
+        )
+    return TaskGraphActivation(graph_id=graph_id.strip(), revision=revision)
 
 
 def _continuous_lanes(
@@ -259,7 +293,11 @@ def _repo_path(cwd: Path, value: str, *, label: str) -> Path:
 
 
 def _load_project_task_graph(
-    spec: dict[str, object], *, cwd: Path, repo_full: str
+    spec: dict[str, object],
+    *,
+    cwd: Path,
+    repo_full: str,
+    load: bool = True,
 ) -> tuple[Path | None, TaskGraphSpec | None]:
     raw_path = spec.get("task_graph_path")
     if raw_path is None:
@@ -271,6 +309,8 @@ def _load_project_task_graph(
         raw_path.strip(),
         label=f"continuous supervisor {repo_full} task graph path",
     )
+    if not load:
+        return path, None
     graph = load_task_graph(path)
     refs = set(graph.context_refs)
     for task in graph.tasks:
@@ -323,22 +363,17 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
         owner, repo = repo_full.split("/", 1)
         project_key = str(raw.get("project_key") or repo).strip().casefold()
         base_ref = str(spec.get("base_ref") or raw.get("default_branch") or "main").strip()
-        task_graph_path, task_graph = _load_project_task_graph(
-            spec, cwd=cwd, repo_full=repo_full
-        )
-        objective = str(spec.get("objective") or "").strip()
-        if task_graph is not None:
-            objective = task_graph.objective
         paths = spec.get("plan_paths")
         criteria = spec.get("acceptance_criteria", [])
         auto_merge = spec.get("auto_merge_ready", False)
         max_parallel = spec.get("max_parallel_mutations", 1)
         ai_decomposition_enabled = spec.get("ai_decomposition_enabled", False)
+        activation = parse_task_graph_activation(spec, repo_full=repo_full)
         if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= 4:
             raise ValueError(
                 f"continuous supervisor {repo_full} max_parallel_mutations must be an integer from 1 to 4"
             )
-        if not project_key or not base_ref or not objective:
+        if not project_key or not base_ref:
             raise ValueError(f"continuous supervisor {repo_full} has incomplete configuration")
         if not isinstance(ai_decomposition_enabled, bool):
             raise TypeError(
@@ -354,11 +389,6 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
             )
         if not isinstance(auto_merge, bool):
             raise TypeError(f"continuous supervisor {repo_full} auto_merge_ready must be boolean")
-        lanes = _continuous_lanes(spec, repo_full=repo_full)
-        if task_graph is not None and lanes:
-            raise ValueError(
-                f"continuous supervisor {repo_full} cannot configure both lanes and task_graph_path"
-            )
         plan_paths = tuple(
             _repo_path(
                 cwd,
@@ -367,6 +397,39 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
             )
             for item in paths
         )
+        plan_active = any(path.is_file() for path in plan_paths)
+        task_graph_path, task_graph = _load_project_task_graph(
+            spec,
+            cwd=cwd,
+            repo_full=repo_full,
+            load=plan_active,
+        )
+        objective = str(spec.get("objective") or "").strip()
+        if task_graph is not None:
+            objective = task_graph.objective
+        if plan_active and not objective:
+            raise ValueError(f"continuous supervisor {repo_full} has incomplete configuration")
+        lanes = _continuous_lanes(spec, repo_full=repo_full)
+        if task_graph_path is not None and lanes:
+            raise ValueError(
+                f"continuous supervisor {repo_full} cannot configure both lanes and task_graph_path"
+            )
+        if activation is not None and task_graph_path is None:
+            raise ValueError(
+                f"continuous supervisor {repo_full} activation requires task_graph_path"
+            )
+        if (
+            activation is not None
+            and task_graph is not None
+            and (
+                activation.graph_id != task_graph.graph_id
+                or activation.revision != task_graph.revision
+            )
+        ):
+            raise ValueError(
+                f"continuous supervisor {repo_full} activation does not match "
+                "the configured TaskGraph"
+            )
         combined_criteria = tuple(item.strip() for item in criteria if item.strip())
         if task_graph is not None:
             combined_criteria = tuple(
@@ -388,6 +451,7 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
                 task_graph_path=task_graph_path,
                 task_graph=task_graph,
                 ai_decomposition_enabled=ai_decomposition_enabled,
+                activation=activation,
             )
         )
     return tuple(configs)
@@ -396,5 +460,7 @@ def load_continuous_project_configs() -> tuple[ContinuousProjectConfig, ...]:
 __all__ += [
     "ContinuousLaneConfig",
     "ContinuousProjectConfig",
+    "TaskGraphActivation",
     "load_continuous_project_configs",
+    "parse_task_graph_activation",
 ]

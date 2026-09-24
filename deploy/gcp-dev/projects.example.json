@@ -37,6 +37,10 @@
       "auto_merge_ready": false,
       "max_parallel_mutations": 4,
       "task_graph_path": "docs/plan/active/current.tasks.json",
+      "activation": {
+        "task_graph_id": "example-vnext",
+        "task_graph_revision": 1
+      },
       "ai_decomposition_enabled": false
     }
   }
