@@ -97,4 +97,5 @@ Completed on 2026-09-24.
 - Repository-wide Ruff passed.
 - Repository-wide pytest passed: 563 tests, with 6 upstream dependency warnings.
 - `git diff --check` passed.
-- Live-unit 60-second stop-budget verification is performed after merge so the deployed unit is tested at the delivered exact head.
+- Post-merge live-unit verification passed at delivered main commit `d66810e`: the installed Policy unit reports `TimeoutStopUSec=1min`, a controlled restart completed graceful shutdown in about 8 seconds with no stop-timeout/SIGKILL evidence, the Policy service returned active, and `forgeflow-project-supervisor.timer` remained inactive.
+- The live operator summary then reported `activeObjectiveCount=4`, `actionableActiveObjectiveCount=0`, and `staleActiveObjectiveCount=4`; all four historical MemoFlow supervisor objectives were classified `STALE_PLAN_INACTIVE` with reason `PLAN_INACTIVE`, while `runningAgentCount=0`.
