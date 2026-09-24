@@ -23,9 +23,14 @@ def _middleware_names(items: list[object]) -> list[str]:
 
 
 def test_reviewer_overlay_installs_fallback_for_parent_and_subagent(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(DEFAULT_ROUTES))
+    payload = json.loads(DEFAULT_ROUTES.read_text(encoding="utf-8"))
+    route = next(item for item in payload["routes"] if item["id"] == "openswe-reviewer-glm53")
+    route["expires_at"] = "2099-01-01T00:00:00Z"
+    routes = tmp_path / "routes.json"
+    routes.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(routes))
     captured: dict[str, object] = {}
     fallback_model = FakeModel("accounts/fireworks/models/glm-5p3")
 

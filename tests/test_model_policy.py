@@ -43,10 +43,24 @@ def test_implementation_policy_rejects_self_fallback(monkeypatch: pytest.MonkeyP
         implementation_model_policy()
 
 
-def test_reasoning_registry_selects_sol_then_glm53(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_reasoning_registry_excludes_expired_glm53(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(DEFAULT_ROUTES))
-    assert reasoning_model_ids() == (REVIEW_MODEL_ID, REVIEW_FALLBACK_MODEL_ID)
+    assert reasoning_model_ids() == (REVIEW_MODEL_ID, None)
     assert fallback_model_id_for(REVIEW_MODEL_ID) is None
+
+
+def test_unexpired_reasoning_fallback_is_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = json.loads(DEFAULT_ROUTES.read_text(encoding="utf-8"))
+    fallback = next(route for route in payload["routes"] if route["id"] == "openswe-reviewer-glm53")
+    fallback["expires_at"] = "2099-01-01T00:00:00Z"
+    path = tmp_path / "routes.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("FORGEFLOW_ROUTE_CONFIG_FILE", str(path))
+    assert reasoning_model_ids() == (REVIEW_MODEL_ID, REVIEW_FALLBACK_MODEL_ID)
 
 
 def test_expired_reasoning_fallback_is_not_used(
@@ -66,6 +80,8 @@ def test_more_than_one_reasoning_fallback_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     payload = json.loads(DEFAULT_ROUTES.read_text(encoding="utf-8"))
+    fallback = next(route for route in payload["routes"] if route["id"] == "openswe-reviewer-glm53")
+    fallback["expires_at"] = "2099-01-01T00:00:00Z"
     payload["routes"].append(
         {
             "id": "unexpected-third-reviewer",
