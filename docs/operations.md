@@ -128,3 +128,15 @@ The summary uses existing LangGraph thread metadata plus local Git ancestry only
 `git fetch`, merge branches, start timers, create objectives, or rewrite repository plans. A
 TaskGraph reaches projected `COMPLETE` only when every current fingerprinted task has exact-head
 READY evidence and its accepted head is already on the locally known configured base.
+
+### Durable activity vs effective execution liveness
+
+`activeObjectiveCount` remains the durable LangGraph lifecycle count for backward compatibility. An
+objective can therefore remain durably `IMPLEMENTING` or `VERIFYING` after its repository plan has
+been archived. The summary separately reports `actionableActiveObjectiveCount` and
+`staleActiveObjectiveCount` so operational activity is not inferred from stale lifecycle state.
+
+A currently active objective is projected as `STALE_PLAN_INACTIVE` only when it was created by the
+`project-supervisor` and that project's configured planning input is now inactive. Manual/Hermes
+objectives are not made stale solely because continuous planning is inactive. This is a read-only
+classification: ForgeFlow does not cancel or rewrite the durable thread automatically.

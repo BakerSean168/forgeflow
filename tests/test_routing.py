@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT = ROOT / "deploy/gcp-dev/routes.default.json"
 
 
-def test_default_routes_preserve_current_openswe_policy() -> None:
+def test_default_routes_preserve_current_openswe_policy_after_reviewer_expiry() -> None:
     registry = load_route_registry(DEFAULT)
     implement = registry.select("IMPLEMENT")
     reasoning = registry.select("REASONING")
@@ -31,7 +31,6 @@ def test_default_routes_preserve_current_openswe_policy() -> None:
     reasoning_routes = registry.eligible("REASONING")
     assert [(route.id, route.priority, route.target) for route in reasoning_routes] == [
         ("openswe-reviewer", 10, "openai:gpt-5.6-sol"),
-        ("openswe-reviewer-glm53", 20, "fireworks:accounts/fireworks/models/glm-5p3"),
     ]
     implement_routes = registry.eligible("IMPLEMENT")
     assert [(route.id, route.priority, route.runtime) for route in implement_routes] == [

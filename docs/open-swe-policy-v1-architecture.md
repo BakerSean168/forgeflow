@@ -141,6 +141,8 @@ The facade may create, read, reconcile, or cancel a Policy V1 objective and expo
 
 The same `/summary` response projects repository planning status without becoming a planning owner. For each configured project it reports continuous-supervisor configuration, active plan paths, TaskGraph id/revision, activation binding state, and bounded task counts for active, READY, blocked, completed-on-base, and pending work. Task completion uses current TaskGraph fingerprints, exact-head READY evidence, and local base-branch ancestry only; GET requests do not fetch remotes, start timers, create objectives, merge code, or mutate plans.
 
+Operator activity is also split into durable lifecycle state and effective execution liveness. The existing `activeObjectiveCount` keeps its backward-compatible LangGraph-status meaning. `actionableActiveObjectiveCount` excludes supervisor-owned objectives whose configured plan is now inactive, while `staleActiveObjectiveCount` identifies those historical rows. Each active row carries a read-only liveness classification; ForgeFlow does not rewrite or cancel stale thread state implicitly.
+
 Model availability is deliberately explicit to avoid burning account quota through UI polling. `POST /forgeflow/api/v1/resources/{routeId}/probe` is operator-authenticated and currently supported for CodeBuddy. It runs one no-tools, one-turn probe against the configured exact model in a disposable empty directory, with project/local settings and session persistence excluded. Only `AVAILABLE/UNAVAILABLE`, probe time, duration, model id and a bounded failure code are atomically cached in a private `0600` state file; model text is discarded. Subsequent GET requests read that cache without another model request.
 
 ### Open SWE owns

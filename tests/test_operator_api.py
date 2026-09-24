@@ -1292,3 +1292,122 @@ def test_summary_task_graph_progress_never_fetches_git_remotes(
     assert git_calls
     assert all("fetch" not in command for command in git_calls)
     assert any("merge-base" in command and "--is-ancestor" in command for command in git_calls)
+
+
+def _inactive_supervisor_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    repo = tmp_path / "inactive-supervisor-project"
+    repo.mkdir()
+    manifest = tmp_path / "inactive-projects.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "project_key": "workflow",
+                    "name": "Workflow",
+                    "repo": "BakerSean168/workflow",
+                    "cwd": str(repo),
+                    "default_branch": "main",
+                    "continuous_supervisor": {
+                        "enabled": True,
+                        "base_ref": "main",
+                        "plan_paths": ["docs/plan/active/archived.md"],
+                        "objective": "Historical supervisor objective.",
+                        "auto_merge_ready": False,
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPEN_SWE_LOCAL_PROJECTS_FILE", str(manifest))
+    monkeypatch.setenv("OPEN_SWE_LOCAL_AUTH_TOKEN", "secret")
+    return manifest
+
+
+def test_summary_separates_stale_supervisor_activity_from_actionable_manual_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _inactive_supervisor_manifest(tmp_path, monkeypatch)
+    monkeypatch.delenv("FORGEFLOW_ROUTE_CONFIG_FILE", raising=False)
+    client = FakeClient()
+    monkeypatch.setattr(api, "_client", lambda: client)
+
+    asyncio.run(
+        client.threads.create(
+            thread_id="stale-supervisor",
+            graph_id="forgeflow",
+            metadata={
+                "project_key": "workflow",
+                "source": "project-supervisor",
+                "repo": {"owner": "BakerSean168", "name": "workflow"},
+            },
+        )
+    )
+    client.threads.rows["stale-supervisor"]["values"] = {
+        "repo_owner": "BakerSean168",
+        "repo_name": "workflow",
+        "objective": "Historical automatic task",
+        "status": "VERIFYING",
+        "base_ref": "main",
+    }
+
+    asyncio.run(
+        client.threads.create(
+            thread_id="manual-active",
+            graph_id="forgeflow",
+            metadata={
+                "project_key": "workflow",
+                "source": "hermes",
+                "repo": {"owner": "BakerSean168", "name": "workflow"},
+            },
+        )
+    )
+    client.threads.rows["manual-active"]["values"] = {
+        "repo_owner": "BakerSean168",
+        "repo_name": "workflow",
+        "objective": "Manual operator task",
+        "status": "IMPLEMENTING",
+        "base_ref": "main",
+    }
+
+    payload = asyncio.run(api.summary(authorization="Bearer secret"))
+
+    assert payload["activeObjectiveCount"] == 2
+    assert payload["actionableActiveObjectiveCount"] == 1
+    assert payload["staleActiveObjectiveCount"] == 1
+    rows = {row["threadId"]: row for row in payload["activeObjectives"]}
+    assert rows["stale-supervisor"]["liveness"] == {
+        "status": "STALE_PLAN_INACTIVE",
+        "reason": "PLAN_INACTIVE",
+    }
+    assert rows["manual-active"]["liveness"] == {
+        "status": "EFFECTIVE_ACTIVE",
+        "reason": None,
+    }
+    project = payload["projects"][0]
+    assert project["supervisor"]["planningStatus"] == "INACTIVE"
+    assert project["supervisor"]["staleActiveObjectiveCount"] == 1
+
+
+def test_objective_liveness_marks_terminal_objective_inactive() -> None:
+    view = {
+        "active": False,
+        "status": "READY",
+        "source": "project-supervisor",
+        "projectKey": "workflow",
+    }
+    project = {
+        "projectKey": "workflow",
+        "supervisor": {
+            "configured": True,
+            "planActive": False,
+            "planningStatus": "INACTIVE",
+        },
+    }
+
+    assert api._objective_liveness(view, project) == {
+        "status": "INACTIVE",
+        "reason": None,
+    }

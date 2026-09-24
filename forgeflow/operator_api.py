@@ -741,10 +741,33 @@ def _objective_view(thread: Mapping[str, Any], lookup: Mapping[str, str], *, ful
         "taskGraphId": metadata.get("task_graph_id"),
         "taskGraphRevision": metadata.get("task_graph_revision"),
         "taskFingerprint": metadata.get("task_fingerprint"),
+        "source": metadata.get("source"),
         "createdAt": thread.get("created_at"),
         "updatedAt": thread.get("updated_at"),
         "threadStatus": thread.get("status"),
     }
+
+
+def _objective_liveness(
+    objective: Mapping[str, Any],
+    project: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if not objective.get("active"):
+        return {"status": "INACTIVE", "reason": None}
+    if objective.get("source") != "project-supervisor":
+        return {"status": "EFFECTIVE_ACTIVE", "reason": None}
+    supervisor = project.get("supervisor") if isinstance(project, Mapping) else None
+    if (
+        isinstance(supervisor, Mapping)
+        and supervisor.get("configured") is True
+        and supervisor.get("planActive") is False
+        and supervisor.get("planningStatus") == "INACTIVE"
+    ):
+        return {
+            "status": "STALE_PLAN_INACTIVE",
+            "reason": "PLAN_INACTIVE",
+        }
+    return {"status": "EFFECTIVE_ACTIVE", "reason": None}
 
 
 def _is_forgeflow_thread(thread: Mapping[str, Any]) -> bool:
@@ -1395,6 +1418,38 @@ async def summary(authorization: str | None = Header(default=None)) -> dict[str,
         )
         for project in projects
     ]
+    project_by_key = {
+        project["projectKey"]: project
+        for project in project_views
+        if isinstance(project.get("projectKey"), str)
+    }
+    for row in active:
+        key = row.get("projectKey")
+        project = project_by_key.get(key) if isinstance(key, str) else None
+        row["liveness"] = _objective_liveness(row, project)
+
+    stale_active = [
+        row
+        for row in active
+        if isinstance(row.get("liveness"), Mapping)
+        and str(row["liveness"].get("status") or "").startswith("STALE_")
+    ]
+    stale_by_project: dict[str, int] = {}
+    for row in stale_active:
+        key = row.get("projectKey")
+        if isinstance(key, str):
+            stale_by_project[key] = stale_by_project.get(key, 0) + 1
+    for project in project_views:
+        supervisor = project.get("supervisor")
+        if not isinstance(supervisor, Mapping):
+            continue
+        projected = dict(supervisor)
+        projected["staleActiveObjectiveCount"] = stale_by_project.get(
+            str(project.get("projectKey") or ""),
+            0,
+        )
+        project["supervisor"] = projected
+
     resources = await _list_resources_payload(
         authorization, tolerate_attempt_ledger_errors=True
     )
@@ -1410,6 +1465,8 @@ async def summary(authorization: str | None = Header(default=None)) -> dict[str,
     return {
         "runtime": {"status": "ONLINE", "kind": "policy-v1"},
         "activeObjectiveCount": len(active),
+        "actionableActiveObjectiveCount": len(active) - len(stale_active),
+        "staleActiveObjectiveCount": len(stale_active),
         "runningAgentCount": running_agents,
         "unattachedExecutionStatus": unattached["status"],
         "unattachedExecutionError": unattached["error"],
