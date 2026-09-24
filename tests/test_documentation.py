@@ -94,3 +94,6 @@ def test_task_graph_docs_define_explicit_activation_and_summary_projection() -> 
     assert "git fetch" in operations
     assert "task-graph-complete" in architecture
     assert "activation binding" in architecture
+    assert "actionableActiveObjectiveCount" in operations
+    assert "staleActiveObjectiveCount" in operations
+    assert "STALE_PLAN_INACTIVE" in operations
