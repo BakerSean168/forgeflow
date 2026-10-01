@@ -1,0 +1,14 @@
+apiVersion: pds/v1alpha1
+kind: Component
+metadata:
+  id: forgeflow
+  name: ForgeFlow
+spec:
+  type: software-engineering-control-plane
+  domain: products
+  lifecycle: active
+  repository:
+    url: https://github.com/BakerSean168/forgeflow.git
+    visibility: public
+  provides:
+    - pds://products/app/forgeflow
