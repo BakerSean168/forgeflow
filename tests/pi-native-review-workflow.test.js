@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createReviewWorkflowDefinition } from "../src/review-workflow.js";
+import { createReviewWorkflowDefinition } from "../extension/review-workflow.js";
 
 test("review resource rejects unknown public arguments", () => {
   const definition = createReviewWorkflowDefinition();

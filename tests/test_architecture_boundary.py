@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 
@@ -9,8 +10,6 @@ FORBIDDEN_TRACKED_PATHS = (
     "packages/",
     "openhands_tools/",
     "deploy/openhands/",
-    "package.json",
-    "package-lock.json",
     "tsconfig.json",
 )
 FORBIDDEN_POLICY_TOKENS = (
@@ -35,8 +34,29 @@ def test_legacy_runtime_paths_are_absent() -> None:
             assert not any(path.startswith(forbidden) for path in tracked), forbidden
         else:
             assert forbidden not in tracked
-    assert not any(path.endswith((".ts", ".mts", ".mjs")) for path in tracked)
+    assert not any(path.endswith((".ts", ".mts")) for path in tracked)
     assert not any(path.endswith("schema.sql") for path in tracked)
+
+
+def test_pi_native_package_has_one_explicit_runtime_entrypoint() -> None:
+    package = json.loads((REPO / "package.json").read_text(encoding="utf-8"))
+
+    assert package["pi"]["extensions"] == ["./extension/index.js"]
+    assert package["pi"]["skills"] == ["./skills"]
+    assert package["dependencies"] == {"pi-subagents": "0.73.1"}
+    assert set(package["files"]) == {"extension", "scripts", "skills", "README.md", "LICENSE"}
+
+    tracked = _tracked_files()
+    runtime_javascript = {
+        path
+        for path in tracked
+        if path.endswith((".js", ".mjs")) and not path.startswith("tests/")
+    }
+    assert runtime_javascript
+    assert all(
+        path.startswith("extension/") or path.startswith("scripts/")
+        for path in runtime_javascript
+    )
 
 
 def test_policy_package_does_not_reintroduce_runtime_ownership() -> None:

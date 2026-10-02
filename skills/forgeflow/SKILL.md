@@ -33,6 +33,26 @@ inside ForgeFlow.
 ## Review
 
 Use the trusted `forgeflow.review` workflow when a structured independent review
-is needed. It returns a `clean` or `blocked` verdict plus evidence-backed
-findings. That verdict is still only review evidence; CI and delivery policy may
-add stronger gates.
+is needed before final delivery. It returns a `clean` or `blocked` verdict plus
+evidence-backed findings. That verdict is still only review evidence.
+
+## Final pull-request acceptance
+
+Use the trusted `forgeflow.accept` workflow for a committed pull-request
+candidate. Supply the task, repository owner/name, pull-request number, expected
+base branch, full expected head commit, and the repository's explicit required
+check names. Missing required-check policy fails closed rather than guessing from
+whatever checks happened to start.
+
+The workflow fails closed unless:
+
+- the local working tree is clean and its HEAD equals the expected commit before
+  review;
+- a fresh read-only reviewer returns a clean structured verdict;
+- the local candidate is still clean and on the same HEAD after review;
+- GitHub reports the pull request open at that exact head; and
+- the observed GitHub check-runs and commit statuses for that head are terminal
+  and successful.
+
+Any new push requires a new acceptance run for the new head. Do not reuse an
+older reviewer or CI result.

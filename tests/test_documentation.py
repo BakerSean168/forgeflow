@@ -5,15 +5,24 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 
-def test_current_docs_explicitly_retire_openhands_runtime() -> None:
+def test_current_docs_define_pi_native_target_without_rewriting_live_v2_history() -> None:
     readme = (REPO / "README.md").read_text(encoding="utf-8")
+    cutover = (REPO / "docs/plan/2026-10-02-pi-native-cutover.md").read_text(encoding="utf-8")
     architecture = (REPO / "docs/open-swe-policy-v1-architecture.md").read_text(encoding="utf-8")
     docs_index = (REPO / "docs/README.md").read_text(encoding="utf-8")
 
     normalized_readme = " ".join(readme.split())
+    normalized_cutover = " ".join(cutover.split())
     normalized_architecture = " ".join(architecture.split())
     normalized_index = " ".join(docs_index.split())
-    assert "OpenHands is not part of the current ForgeFlow runtime" in normalized_readme
+
+    assert "Pi is the execution kernel" in normalized_readme
+    assert "Legacy Python/Open SWE/LangGraph files remain" in normalized_readme
+    assert "stop being an independent Python/LangGraph/Open SWE control plane" in normalized_cutover
+    assert "Retire instead of porting" in normalized_cutover
+
+    # The old architecture documents remain accurate for the still-running v2
+    # deployment until the Pi-native canary and destructive cutover complete.
     assert "There is no OpenHands Agent Server" in normalized_architecture
     assert "OpenHands is not used by the current runtime" in normalized_index
     assert "Status: implemented current architecture" in normalized_architecture

@@ -1,5 +1,6 @@
 import { registerWorkflowResource } from "pi-subagents/workflow-resources";
 import { renderPreflight } from "./invariants.js";
+import { createAcceptanceWorkflowDefinition } from "./acceptance-workflow.js";
 import { createReviewWorkflowDefinition } from "./review-workflow.js";
 
 const CORE_POLICY = [
@@ -16,6 +17,7 @@ export function buildForgeFlowPromptSection(prompt) {
 
 export default function registerForgeFlow(pi) {
   let reviewRegistration;
+  let acceptanceRegistration;
 
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.sections.forgeflow_policy = buildForgeFlowPromptSection(event.prompt);
@@ -23,14 +25,23 @@ export default function registerForgeFlow(pi) {
 
   pi.on("session_start", (_event, ctx) => {
     reviewRegistration?.dispose();
+    acceptanceRegistration?.dispose();
+
+    const sessionId = ctx.sessionManager.getSessionId();
     reviewRegistration = registerWorkflowResource({
-      sessionId: ctx.sessionManager.getSessionId(),
+      sessionId,
       definition: createReviewWorkflowDefinition()
+    });
+    acceptanceRegistration = registerWorkflowResource({
+      sessionId,
+      definition: createAcceptanceWorkflowDefinition()
     });
   });
 
   pi.on("session_shutdown", () => {
     reviewRegistration?.dispose();
+    acceptanceRegistration?.dispose();
     reviewRegistration = undefined;
+    acceptanceRegistration = undefined;
   });
 }

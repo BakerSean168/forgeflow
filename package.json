@@ -4,6 +4,7 @@
   "description": "Thin software-engineering governance for Pi Agent and pi-subagents.",
   "type": "module",
   "license": "MIT",
+  "files": ["extension", "scripts", "skills", "README.md", "LICENSE"],
   "keywords": [
     "pi-package",
     "pi",
@@ -29,11 +30,11 @@
     "typebox": { "optional": true }
   },
   "pi": {
-    "extensions": ["./src/index.js"],
+    "extensions": ["./extension/index.js"],
     "skills": ["./skills"]
   },
   "scripts": {
     "test:pi-native": "node --test tests/pi-native-*.test.js",
-    "check:pi-native": "npm run test:pi-native && node --check src/index.js && node --check src/invariants.js && node --check src/review-workflow.js"
+    "check:pi-native": "npm run test:pi-native && node --check extension/index.js && node --check extension/invariants.js && node --check extension/review-workflow.js && node --check extension/github-acceptance.js && node --check extension/acceptance-workflow.js && node --check scripts/github-acceptance.mjs"
   }
 }

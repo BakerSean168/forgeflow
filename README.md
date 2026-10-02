@@ -1,82 +1,81 @@
 # ForgeFlow
 
-> **A thin software-engineering quality policy for Open SWE.**
+> Thin software-engineering governance for Pi Agent.
 
-ForgeFlow Policy V1 does **not** implement its own autonomous coding runtime. Open SWE and
-LangGraph own agent execution, reviewer execution, durable threads/runs, scheduling, Git/PR
-behavior, and reviewer findings. ForgeFlow adds a small deterministic policy layer plus narrow
-self-hosted Open SWE compatibility extensions for Docker sandboxing and GitHub credentials.
+ForgeFlow is being cut over from the previous Python/LangGraph/Open SWE control
+plane to a Pi-native package. Pi is the execution kernel; `pi-subagents` owns
+delegation, child lifecycle, worktree isolation, missions, schedules, resume,
+background execution, and external agent runners.
 
-**OpenHands is not part of the current ForgeFlow runtime.** The previous
-Node/SQLite/OpenHands/Antigravity execution plane was retired during the v2 rebuild. Remaining
-`OpenHands` references are migration history, guarded legacy-purge code, or tests that prevent the
-old runtime from returning.
+ForgeFlow deliberately does **not** implement a second coding-agent runtime.
 
-The current lifecycle is:
+## Target architecture
 
 ```text
-Objective
-  -> IMPLEMENT route selection
-       -> p10 Open SWE (GLM 5.3 max; Luna xhigh model fallback)
-       -> p20 Antigravity ACP on classified route-availability failure
-       -> p30 CodeBuddy native ACP / DeepSeek V4.1 Flash on further route-availability failure
-  -> real PR/head evidence
-  -> exact-head CI
-  -> independent Open SWE review (Sol medium)
-  -> blocking findings? same-thread repair : READY
-  -> repeat with bounded repair budget
+Pi Agent
+  |
+  +-- pi-subagents
+  |    +-- worker
+  |    +-- reviewer
+  |    +-- scout / oracle
+  |    +-- external-cli / external-job agents
+  |    +-- worktrees / missions / schedules / resume
+  |
+  +-- ForgeFlow
+       +-- engineering invariant preflight
+       +-- one-writer policy
+       +-- independent review workflow
+       +-- exact-head GitHub acceptance
 ```
 
-A child agent reporting `success` is never enough. ForgeFlow requires authoritative PR, exact-head
-CI, and exact-head reviewer evidence before `READY`.
+The governing rule is simple:
 
-Transient provider/runtime exhaustion is not treated as engineering failure: the objective moves to
-`WAITING_FOR_RESOURCE` and retries with capped exponential backoff. Opt-in projects can also use the
-stateless project supervisor to recover resource stalls, exact-head merge accepted PRs, and create the
-next objective from repository-owned canonical plan files. Projects with an explicit safe decomposition may
-run up to four isolated mutation lanes; dependency/conflict checks remain supervisor-enforced.
+> Agent success is evidence, not engineering acceptance.
 
-## Status
+For pull-request delivery, ForgeFlow binds acceptance to one explicit candidate:
+the local committed HEAD, the authoritative open PR head, the expected base
+branch, the configured required CI checks, and a fresh independent review must
+all describe the same revision. A new push invalidates the previous acceptance.
 
-ForgeFlow Policy V1 / v2.0.0 is implementation-complete and acceptance-backed. The implementation
-is tracked by [PR #27](https://github.com/BakerSean168/forgeflow/pull/27) and the stacked v2.0.0
-release candidate [PR #28](https://github.com/BakerSean168/forgeflow/pull/28). Releases are cut only
-from merged `main`; [GitHub Releases](https://github.com/BakerSean168/forgeflow/releases) is the
-source of truth for published tags.
+## Pi-native package
 
-The legacy Node/SQLite/OpenHands/Antigravity control plane was removed rather than migrated.
-The current GCP Dev deployment is Python 3.14 + LangGraph + pinned Open SWE, with per-thread Docker
-sandboxes supplied through `openswe_ext`.
+The package currently provides:
 
-The real ForgeFlow policy acceptance on PR #28 reached `READY` after a controlled read-only-rootfs
-regression at `7115c08` passed CI, the Official Reviewer raised a blocking high finding, and the
-same implementation thread performed GLM 5.3 max repair with Luna xhigh fallback available `94ddd70`. Exact-head CI and re-review then
-resolved the blocker with `repair_round=1`. Digital Biome PR #59 remains separate corroborating
-evidence for the underlying Open SWE review → repair → re-review loop.
+- automatic ForgeFlow policy/invariant injection through Pi's
+  `before_agent_start` lifecycle;
+- the trusted `forgeflow.review` workflow for a fresh structured read-only
+  review;
+- the trusted `forgeflow.accept` workflow for final exact-head review and
+  GitHub CI acceptance;
+- the `forgeflow` skill describing the ownership and acceptance rules.
 
-## Documentation
+The package depends on `pi-subagents` and uses its public workflow-resource
+extension API. It does not wrap or fork the subagent runtime.
 
-- [`docs/README.md`](./docs/README.md) — documentation map and current-vs-historical boundary.
-- [`docs/open-swe-policy-v1-architecture.md`](./docs/open-swe-policy-v1-architecture.md) — current
-  architecture, ownership, state machine, and deployment shape.
-- [`docs/reviewer-sandbox.md`](./docs/reviewer-sandbox.md) — current self-hosted Docker sandbox
-  isolation and lifecycle.
-- [`docs/github-app.md`](./docs/github-app.md) — current GitHub App and required-check setup.
-- [`docs/upstream.md`](./docs/upstream.md) — pinned Open SWE contract and upgrade procedure.
-- [`docs/model-routing-v2-external-agents.md`](./docs/model-routing-v2-external-agents.md) — model-vs-agent routing architecture, ordered Open SWE → Antigravity → CodeBuddy/DeepSeek V4.1 Flash fallbacks, and acceptance evidence.
-- [`docs/open-swe-policy-v1-refactor-plan.md`](./docs/open-swe-policy-v1-refactor-plan.md) — completed
-  v2 migration/acceptance record; retained as history, not as the current architecture guide.
+## Migration status
+
+The Pi-native cutover is under active implementation on
+`refactor/pi-native-forgeflow`. Legacy Python/Open SWE/LangGraph files remain
+in the repository temporarily as migration evidence and will be deleted after a
+real Pi-native implementation -> review -> repair -> exact-head acceptance
+canary succeeds.
+
+The migration decision and deletion boundary are recorded in
+[`docs/plan/2026-10-02-pi-native-cutover.md`](./docs/plan/2026-10-02-pi-native-cutover.md).
 
 ## Development
 
-Requires `uv` and Python 3.14.
+Install JavaScript dependencies and run the Pi-native checks:
 
 ```bash
-uv sync --locked --python 3.14
-uv run pytest
-uv run ruff check forgeflow openswe_ext tests
+npm install
+npm run check:pi-native
 ```
+
+The legacy Python suite remains available during the cutover only to prove that
+the migration branch has not accidentally damaged historical behavior before
+that code is removed.
 
 ## License
 
-MIT. Open SWE and its transitive dependencies remain governed by their own upstream licenses.
+MIT.

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { inferInvariants, renderPreflight } from "../src/invariants.js";
-import { buildForgeFlowPromptSection } from "../src/index.js";
+import { inferInvariants, renderPreflight } from "../extension/invariants.js";
+import { buildForgeFlowPromptSection } from "../extension/index.js";
 
 function ids(text) {
   return new Set(inferInvariants(text).map((rule) => rule.id));

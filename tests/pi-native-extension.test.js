@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import registerForgeFlow from "../src/index.js";
+import registerForgeFlow from "../extension/index.js";
 
 test("extension registers Pi lifecycle hooks and injects policy without a model call", () => {
   const handlers = new Map();
