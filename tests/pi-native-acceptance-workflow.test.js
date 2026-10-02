@@ -70,6 +70,7 @@ test("acceptance binds Pi typed reviewer gate and GitHub evidence to one exact c
   assert.match(result.script, /agentContract: \{ version: 1 \}/);
   assert.match(result.script, /outputMode: "file-only"/);
   assert.match(result.script, /standard merge verdict contract/);
+  assert.match(result.script, /authoritative GitHub exact-head CI gate after this review/);
   assert.match(result.script, /review-verdict\.mjs/);
   assert.match(result.script, /"output":"json"/);
   assert.match(result.script, /head-before-review/);
@@ -82,6 +83,13 @@ test("acceptance binds Pi typed reviewer gate and GitHub evidence to one exact c
   assert.doesNotMatch(result.script, /artifactPaths/);
   assert.doesNotMatch(result.script, /outputReference/);
   assert.doesNotMatch(result.script, /outputSchema/);
+
+  const reviewIndex = result.script.indexOf('await runs.run("forgeflow-final-review"');
+  const headAfterIndex = result.script.indexOf('await runs.host("head-after-review"');
+  const githubIndex = result.script.indexOf('await runs.host("github-exact-head"');
+  assert.ok(reviewIndex >= 0);
+  assert.ok(headAfterIndex > reviewIndex);
+  assert.ok(githubIndex > headAfterIndex);
 });
 
 test("task text cannot widen host or typed gate command authority", () => {

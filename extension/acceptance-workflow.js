@@ -103,7 +103,8 @@ export function createAcceptanceWorkflowDefinition(repoRoot) {
       const reviewTask = reviewContractTask([
         "You are the final independent ForgeFlow reviewer for an exact committed candidate.",
         "Review the current repository at the exact checked-out HEAD against the operator task and owner contracts.",
-        "Do not mutate files. Do not accept claims of test or CI success without repository evidence.",
+        "Do not mutate files. Review code, contracts, tests, and repository-local evidence only.",
+        "Do not block merely because live GitHub check-run evidence is unavailable to the reviewer: the enclosing trusted workflow performs the authoritative GitHub exact-head CI gate after this review.",
         "Use BLOCK when another code change is required before delivery.",
         "",
         "Operator task:",
