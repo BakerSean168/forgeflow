@@ -1,12 +1,13 @@
 # Credits
 
-ForgeFlow Policy V1 is a thin quality-governance layer built on the Open SWE ecosystem.
+ForgeFlow is built for the Pi agent ecosystem.
 
-Primary upstream projects include:
+Primary upstream projects:
 
-- Open SWE (`langchain-ai/open-swe`) for software-engineering agent, reviewer, scheduler, GitHub,
-  sandbox, and integration behavior.
-- LangGraph for durable graph/thread/run execution.
-- Deep Agents and LangChain for agent/subagent/tool orchestration.
+- Pi / `@earendil-works/pi-coding-agent` for the coding-agent host and
+  extension runtime.
+- `pi-subagents` for delegated agents, workflow resources, worktrees,
+  missions, schedules, resume, artifacts, and typed acceptance gates.
 
-ForgeFlow intentionally composes these projects rather than reimplementing their runtime roles.
+ForgeFlow intentionally uses those runtime primitives rather than wrapping them
+in another execution layer.
