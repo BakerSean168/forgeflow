@@ -18,6 +18,7 @@ test("review resource persists reviewer prose and uses Pi typed gate for determi
   assert.equal("error" in result, false);
   assert.equal(result.hostCommands, undefined);
   assert.match(result.script, /agent: "reviewer"/);
+  assert.doesNotMatch(result.script, /model: "forgeflow\/reviewer"/);
   assert.match(result.script, /context: "fresh"/);
   assert.match(result.script, /agentContract: \{ version: 1 \}/);
   assert.match(result.script, /outputMode: "file-only"/);

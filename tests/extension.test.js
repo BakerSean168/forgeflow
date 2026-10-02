@@ -5,15 +5,27 @@ import registerForgeFlow from "../extension/index.js";
 
 test("extension registers Pi lifecycle hooks and injects policy without a model call", () => {
   const handlers = new Map();
+  const virtualModels = [];
   const pi = {
     on(event, handler) {
       handlers.set(event, handler);
       return () => handlers.delete(event);
+    },
+    registerVirtualModel(definition) {
+      virtualModels.push(definition);
     }
   };
 
   registerForgeFlow(pi);
 
+  assert.equal(virtualModels.length, 5);
+  assert.deepEqual(virtualModels.map(({ provider, id }) => `${provider}/${id}`), [
+    "forgeflow/planner",
+    "forgeflow/worker",
+    "forgeflow/reviewer",
+    "forgeflow/scout",
+    "forgeflow/oracle"
+  ]);
   assert.equal(typeof handlers.get("before_agent_start"), "function");
   assert.equal(typeof handlers.get("session_start"), "function");
   assert.equal(typeof handlers.get("session_shutdown"), "function");

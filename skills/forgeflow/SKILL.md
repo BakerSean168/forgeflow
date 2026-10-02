@@ -29,6 +29,8 @@ inside ForgeFlow.
 - Repair the same candidate/worktree/PR when possible; do not silently fork a
   second implementation truth.
 - Reuse Pi and pi-subagents primitives before adding ForgeFlow code.
+- Refer to model roles through `forgeflow/planner`, `forgeflow/worker`, `forgeflow/reviewer`, `forgeflow/scout`, and `forgeflow/oracle` rather than hard-coding fast-moving physical model IDs into workflows.
+- Keep model selection separate from provider/channel selection: ForgeFlow role policy may choose the physical model through Pi virtual models; provider gateways own endpoint, key, quota, weight, health, and transport selection.
 
 ## Review
 

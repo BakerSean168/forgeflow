@@ -6,7 +6,8 @@ ForgeFlow is a thin governance package for Pi Agent.
 
 ### Pi / pi-subagents own
 
-- model and provider execution;
+- physical model and provider execution;
+- virtual-model dispatch mechanics and subagent model resolution;
 - parent and child sessions;
 - subagent dispatch and lifecycle;
 - worktree isolation;
@@ -16,14 +17,25 @@ ForgeFlow is a thin governance package for Pi Agent.
 
 ### ForgeFlow owns
 
+- stable engineering model roles (`forgeflow/planner`, `worker`, `reviewer`, `scout`, `oracle`) and their thin operator-controlled role policy;
 - a deterministic engineering-invariant preflight;
 - the one-writer-per-worktree governance rule;
 - the trusted `forgeflow.review` resource;
 - the trusted `forgeflow.accept` exact-head acceptance resource;
 - deterministic parsing of reviewer verdicts and GitHub check evidence.
 
-If a new feature needs generic execution, scheduling, state, routing, worktrees,
-or resume, it belongs in Pi/pi-subagents rather than ForgeFlow.
+If a new feature needs generic execution, scheduling, workflow state, provider/channel routing, worktrees,
+or resume, it belongs in Pi/pi-subagents or the provider layer rather than ForgeFlow. ForgeFlow may select a physical model for an engineering role through Pi's native virtual-model primitive, but it must not own API transport, credentials, channel weights, quota routing, or a second model runtime.
+
+## Model policy boundary
+
+ForgeFlow registers stable logical roles as Pi virtual models. Their physical model mapping is read from operator policy rather than hard-coded into workflows or subagent definitions. New user/direct requests resolve the current mapping, while continuation/retry requests stay on the physical model already handling the turn to preserve prompt-cache and reasoning-signature continuity.
+
+Project-local `.pi/forgeflow-models.json` is considered only when Pi reports the project trusted. User-level policy under `~/.pi/forgeflow-models.json` remains available for untrusted projects. `FORGEFLOW_MODEL_POLICY` is an explicit operator override.
+
+Provider gateways such as LiteLLM/New API/Bifrost sit below this boundary: ForgeFlow chooses the physical model; the provider plane chooses endpoint/channel/key for that already-selected model. This avoids double semantic routing.
+
+See `docs/model-policy.md` for the v1 schema and role mapping.
 
 ## Invariant preflight
 
