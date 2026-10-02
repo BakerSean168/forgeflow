@@ -1,4 +1,5 @@
-const PASS_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
+const PASS_CONCLUSIONS = new Set(["success"]);
+const TERMINAL_NON_SUCCESS_CONCLUSIONS = new Set(["neutral", "skipped"]);
 const FAIL_CONCLUSIONS = new Set([
   "failure",
   "cancelled",
@@ -97,6 +98,8 @@ function evaluateRequiredCheck(name, check, status) {
       pending = true;
     } else if (FAIL_CONCLUSIONS.has(conclusion)) {
       return { status: "blocked", reason: "CI_FAILED", requiredCheck: name };
+    } else if (TERMINAL_NON_SUCCESS_CONCLUSIONS.has(conclusion)) {
+      return { status: "blocked", reason: "CI_NOT_SUCCESSFUL", requiredCheck: name };
     } else if (!PASS_CONCLUSIONS.has(conclusion)) {
       unresolved = true;
     }

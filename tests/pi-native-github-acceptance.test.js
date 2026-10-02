@@ -106,6 +106,18 @@ test("fails closed on unrecognized required CI conclusions", () => {
   assert.equal(result.reason, "CI_STATE_UNRECOGNIZED");
 });
 
+for (const conclusion of ["neutral", "skipped"]) {
+  test(`blocks terminal non-success required check conclusion: ${conclusion}`, () => {
+    const result = evaluate({
+      checkRuns: [{ id: 1, name: "verify", status: "completed", conclusion }]
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.equal(result.reason, "CI_NOT_SUCCESSFUL");
+    assert.equal(result.requiredCheck, "verify");
+  });
+}
+
 test("uses the newest rerun for a duplicated check name", () => {
   const result = evaluate({
     checkRuns: [

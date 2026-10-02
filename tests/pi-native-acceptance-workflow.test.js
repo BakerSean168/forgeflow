@@ -69,6 +69,7 @@ test("acceptance resource binds review and GitHub checks to one exact committed 
   assert.match(result.script, /head-after-review/);
   assert.match(result.script, /github-exact-head/);
   assert.match(result.script, /review\.structuredOutput\.verdict !== "clean"/);
+  assert.match(result.script, /Do not add acceptanceReport/);
   assert.match(result.script, /evidence\.status !== "accepted"/);
 });
 

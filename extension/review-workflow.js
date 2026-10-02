@@ -57,6 +57,7 @@ export function createReviewWorkflowDefinition() {
         "Do not mutate files.",
         "A child or implementation agent claiming success is not acceptance.",
         "Report only evidence-backed findings. Mark verdict=blocked when any finding requires another code change before delivery.",
+        "For structured output, return exactly verdict, summary, and findings. Do not add acceptanceReport or any other top-level field.",
         "",
         "Operator task:",
         task,

@@ -18,5 +18,6 @@ test("review resource emits a fresh structured reviewer workflow", () => {
   assert.match(result.script, /context: "fresh"/);
   assert.match(result.script, /outputSchema/);
   assert.match(result.script, /INV-REPLAY-001/);
+  assert.match(result.script, /Do not add acceptanceReport/);
   assert.doesNotMatch(result.script, /runs\.host/);
 });

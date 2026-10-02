@@ -100,6 +100,7 @@ export function createAcceptanceWorkflowDefinition() {
         "Review the current repository at the exact checked-out HEAD against the operator task and owner contracts.",
         "Do not mutate files. Do not accept claims of test or CI success without repository evidence.",
         "Return verdict=blocked when another code change is required before delivery.",
+        "For structured output, return exactly verdict, summary, and findings. Do not add acceptanceReport or any other top-level field.",
         "",
         "Operator task:",
         task,
