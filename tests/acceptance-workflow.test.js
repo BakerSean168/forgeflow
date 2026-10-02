@@ -67,7 +67,7 @@ test("acceptance binds Pi typed reviewer gate and GitHub evidence to one exact c
 
   assert.match(result.script, /context: "fresh"/);
   assert.match(result.script, /agent: "reviewer"/);
-  assert.match(result.script, /model: "forgeflow\/reviewer"/);
+  assert.doesNotMatch(result.script, /model: "forgeflow\/reviewer"/);
   assert.match(result.script, /agentContract: \{ version: 1 \}/);
   assert.match(result.script, /outputMode: "file-only"/);
   assert.match(result.script, /standard merge verdict contract/);

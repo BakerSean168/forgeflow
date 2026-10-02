@@ -30,7 +30,7 @@ ForgeFlow registers these Pi virtual models:
 
 The names are stable contracts. The physical model behind each role is operator policy.
 
-Typical `pi-subagents` project settings can point builtin roles at the logical models:
+Once the `pi-subagents` child-runtime fixes described below are available in the pinned release, builtin roles can point at the logical models:
 
 ```json
 {
@@ -45,7 +45,9 @@ Typical `pi-subagents` project settings can point builtin roles at the logical m
 }
 ```
 
-The parent Pi session can select `forgeflow/planner` when the parent is acting as the planning/orchestration role. ForgeFlow's trusted `forgeflow.review` and `forgeflow.accept` workflows explicitly launch the builtin reviewer with `model: "forgeflow/reviewer"`, so final review does not silently inherit whichever model the parent session happens to use.
+The parent Pi session can select `forgeflow/planner` when the parent is acting as the planning/orchestration role.
+
+The currently pinned `pi-subagents@0.74.0` predates two upstream fixes needed to launch a Pi virtual model as a child: queued virtual-model registration in child runtimes and verification against the logical selection rather than the dispatched physical response model. Until those fixes are available in a released `pi-subagents` package, ForgeFlow's trusted `forgeflow.review` and `forgeflow.accept` workflows keep the existing builtin-reviewer model selection instead of forcing `forgeflow/reviewer`. This avoids a ForgeFlow compatibility shim. After the dependency is upgraded to a release containing upstream #2636 and #2638, the workflows can hard-cut over to `forgeflow/reviewer` and this compatibility note can be removed.
 
 ## Policy file
 
