@@ -100,6 +100,7 @@ export function createReviewWorkflowDefinition(repoRoot) {
           const review = await runs.run("forgeflow-review", {
             label: "Review ForgeFlow candidate",
             agent: "reviewer",
+            model: "forgeflow/reviewer",
             context: "fresh",
             agentContract: { version: 1 },
             task: ${JSON.stringify(reviewTask)},

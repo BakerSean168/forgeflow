@@ -19,6 +19,7 @@ Pi Agent
   |    +-- external-cli / external-job agents
   |
   +-- ForgeFlow
+       +-- stable logical model roles via Pi virtual models
        +-- deterministic invariant preflight
        +-- one-writer policy
        +-- independent review workflow
@@ -29,9 +30,13 @@ The governing rule is:
 
 > Agent success is evidence, not engineering acceptance.
 
-ForgeFlow deliberately does **not** implement sessions, provider routing,
+ForgeFlow deliberately does **not** implement sessions, provider/channel routing,
 generic agent execution, durable workflow state, a second worktree manager, or
-a second scheduler.
+a second scheduler. It can map stable engineering roles such as `forgeflow/worker`
+to physical Pi models, while credentials, endpoints, channel weights, quotas, and
+transport remain owned by Pi/provider infrastructure.
+
+See [`docs/model-policy.md`](./docs/model-policy.md) for the logical-model policy and provider boundary.
 
 ## Workflows
 
