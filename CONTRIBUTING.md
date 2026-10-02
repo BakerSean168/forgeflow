@@ -1,17 +1,22 @@
 # Contributing
 
-ForgeFlow Policy V1 is deliberately small. Contributions should strengthen software-engineering
-quality governance without reintroducing an autonomous coding runtime.
+ForgeFlow is deliberately small. Contributions should strengthen
+software-engineering governance without reintroducing a second agent runtime.
 
 Before submitting changes:
 
 ```bash
-uv sync --locked --python 3.14
-uv run pytest
-uv run ruff check forgeflow openswe_ext tests
+npm ci --ignore-scripts
+npm run check
+npm pack --dry-run
 ```
 
-Do not add ForgeFlow-owned databases, worktree managers, provider/session runtimes, reviewer
-stores, model gateways, or job schedulers. Prefer upstream Open SWE/LangGraph capabilities behind
-one narrow adapter boundary. Upstream Open SWE updates must use an exact SHA and pass the contract
-tests plus real acceptance before promotion.
+Keep the ownership boundary strict:
+
+- Pi owns agent execution and session lifecycle.
+- `pi-subagents` owns child orchestration, worktrees, missions, schedules,
+  resume, and external-agent runners.
+- ForgeFlow may add deterministic engineering invariants and acceptance gates
+  only when those policies are not already Pi primitives.
+- Do not add a ForgeFlow database, generic provider router, scheduler,
+  worktree manager, or durable execution engine.

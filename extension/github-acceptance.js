@@ -127,29 +127,17 @@ function evaluateRequiredCheck(name, check, status) {
   return null;
 }
 
-export function evaluateGithubAcceptance({
-  pullRequest,
-  expectedHead,
-  baseRef,
-  requiredChecks,
-  checkRuns = [],
-  statuses = []
-}) {
+function validateExpectedIdentity(expectedHead, baseRef) {
   if (!/^[0-9a-f]{40,64}$/i.test(expectedHead ?? "")) {
     return { status: "blocked", reason: "EXPECTED_HEAD_INVALID" };
   }
   if (typeof baseRef !== "string" || !baseRef) {
     return { status: "blocked", reason: "EXPECTED_BASE_INVALID" };
   }
-  if (
-    !Array.isArray(requiredChecks) ||
-    requiredChecks.length === 0 ||
-    new Set(requiredChecks).size !== requiredChecks.length ||
-    requiredChecks.some((name) => typeof name !== "string" || !name)
-  ) {
-    return { status: "blocked", reason: "REQUIRED_CHECK_POLICY_MISSING" };
-  }
+  return null;
+}
 
+function evaluatePullRequestIdentityValidated({ pullRequest, expectedHead, baseRef }) {
   const prHead = text(pullRequest?.head?.sha);
   if (!prHead) {
     return { status: "blocked", reason: "PR_HEAD_MISSING" };
@@ -177,6 +165,43 @@ export function evaluateGithubAcceptance({
       expectedHead
     };
   }
+
+  return { status: "matched", headSha: prHead };
+}
+
+export function evaluatePullRequestIdentity({ pullRequest, expectedHead, baseRef }) {
+  const invalid = validateExpectedIdentity(expectedHead, baseRef);
+  if (invalid) return invalid;
+  return evaluatePullRequestIdentityValidated({ pullRequest, expectedHead, baseRef });
+}
+
+export function evaluateGithubAcceptance({
+  pullRequest,
+  expectedHead,
+  baseRef,
+  requiredChecks,
+  checkRuns = [],
+  statuses = []
+}) {
+  const invalid = validateExpectedIdentity(expectedHead, baseRef);
+  if (invalid) return invalid;
+
+  if (
+    !Array.isArray(requiredChecks) ||
+    requiredChecks.length === 0 ||
+    new Set(requiredChecks).size !== requiredChecks.length ||
+    requiredChecks.some((name) => typeof name !== "string" || !name)
+  ) {
+    return { status: "blocked", reason: "REQUIRED_CHECK_POLICY_MISSING" };
+  }
+
+  const identity = evaluatePullRequestIdentityValidated({
+    pullRequest,
+    expectedHead,
+    baseRef
+  });
+  if (identity.status !== "matched") return identity;
+  const prHead = identity.headSha;
 
   const normalizedChecks = normalizeChecks(checkRuns);
   if (normalizedChecks.error) {

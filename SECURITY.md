@@ -1,20 +1,20 @@
 # Security
 
-ForgeFlow Policy V1 must not become a second privileged execution runtime. Open SWE/LangGraph own
-agent execution and sandbox/runtime state; ForgeFlow consumes bounded identities and evidence.
+ForgeFlow must remain a policy layer, not a second privileged execution runtime.
 
-Security-sensitive invariants:
+Security-sensitive rules:
 
-- never treat an agent/run `success` status as engineering completion by itself;
-- bind CI and review decisions to the exact current PR head SHA;
-- never persist provider credentials, GitHub tokens, raw model responses, or sandbox secrets in
-  ForgeFlow policy state;
-- do not expose an unauthenticated LangGraph API to public networks;
-- use the upstream Open SWE GitHub authentication path rather than implementing a second token
-  store;
-- keep model-controlled execution inside the self-hosted Open SWE Docker sandbox boundary; never
-  reintroduce the retired OpenHands/Antigravity execution plane;
-- bounded retries must escalate rather than loop forever.
+- never treat an agent/run success status as engineering acceptance by itself;
+- keep one mutation writer per working tree;
+- use fresh read-only reviewers for independent review;
+- bind final review and CI evidence to the exact current PR head SHA;
+- fail closed when the PR head/base changes, a required check is absent,
+  pending, failed, skipped, neutral, or ambiguous;
+- keep provider and GitHub credentials host-owned; ForgeFlow stores no token
+  database and never places credentials in reviewer artifacts;
+- allow reviewer reports only under the ignored `.pi/subagents/` runtime
+  directory;
+- a new push invalidates the previous exact-head acceptance.
 
-Report suspected vulnerabilities privately to the repository owner rather than opening a public
-issue with exploit details.
+Report suspected vulnerabilities privately to the repository owner rather than
+opening a public issue with exploit details.

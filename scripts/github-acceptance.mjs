@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { evaluateGithubAcceptance } from "../extension/github-acceptance.js";
+import {
+  evaluateGithubAcceptance,
+  evaluatePullRequestIdentity
+} from "../extension/github-acceptance.js";
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -125,15 +128,31 @@ function statusesForHead() {
   fail("GitHub commit-status evidence exceeds the supported pagination limit.");
 }
 
-const pullRequest = ghJson(["api", `repos/${owner}/${repo}/pulls/${pr}`]);
+const initialPullRequest = ghJson(["api", `repos/${owner}/${repo}/pulls/${pr}`]);
+const initialIdentity = evaluatePullRequestIdentity({
+  pullRequest: initialPullRequest,
+  expectedHead,
+  baseRef
+});
+if (initialIdentity.status !== "matched") {
+  process.stdout.write(`${JSON.stringify(initialIdentity)}\n`);
+  process.exit(0);
+}
+
+const checkRuns = checkRunsForHead();
+const statuses = statusesForHead();
+
+// Re-read the authoritative PR after collecting CI evidence. A force-push,
+// close, or retarget during those API calls invalidates this acceptance turn.
+const finalPullRequest = ghJson(["api", `repos/${owner}/${repo}/pulls/${pr}`]);
 
 const result = evaluateGithubAcceptance({
-  pullRequest,
+  pullRequest: finalPullRequest,
   expectedHead,
   baseRef,
   requiredChecks,
-  checkRuns: checkRunsForHead(),
-  statuses: statusesForHead()
+  checkRuns,
+  statuses
 });
 
 process.stdout.write(`${JSON.stringify(result)}\n`);

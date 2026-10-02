@@ -1,5 +1,5 @@
 export const REVIEW_VERDICTS = Object.freeze(["BLOCK", "OK", "OK with notes"]);
-const REVIEW_VERDICT_PREFIXES = Object.freeze(["Merge verdict: ", "- Merge verdict: "]);
+const VERDICT_PREFIXES = Object.freeze(["Merge verdict: ", "- Merge verdict: "]);
 
 export function parseReviewVerdict(report) {
   if (typeof report !== "string") {
@@ -20,7 +20,7 @@ export function parseReviewVerdict(report) {
     return { status: "invalid", reason: "REVIEW_REPORT_EMPTY" };
   }
 
-  const prefix = REVIEW_VERDICT_PREFIXES.find((candidate) => lastLine.startsWith(candidate));
+  const prefix = VERDICT_PREFIXES.find((candidate) => lastLine.startsWith(candidate));
   if (!prefix) {
     return {
       status: "invalid",

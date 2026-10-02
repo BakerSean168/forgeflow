@@ -23,12 +23,5 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run check:pi-native
+      - run: npm run check
       - run: npm pack --dry-run >/dev/null
-      - uses: astral-sh/setup-uv@v7
-        with:
-          python-version: '3.14'
-          enable-cache: true
-      - run: uv sync --locked
-      - run: uv run pytest -q
-      - run: uv run ruff check forgeflow tests
