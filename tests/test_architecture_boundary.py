@@ -54,7 +54,7 @@ def test_pi_native_package_has_one_explicit_runtime_entrypoint() -> None:
     }
     assert runtime_javascript
     assert all(
-        path.startswith("extension/") or path.startswith("scripts/")
+        path.startswith(("extension/", "scripts/"))
         for path in runtime_javascript
     )
 
