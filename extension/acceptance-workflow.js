@@ -1,7 +1,8 @@
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { renderPreflight } from "./invariants.js";
-import { REVIEW_SCHEMA } from "./review-workflow.js";
+import { reviewContractTask, reviewVerdictGate } from "./review-workflow.js";
 
 const HELPER_PATH = fileURLToPath(new URL("../scripts/github-acceptance.mjs", import.meta.url));
 export const CLEAN_HEAD_COMMAND =
@@ -69,10 +70,14 @@ function validateArgs(args) {
   };
 }
 
-export function createAcceptanceWorkflowDefinition() {
+export function createAcceptanceWorkflowDefinition(repoRoot) {
+  if (typeof repoRoot !== "string" || !repoRoot) {
+    throw new Error("ForgeFlow acceptance workflow requires the session cwd.");
+  }
+
   return {
     name: "forgeflow.accept",
-    version: 1,
+    version: 3,
     resolve(args) {
       const validated = validateArgs(args);
       if ("error" in validated) return validated;
@@ -95,18 +100,19 @@ export function createAcceptanceWorkflowDefinition() {
         shellQuote(JSON.stringify(requiredChecks))
       ].join(" ");
 
-      const reviewTask = [
+      const reviewTask = reviewContractTask([
         "You are the final independent ForgeFlow reviewer for an exact committed candidate.",
         "Review the current repository at the exact checked-out HEAD against the operator task and owner contracts.",
         "Do not mutate files. Do not accept claims of test or CI success without repository evidence.",
-        "Return verdict=blocked when another code change is required before delivery.",
-        "For structured output, return exactly verdict, summary, and findings. Do not add acceptanceReport or any other top-level field.",
+        "Use BLOCK when another code change is required before delivery.",
         "",
         "Operator task:",
         task,
         "",
         renderPreflight(task).join("\n")
-      ].join("\n");
+      ]);
+      const reviewPath = resolve(repoRoot, `.pi/subagents/forgeflow-final-review-${expectedHead}.md`);
+      const reviewGate = reviewVerdictGate(reviewPath);
 
       const headParams = {
         kind: "command",
@@ -131,6 +137,8 @@ export function createAcceptanceWorkflowDefinition() {
         ],
         script: `
           const expectedHead = ${JSON.stringify(expectedHead)};
+          const requestedReviewPath = ${JSON.stringify(reviewPath)};
+
           const before = await runs.host("head-before-review", ${JSON.stringify(headParams)});
           if (!before.ok) throw new Error("ForgeFlow requires a clean committed candidate before final review");
           const reviewedHead = before.stdout.trim().toLowerCase();
@@ -142,14 +150,23 @@ export function createAcceptanceWorkflowDefinition() {
             label: "Review exact ForgeFlow head",
             agent: "reviewer",
             context: "fresh",
+            agentContract: { version: 1 },
             task: ${JSON.stringify(reviewTask)},
-            outputSchema: ${JSON.stringify(REVIEW_SCHEMA)}
+            output: requestedReviewPath,
+            outputMode: "file-only",
+            gate: ${JSON.stringify(reviewGate)}
           });
           if (!review.ok || !review.structuredOutput) {
-            throw new Error("ForgeFlow final reviewer failed");
+            throw new Error("ForgeFlow final reviewer or verdict gate failed");
           }
-          if (review.structuredOutput.verdict !== "clean") {
-            throw new Error("ForgeFlow final reviewer blocked the candidate: " + JSON.stringify(review.structuredOutput.findings));
+
+          const reviewPath = requestedReviewPath;
+
+          if (review.structuredOutput.status === "blocked") {
+            throw new Error("ForgeFlow final reviewer blocked the candidate; see " + reviewPath);
+          }
+          if (review.structuredOutput.status !== "clean") {
+            throw new Error("ForgeFlow final reviewer verdict contract returned an invalid state");
           }
 
           const after = await runs.host("head-after-review", ${JSON.stringify(headParams)});
@@ -173,7 +190,7 @@ export function createAcceptanceWorkflowDefinition() {
           return {
             status: "accepted",
             reviewedHead: expectedHead,
-            review: review.structuredOutput,
+            review: { ...review.structuredOutput, reportPath: reviewPath },
             github: evidence
           };
         `

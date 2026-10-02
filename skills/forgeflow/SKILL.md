@@ -32,9 +32,14 @@ inside ForgeFlow.
 
 ## Review
 
-Use the trusted `forgeflow.review` workflow when a structured independent review
-is needed before final delivery. It returns a `clean` or `blocked` verdict plus
-evidence-backed findings. That verdict is still only review evidence.
+Use the trusted `forgeflow.review` workflow when an independent review is
+needed before final delivery. Pi's read-only reviewer writes its full evidence-backed
+report to a managed artifact and must end with Pi's standard merge-verdict
+contract: `Merge verdict: BLOCK|OK|OK with notes`, either as the plain final line
+or the builtin reviewer's final Markdown list item. ForgeFlow deterministically
+validates only those canonical forms and returns the artifact path plus a `clean`
+or `blocked` state. Missing or malformed verdicts fail closed. The reviewer report remains review
+evidence rather than final repository acceptance.
 
 ## Final pull-request acceptance
 

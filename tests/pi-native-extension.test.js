@@ -31,7 +31,10 @@ test("extension registers Pi lifecycle hooks and injects policy without a model 
   assert.doesNotThrow(() => {
     handlers.get("session_start")(
       {},
-      { sessionManager: { getSessionId: () => "forgeflow-pi-native-test" } }
+      {
+        cwd: process.cwd(),
+        sessionManager: { getSessionId: () => "forgeflow-pi-native-test" }
+      }
     );
   });
   assert.doesNotThrow(() => handlers.get("session_shutdown")());

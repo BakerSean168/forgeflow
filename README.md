@@ -43,8 +43,8 @@ The package currently provides:
 
 - automatic ForgeFlow policy/invariant injection through Pi's
   `before_agent_start` lifecycle;
-- the trusted `forgeflow.review` workflow for a fresh structured read-only
-  review;
+- the trusted `forgeflow.review` workflow for a fresh read-only reviewer
+  artifact with a deterministic final-verdict contract;
 - the trusted `forgeflow.accept` workflow for final exact-head review and
   GitHub CI acceptance;
 - the `forgeflow` skill describing the ownership and acceptance rules.

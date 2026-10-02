@@ -7,6 +7,7 @@ import {
 } from "../extension/acceptance-workflow.js";
 
 const HEAD = "a".repeat(40);
+const ROOT = process.cwd();
 
 function validArgs(overrides = {}) {
   return {
@@ -22,7 +23,7 @@ function validArgs(overrides = {}) {
 }
 
 test("acceptance resource validates public identity and CI policy fields", () => {
-  const definition = createAcceptanceWorkflowDefinition();
+  const definition = createAcceptanceWorkflowDefinition(ROOT);
 
   assert.deepEqual(definition.resolve({ ...validArgs(), command: "echo nope" }), {
     error: "forgeflow.accept received unsupported fields."
@@ -47,8 +48,8 @@ test("acceptance resource validates public identity and CI policy fields", () =>
   });
 });
 
-test("acceptance resource binds review and GitHub checks to one exact committed head", () => {
-  const definition = createAcceptanceWorkflowDefinition();
+test("acceptance binds Pi typed reviewer gate and GitHub evidence to one exact committed head", () => {
+  const definition = createAcceptanceWorkflowDefinition(ROOT);
   const result = definition.resolve(validArgs());
 
   assert.equal("error" in result, false);
@@ -63,18 +64,28 @@ test("acceptance resource binds review and GitHub checks to one exact committed 
   assert.match(result.hostCommands[2].command, /--expected-head 'a{40}'/);
   assert.match(result.hostCommands[2].command, /--base-ref 'main'/);
   assert.match(result.hostCommands[2].command, /--required-checks-json '\["verify"\]'/);
+
   assert.match(result.script, /context: "fresh"/);
   assert.match(result.script, /agent: "reviewer"/);
+  assert.match(result.script, /agentContract: \{ version: 1 \}/);
+  assert.match(result.script, /outputMode: "file-only"/);
+  assert.match(result.script, /standard merge verdict contract/);
+  assert.match(result.script, /review-verdict\.mjs/);
+  assert.match(result.script, /"output":"json"/);
   assert.match(result.script, /head-before-review/);
   assert.match(result.script, /head-after-review/);
   assert.match(result.script, /github-exact-head/);
-  assert.match(result.script, /review\.structuredOutput\.verdict !== "clean"/);
-  assert.match(result.script, /Do not add acceptanceReport/);
+  assert.match(result.script, /const reviewPath = requestedReviewPath/);
+  assert.match(result.script, /review\.structuredOutput\.status === "blocked"/);
   assert.match(result.script, /evidence\.status !== "accepted"/);
+  assert.doesNotMatch(result.script, /outputPathMapping/);
+  assert.doesNotMatch(result.script, /artifactPaths/);
+  assert.doesNotMatch(result.script, /outputReference/);
+  assert.doesNotMatch(result.script, /outputSchema/);
 });
 
-test("task text cannot widen host command authority", () => {
-  const definition = createAcceptanceWorkflowDefinition();
+test("task text cannot widen host or typed gate command authority", () => {
+  const definition = createAcceptanceWorkflowDefinition(ROOT);
   const injectedTask = "Review this; rm -rf /; $(touch /tmp/nope)";
   const result = definition.resolve(validArgs({ task: injectedTask }));
 
@@ -84,5 +95,11 @@ test("task text cannot widen host command authority", () => {
     assert.equal(grant.command.includes("rm -rf"), false);
     assert.equal(grant.command.includes("touch /tmp/nope"), false);
   }
+
+  const gateIndex = result.script.indexOf("review-verdict.mjs");
+  assert.notEqual(gateIndex, -1);
+  const gateWindow = result.script.slice(gateIndex, gateIndex + 1200);
+  assert.equal(gateWindow.includes("rm -rf"), false);
+  assert.equal(gateWindow.includes("touch /tmp/nope"), false);
   assert.match(result.script, /rm -rf/);
 });

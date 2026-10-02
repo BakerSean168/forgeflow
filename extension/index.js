@@ -28,13 +28,14 @@ export default function registerForgeFlow(pi) {
     acceptanceRegistration?.dispose();
 
     const sessionId = ctx.sessionManager.getSessionId();
+    const sessionCwd = ctx.cwd;
     reviewRegistration = registerWorkflowResource({
       sessionId,
-      definition: createReviewWorkflowDefinition()
+      definition: createReviewWorkflowDefinition(sessionCwd)
     });
     acceptanceRegistration = registerWorkflowResource({
       sessionId,
-      definition: createAcceptanceWorkflowDefinition()
+      definition: createAcceptanceWorkflowDefinition(sessionCwd)
     });
   });
 
