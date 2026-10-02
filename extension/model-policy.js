@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 export const FORGEFLOW_MODEL_PROVIDER = "forgeflow";
 export const FORGEFLOW_MODEL_POLICY_ENV = "FORGEFLOW_MODEL_POLICY";
@@ -27,7 +27,10 @@ function modelPolicyCandidates(cwd, env = process.env, home = homedir(), options
   const candidates = [];
 
   if (explicit) {
-    return [isAbsolute(explicit) ? explicit : resolve(cwd, explicit)];
+    if (!isAbsolute(explicit)) {
+      throw new Error(`${FORGEFLOW_MODEL_POLICY_ENV} must be an absolute path.`);
+    }
+    return [explicit];
   }
 
   if (options.allowProject !== false) {

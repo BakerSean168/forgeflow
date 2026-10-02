@@ -137,15 +137,15 @@ test("explicit model policy path is authoritative", () => {
   writeFileSync(join(project, ".pi", "forgeflow-models.json"), "{}\n");
   writeFileSync(join(home, ".pi", "forgeflow-models.json"), "{}\n");
 
-  assert.equal(
-    resolveModelPolicyPath(project, { FORGEFLOW_MODEL_POLICY: "operator-policy.json" }, home, { allowProject: true }),
-    undefined
+  assert.throws(
+    () => resolveModelPolicyPath(project, { FORGEFLOW_MODEL_POLICY: "operator-policy.json" }, home, { allowProject: true }),
+    /FORGEFLOW_MODEL_POLICY must be an absolute path/
   );
 
   const explicit = join(project, "operator-policy.json");
   writeFileSync(explicit, "{}\n");
   assert.equal(
-    resolveModelPolicyPath(project, { FORGEFLOW_MODEL_POLICY: "operator-policy.json" }, home, { allowProject: false }),
+    resolveModelPolicyPath(project, { FORGEFLOW_MODEL_POLICY: explicit }, home, { allowProject: false }),
     explicit
   );
 });

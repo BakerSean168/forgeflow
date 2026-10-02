@@ -55,7 +55,7 @@ ForgeFlow resolves the physical mapping in this order:
 2. `<project>/.pi/forgeflow-models.json` when Pi reports the project trusted;
 3. `~/.pi/forgeflow-models.json`.
 
-An explicit `FORGEFLOW_MODEL_POLICY` path is authoritative and fails closed if it does not exist. Project-local policy is ignored for untrusted projects so a checked-out repository cannot silently redirect prompts to another provider.
+An explicit `FORGEFLOW_MODEL_POLICY` path is authoritative, must be absolute, and fails closed if it does not exist. Requiring an absolute operator path prevents a globally inherited relative environment value from resolving to a file supplied by an untrusted checkout. Project-local policy is ignored for untrusted projects so a checked-out repository cannot silently redirect prompts to another provider.
 
 Policy schema v1:
 
