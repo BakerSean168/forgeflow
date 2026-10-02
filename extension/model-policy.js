@@ -173,6 +173,11 @@ export function createRoleRouter(role, options = {}) {
         `ForgeFlow role '${role}' targets unknown physical model '${target.provider}/${target.id}' from '${path}'.`
       );
     }
+    if (model.api === "pi-virtual") {
+      throw new Error(
+        `ForgeFlow role '${role}' must resolve directly to a physical model; '${target.provider}/${target.id}' is virtual.`
+      );
+    }
 
     return {
       model,

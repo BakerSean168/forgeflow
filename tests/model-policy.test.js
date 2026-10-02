@@ -98,6 +98,42 @@ test("role router resolves a fresh physical model for a user turn", () => {
   assert.deepEqual(result, { model: physical, thinkingLevel: "low" });
 });
 
+test("role router rejects a virtual model returned by the physical registry lookup", () => {
+  const route = createRoleRouter("worker", {
+    loadPolicy() {
+      return {
+        path: "/policy.json",
+        policy: {
+          version: 1,
+          roles: {
+            worker: {
+              provider: "router",
+              id: "nested",
+              thinkingLevel: "low"
+            }
+          }
+        }
+      };
+    }
+  });
+
+  assert.throws(
+    () => route(
+      { reason: "user", thinkingLevel: "high" },
+      {
+        cwd: "/repo",
+        isProjectTrusted: () => true,
+        modelRegistry: {
+          find() {
+            return { provider: "router", id: "nested", api: "pi-virtual" };
+          }
+        }
+      }
+    ),
+    /must resolve directly to a physical model/
+  );
+});
+
 test("role router keeps continuations and retries on the physical turn model", () => {
   let loads = 0;
   const route = createRoleRouter("worker", {
