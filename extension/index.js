@@ -1,8 +1,15 @@
+import { fileURLToPath } from "node:url";
+
+import { registerRequiredChildExtensions } from "pi-subagents/required-child-extensions";
 import { registerWorkflowResource } from "pi-subagents/workflow-resources";
 import { renderPreflight } from "./invariants.js";
 import { createAcceptanceWorkflowDefinition } from "./acceptance-workflow.js";
 import { createReviewWorkflowDefinition } from "./review-workflow.js";
 import { registerForgeFlowVirtualModels } from "./model-policy.js";
+
+const CHILD_MODEL_POLICY_EXTENSION = fileURLToPath(
+  new URL("./child-model-policy.js", import.meta.url)
+);
 
 const CORE_POLICY = [
   "ForgeFlow is a thin engineering-governance extension for Pi; Pi and pi-subagents own agent execution, sessions, delegation, worktrees, missions, schedules, and resume.",
@@ -22,6 +29,7 @@ export default function registerForgeFlow(pi) {
 
   let reviewRegistration;
   let acceptanceRegistration;
+  let childModelPolicyRegistration;
 
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.sections.forgeflow_policy = buildForgeFlowPromptSection(event.prompt);
@@ -30,6 +38,7 @@ export default function registerForgeFlow(pi) {
   pi.on("session_start", (_event, ctx) => {
     reviewRegistration?.dispose();
     acceptanceRegistration?.dispose();
+    childModelPolicyRegistration?.dispose();
 
     const sessionId = ctx.sessionManager.getSessionId();
     const sessionCwd = ctx.cwd;
@@ -41,12 +50,23 @@ export default function registerForgeFlow(pi) {
       sessionId,
       definition: createAcceptanceWorkflowDefinition(sessionCwd)
     });
+    childModelPolicyRegistration = registerRequiredChildExtensions({
+      sessionId,
+      extensions: [
+        {
+          id: "forgeflow-model-policy",
+          path: CHILD_MODEL_POLICY_EXTENSION
+        }
+      ]
+    });
   });
 
   pi.on("session_shutdown", () => {
     reviewRegistration?.dispose();
     acceptanceRegistration?.dispose();
+    childModelPolicyRegistration?.dispose();
     reviewRegistration = undefined;
     acceptanceRegistration = undefined;
+    childModelPolicyRegistration = undefined;
   });
 }

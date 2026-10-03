@@ -47,7 +47,7 @@ The pinned `pi-subagents@0.75.0` includes the child-runtime fixes required for P
 
 The parent Pi session can select `forgeflow/planner` when the parent is acting as the planning/orchestration role. ForgeFlow's trusted `forgeflow.review` and `forgeflow.accept` workflows explicitly request `forgeflow/reviewer`, so the workflow owns the stable reviewer role while operator policy remains free to change the physical reviewer model without editing workflow code.
 
-`pi-subagents@0.75.0` contains the upstream child-runtime fixes for queued virtual-model registration and logical-selection verification (#2636 and #2638). ForgeFlow therefore does not carry a compatibility shim for virtual child models.
+`pi-subagents@0.75.0` contains the upstream child-runtime fixes for queued virtual-model registration and logical-selection verification (#2636 and #2638). ForgeFlow additionally registers a required child-only extension that does nothing except register the five `forgeflow/*` virtual models. Native Pi children therefore receive the logical model registry before model resolution without loading a second copy of ForgeFlow's prompt policy or trusted workflow resources. ForgeFlow does not carry a routing shim for virtual child models.
 
 ## Policy file
 

@@ -35,6 +35,6 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "npm test && node --check extension/index.js && node --check extension/model-policy.js && node --check extension/invariants.js && node --check extension/review-workflow.js && node --check extension/review-verdict.js && node --check extension/github-acceptance.js && node --check extension/acceptance-workflow.js && node --check scripts/review-verdict.mjs && node --check scripts/github-acceptance.mjs"
+    "check": "npm test && node --check extension/index.js && node --check extension/child-model-policy.js && node --check extension/model-policy.js && node --check extension/invariants.js && node --check extension/review-workflow.js && node --check extension/review-verdict.js && node --check extension/github-acceptance.js && node --check extension/acceptance-workflow.js && node --check scripts/review-verdict.mjs && node --check scripts/github-acceptance.mjs"
   }
 }

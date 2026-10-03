@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { registerRequiredChildExtensions } from "pi-subagents/required-child-extensions";
+import registerForgeFlowChildModelPolicy from "../extension/child-model-policy.js";
 import registerForgeFlow from "../extension/index.js";
 
 test("extension registers Pi lifecycle hooks and injects policy without a model call", () => {
@@ -40,14 +43,58 @@ test("extension registers Pi lifecycle hooks and injects policy without a model 
   assert.match(event.systemPromptOptions.sections.forgeflow_policy, /INV-CUTOVER-001/);
   assert.match(event.systemPromptOptions.sections.forgeflow_policy, /INV-REPLAY-001/);
 
+  const sessionId = "forgeflow-pi-native-test";
   assert.doesNotThrow(() => {
     handlers.get("session_start")(
       {},
       {
         cwd: process.cwd(),
-        sessionManager: { getSessionId: () => "forgeflow-pi-native-test" }
+        sessionManager: { getSessionId: () => sessionId }
       }
     );
   });
+
+  const childExtensionPath = fileURLToPath(
+    new URL("../extension/child-model-policy.js", import.meta.url)
+  );
+  assert.throws(
+    () => registerRequiredChildExtensions({
+      sessionId,
+      extensions: [{ id: "duplicate-probe", path: childExtensionPath }]
+    }),
+    /already registered/
+  );
+
   assert.doesNotThrow(() => handlers.get("session_shutdown")());
+
+  const afterShutdown = registerRequiredChildExtensions({
+    sessionId,
+    extensions: [{ id: "post-shutdown-probe", path: childExtensionPath }]
+  });
+  afterShutdown.dispose();
+});
+
+test("child-only model policy extension registers only ForgeFlow virtual models", () => {
+  const registrations = [];
+  const handlers = [];
+  registerForgeFlowChildModelPolicy({
+    registerVirtualModel(definition) {
+      registrations.push(definition);
+    },
+    on(...args) {
+      handlers.push(args);
+    }
+  });
+
+  assert.deepEqual(
+    registrations.map(({ provider, id }) => `${provider}/${id}`),
+    [
+      "forgeflow/planner",
+      "forgeflow/worker",
+      "forgeflow/reviewer",
+      "forgeflow/scout",
+      "forgeflow/oracle"
+    ]
+  );
+  assert.deepEqual(handlers, []);
 });
