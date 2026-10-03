@@ -46,9 +46,19 @@ test("repository does not reintroduce the retired Python/Open SWE control plane"
   }
 });
 
-test("review and PR acceptance remain plugin-owned", () => {
+test("review and delivery workflows remain outside ForgeFlow runtime", () => {
   for (const path of PLUGIN_OWNED_RUNTIME_FILES) {
     assert.equal(existsSync(path), false, path);
+  }
+});
+
+test("active ForgeFlow sources do not depend on Gauntlet", () => {
+  const tracked = trackedFiles();
+  for (const path of tracked) {
+    if (!/\.(?:js|json|md)$/.test(path)) continue;
+    const source = readFileSync(path, "utf8");
+    assert.equal(source.includes("pi-" + "gauntlet"), false, path);
+    assert.equal(source.includes("gatekeep-" + "pr"), false, path);
   }
 });
 

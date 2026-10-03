@@ -10,11 +10,12 @@ ForgeFlow is a thin policy package for Pi Agent.
 - parent/child sessions and subagent lifecycle;
 - worktree isolation, missions, schedules, background work, resume, and retained children;
 - external CLI/job runners;
-- reviewer execution, review loops, and runtime acceptance evidence;
-- pull-request verification, CI evidence collection, freshness checks, and merge operations.
+- reviewer execution, review loops, and runtime acceptance evidence.
 
-`pi-subagents` is the primary child/runtime primitive. When installed,
-`pi-gauntlet` provides higher-level engineering workflows such as `gatekeep-pr`.
+`pi-subagents` is the sole child/runtime orchestration primitive. Reusable engineering
+methods such as TDD, SDD, PR gating, and post-merge delivery verification belong in
+host Skills. Deterministic CI, VCS, and deployment systems remain the authority for
+facts such as exact head, test status, artifact identity, and rollout state.
 ForgeFlow does not wrap those capabilities in a second workflow layer.
 
 ### ForgeFlow owns
@@ -24,9 +25,10 @@ ForgeFlow does not wrap those capabilities in a second workflow layer.
 - the one-writer-per-worktree governance rule;
 - policy text requiring evidence to remain bound to the current candidate.
 
-If a feature needs generic execution, review orchestration, PR acceptance,
-scheduling, durable workflow state, provider/channel routing, worktrees, or resume,
-it belongs in Pi, an existing plugin, or the provider layer rather than ForgeFlow.
+If a feature needs generic execution, review orchestration, scheduling, durable
+workflow state, provider/channel routing, worktrees, or resume, it belongs in Pi or
+an existing plugin. If it is an engineering method or delivery procedure, it belongs
+in a Skill. Provider/channel routing remains in the provider layer.
 
 ## Model policy boundary
 
@@ -66,13 +68,14 @@ The preflight is deterministic and adds no model call or durable workflow state.
 
 ## Review and delivery
 
-ForgeFlow does not implement a reviewer runtime or PR acceptance workflow.
+ForgeFlow does not implement a reviewer runtime, TDD/SDD state machine, PR gate, or
+delivery workflow.
 
-Use the reviewer and acceptance primitives already supplied by `pi-subagents`.
-For GitHub PR delivery, `pi-gauntlet`'s `gatekeep-pr` skill (when installed)
-already handles exact-head CI evidence, head freshness, review, compare-and-swap,
-and head-matched merge execution. Adding a second ForgeFlow implementation would
-create two sources of truth for the same gate.
+Use the reviewer and acceptance primitives supplied by `pi-subagents`. Use host
+Skills for engineering procedures such as `test-driven-development`,
+`spec-driven-development`, `pr-gate`, and `delivery-verification`. Those Skills must
+bind claims to deterministic repository, CI, VCS, artifact, and deployment evidence.
+Adding a second ForgeFlow implementation would create competing sources of truth.
 
 ## Retired architecture
 
