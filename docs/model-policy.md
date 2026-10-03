@@ -30,7 +30,7 @@ ForgeFlow registers these Pi virtual models:
 
 The names are stable contracts. The physical model behind each role is operator policy.
 
-Once the `pi-subagents` child-runtime fixes described below are available in the pinned release, builtin roles can point at the logical models:
+The pinned `pi-subagents@0.75.0` includes the child-runtime fixes required for Pi virtual models, so builtin roles can point directly at the logical models:
 
 ```json
 {
@@ -45,9 +45,9 @@ Once the `pi-subagents` child-runtime fixes described below are available in the
 }
 ```
 
-The parent Pi session can select `forgeflow/planner` when the parent is acting as the planning/orchestration role.
+The parent Pi session can select `forgeflow/planner` when the parent is acting as the planning/orchestration role. ForgeFlow's trusted `forgeflow.review` and `forgeflow.accept` workflows explicitly request `forgeflow/reviewer`, so the workflow owns the stable reviewer role while operator policy remains free to change the physical reviewer model without editing workflow code.
 
-The currently pinned `pi-subagents@0.74.0` predates two upstream fixes needed to launch a Pi virtual model as a child: queued virtual-model registration in child runtimes and verification against the logical selection rather than the dispatched physical response model. Until those fixes are available in a released `pi-subagents` package, ForgeFlow's trusted `forgeflow.review` and `forgeflow.accept` workflows keep the existing builtin-reviewer model selection instead of forcing `forgeflow/reviewer`. This avoids a ForgeFlow compatibility shim. After the dependency is upgraded to a release containing upstream #2636 and #2638, the workflows can hard-cut over to `forgeflow/reviewer` and this compatibility note can be removed.
+`pi-subagents@0.75.0` contains the upstream child-runtime fixes for queued virtual-model registration and logical-selection verification (#2636 and #2638). ForgeFlow therefore does not carry a compatibility shim for virtual child models.
 
 ## Policy file
 

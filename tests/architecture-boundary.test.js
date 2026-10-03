@@ -42,7 +42,7 @@ test("Pi package has one explicit runtime entrypoint and one execution dependenc
 
   assert.deepEqual(packageJson.pi.extensions, ["./extension/index.js"]);
   assert.deepEqual(packageJson.pi.skills, ["./skills"]);
-  assert.deepEqual(packageJson.dependencies, { "pi-subagents": "0.74.0" });
+  assert.deepEqual(packageJson.dependencies, { "pi-subagents": "0.75.0" });
   assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.99.0");
   assert.deepEqual(
     new Set(packageJson.files),

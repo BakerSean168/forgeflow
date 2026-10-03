@@ -35,8 +35,9 @@ inside ForgeFlow.
 ## Review
 
 Use the trusted `forgeflow.review` workflow when an independent review is
-needed before final delivery. Pi's read-only reviewer writes its full evidence-backed
-report to a managed artifact and must end with Pi's standard merge-verdict
+needed before final delivery. The workflow selects the stable `forgeflow/reviewer`
+virtual model; Pi's read-only reviewer writes its full evidence-backed report to
+a managed artifact and must end with Pi's standard merge-verdict
 contract: `Merge verdict: BLOCK|OK|OK with notes`, either as the plain final line
 or the builtin reviewer's final Markdown list item. ForgeFlow deterministically
 validates only those canonical forms and returns the artifact path plus a `clean`
