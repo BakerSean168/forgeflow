@@ -48,9 +48,9 @@ The preflight is deterministic and adds no model call or durable workflow state.
 
 ## Independent review
 
-`forgeflow.review` launches the builtin Pi reviewer with fresh context. The
-reviewer is read-only. Its full report is persisted to an absolute path under
-`.pi/subagents/`.
+`forgeflow.review` launches the builtin Pi reviewer agent with fresh context and
+explicitly selects the stable `forgeflow/reviewer` virtual model. The reviewer is
+read-only. Its full report is persisted to an absolute path under `.pi/subagents/`.
 
 A Pi typed gate executes `scripts/review-verdict.mjs` against that same report.
 Only Pi's canonical merge-verdict forms are accepted:
@@ -65,7 +65,7 @@ Anything else fails closed.
 `forgeflow.accept` performs four independent gates in order:
 
 1. **HEAD before review** — the worktree is clean and equals `expectedHead`.
-2. **Fresh review** — the Pi reviewer must return a clean typed verdict.
+2. **Fresh review** — the Pi reviewer running as `forgeflow/reviewer` must return a clean typed verdict.
 3. **HEAD after review** — review must not have changed the candidate.
 4. **GitHub exact-head** — the PR is open, targets the expected base, still
    points at `expectedHead`, and every configured required check resolves to

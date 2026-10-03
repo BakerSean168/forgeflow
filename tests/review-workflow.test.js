@@ -15,10 +15,11 @@ test("review resource persists reviewer prose and uses Pi typed gate for determi
   const definition = createReviewWorkflowDefinition(ROOT);
   const result = definition.resolve({ task: "Review the retry implementation" });
 
+  assert.equal(definition.version, 4);
   assert.equal("error" in result, false);
   assert.equal(result.hostCommands, undefined);
   assert.match(result.script, /agent: "reviewer"/);
-  assert.doesNotMatch(result.script, /model: "forgeflow\/reviewer"/);
+  assert.match(result.script, /model: "forgeflow\/reviewer"/);
   assert.match(result.script, /context: "fresh"/);
   assert.match(result.script, /agentContract: \{ version: 1 \}/);
   assert.match(result.script, /outputMode: "file-only"/);

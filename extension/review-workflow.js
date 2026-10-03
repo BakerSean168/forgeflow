@@ -72,7 +72,7 @@ export function createReviewWorkflowDefinition(repoRoot) {
 
   return {
     name: "forgeflow.review",
-    version: 3,
+    version: 4,
     resolve(args) {
       const validated = validateTask(args);
       if ("error" in validated) return validated;
@@ -100,6 +100,7 @@ export function createReviewWorkflowDefinition(repoRoot) {
           const review = await runs.run("forgeflow-review", {
             label: "Review ForgeFlow candidate",
             agent: "reviewer",
+            model: "forgeflow/reviewer",
             context: "fresh",
             agentContract: { version: 1 },
             task: ${JSON.stringify(reviewTask)},

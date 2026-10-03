@@ -52,6 +52,7 @@ test("acceptance binds Pi typed reviewer gate and GitHub evidence to one exact c
   const definition = createAcceptanceWorkflowDefinition(ROOT);
   const result = definition.resolve(validArgs());
 
+  assert.equal(definition.version, 4);
   assert.equal("error" in result, false);
   assert.equal(result.hostCommands.length, 3);
   assert.deepEqual(
@@ -67,7 +68,7 @@ test("acceptance binds Pi typed reviewer gate and GitHub evidence to one exact c
 
   assert.match(result.script, /context: "fresh"/);
   assert.match(result.script, /agent: "reviewer"/);
-  assert.doesNotMatch(result.script, /model: "forgeflow\/reviewer"/);
+  assert.match(result.script, /model: "forgeflow\/reviewer"/);
   assert.match(result.script, /agentContract: \{ version: 1 \}/);
   assert.match(result.script, /outputMode: "file-only"/);
   assert.match(result.script, /standard merge verdict contract/);

@@ -77,7 +77,7 @@ export function createAcceptanceWorkflowDefinition(repoRoot) {
 
   return {
     name: "forgeflow.accept",
-    version: 3,
+    version: 4,
     resolve(args) {
       const validated = validateArgs(args);
       if ("error" in validated) return validated;
@@ -150,6 +150,7 @@ export function createAcceptanceWorkflowDefinition(repoRoot) {
           const review = await runs.run("forgeflow-final-review", {
             label: "Review exact ForgeFlow head",
             agent: "reviewer",
+            model: "forgeflow/reviewer",
             context: "fresh",
             agentContract: { version: 1 },
             task: ${JSON.stringify(reviewTask)},

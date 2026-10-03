@@ -42,9 +42,10 @@ See [`docs/model-policy.md`](./docs/model-policy.md) for the logical-model polic
 
 ### `forgeflow.review`
 
-Runs a fresh Pi reviewer, persists the full report under `.pi/subagents/`, and
-uses a Pi typed gate to validate the reviewer's canonical final merge verdict.
-Malformed or missing verdicts fail closed.
+Runs a fresh Pi reviewer on the stable `forgeflow/reviewer` virtual model,
+persists the full report under `.pi/subagents/`, and uses a Pi typed gate to
+validate the reviewer's canonical final merge verdict. Malformed or missing
+verdicts fail closed.
 
 ### `forgeflow.accept`
 
