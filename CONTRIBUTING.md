@@ -16,7 +16,7 @@ Keep the ownership boundary strict:
 - Pi owns agent execution and session lifecycle.
 - `pi-subagents` owns child orchestration, worktrees, missions, schedules,
   resume, and external-agent runners.
-- ForgeFlow may add deterministic engineering invariants and acceptance gates
-  only when those policies are not already Pi primitives.
+- ForgeFlow may add deterministic engineering invariants only when the policy
+  is not already owned by Pi or an installed plugin.
 - Do not add a ForgeFlow database, generic provider router, scheduler,
   worktree manager, or durable execution engine.

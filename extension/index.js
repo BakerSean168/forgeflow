@@ -1,21 +1,18 @@
 import { fileURLToPath } from "node:url";
 
 import { registerRequiredChildExtensions } from "pi-subagents/required-child-extensions";
-import { registerWorkflowResource } from "pi-subagents/workflow-resources";
 import { renderPreflight } from "./invariants.js";
-import { createAcceptanceWorkflowDefinition } from "./acceptance-workflow.js";
-import { createReviewWorkflowDefinition } from "./review-workflow.js";
 import { registerForgeFlowVirtualModels } from "./model-policy.js";
 
 const FORGEFLOW_EXTENSION_PATH = fileURLToPath(import.meta.url);
 
 const CORE_POLICY = [
-  "ForgeFlow is a thin engineering-governance extension for Pi; Pi and pi-subagents own agent execution, sessions, delegation, worktrees, missions, schedules, and resume.",
+  "ForgeFlow is a thin engineering-governance extension for Pi; Pi and installed plugins own execution, sessions, delegation, review loops, acceptance gates, worktrees, missions, schedules, and resume.",
   "ForgeFlow may define stable logical model roles, but Pi owns virtual-model dispatch and the provider layer owns channel, credential, quota, and transport routing.",
-  "Do not create a second agent runtime, workflow database, provider gateway, or duplicate subagent scheduler inside ForgeFlow.",
+  "Do not create a second agent runtime, workflow database, provider gateway, reviewer runtime, PR gate, or duplicate subagent scheduler inside ForgeFlow.",
   "Keep one mutation writer per working tree. Independent reviewers must not mutate the candidate under review.",
-  "Agent completion is evidence, not authority. For PR delivery, final acceptance must be tied to the authoritative current head and must invalidate stale CI/review evidence after every new push.",
-  "Prefer existing Pi/pi-subagents capabilities over ForgeFlow-specific infrastructure. Add extension code only for engineering policy that Pi does not already own."
+  "Agent completion is evidence, not authority. For PR delivery, final acceptance must be tied to the authoritative current head and stale evidence must be invalidated after every new push.",
+  "Prefer existing Pi/plugin capabilities over ForgeFlow-specific infrastructure. Add extension code only for engineering policy that Pi and installed plugins do not already own."
 ];
 
 export function buildForgeFlowPromptSection(prompt) {
@@ -26,8 +23,6 @@ export default function registerForgeFlow(pi) {
   registerForgeFlowVirtualModels(pi);
 
   let requiredChildRegistration;
-  let reviewRegistration;
-  let acceptanceRegistration;
 
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.sections.forgeflow_policy = buildForgeFlowPromptSection(event.prompt);
@@ -35,31 +30,15 @@ export default function registerForgeFlow(pi) {
 
   pi.on("session_start", (_event, ctx) => {
     requiredChildRegistration?.dispose();
-    reviewRegistration?.dispose();
-    acceptanceRegistration?.dispose();
 
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sessionCwd = ctx.cwd;
     requiredChildRegistration = registerRequiredChildExtensions({
-      sessionId,
+      sessionId: ctx.sessionManager.getSessionId(),
       extensions: [{ id: "forgeflow", path: FORGEFLOW_EXTENSION_PATH }]
-    });
-    reviewRegistration = registerWorkflowResource({
-      sessionId,
-      definition: createReviewWorkflowDefinition(sessionCwd)
-    });
-    acceptanceRegistration = registerWorkflowResource({
-      sessionId,
-      definition: createAcceptanceWorkflowDefinition(sessionCwd)
     });
   });
 
   pi.on("session_shutdown", () => {
     requiredChildRegistration?.dispose();
-    reviewRegistration?.dispose();
-    acceptanceRegistration?.dispose();
     requiredChildRegistration = undefined;
-    reviewRegistration = undefined;
-    acceptanceRegistration = undefined;
   });
 }

@@ -32,7 +32,7 @@ test("trigger matching uses terms rather than substrings", () => {
 
 test("prompt section declares Pi ownership and deterministic preflight", () => {
   const section = buildForgeFlowPromptSection("Migrate a legacy importer with retry semantics");
-  assert.match(section, /Pi and pi-subagents own agent execution/);
+  assert.match(section, /Pi and installed plugins own execution/);
   assert.match(section, /Do not create a second agent runtime/);
   assert.match(section, /INV-CUTOVER-001/);
   assert.match(section, /INV-REPLAY-001/);

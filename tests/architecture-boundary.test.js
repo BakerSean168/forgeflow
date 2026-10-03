@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const FORBIDDEN_PREFIXES = [
@@ -16,6 +16,15 @@ const FORBIDDEN_FILES = new Set([
   "deploy/gcp-dev/Dockerfile.openswe-sandbox",
   "deploy/gcp-dev/open-swe-codex-broker.service.in"
 ]);
+
+const PLUGIN_OWNED_RUNTIME_FILES = [
+  "extension/review-workflow.js",
+  "extension/review-verdict.js",
+  "extension/acceptance-workflow.js",
+  "extension/github-acceptance.js",
+  "scripts/review-verdict.mjs",
+  "scripts/github-acceptance.mjs"
+];
 
 function trackedFiles() {
   return execFileSync("git", ["ls-files"], { encoding: "utf8" })
@@ -37,7 +46,13 @@ test("repository does not reintroduce the retired Python/Open SWE control plane"
   }
 });
 
-test("Pi package has one explicit runtime entrypoint and one execution dependency", () => {
+test("review and PR acceptance remain plugin-owned", () => {
+  for (const path of PLUGIN_OWNED_RUNTIME_FILES) {
+    assert.equal(existsSync(path), false, path);
+  }
+});
+
+test("Pi package has one explicit runtime entrypoint and one plugin dependency", () => {
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 
   assert.deepEqual(packageJson.pi.extensions, ["./extension/index.js"]);
@@ -46,6 +61,6 @@ test("Pi package has one explicit runtime entrypoint and one execution dependenc
   assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.99.0");
   assert.deepEqual(
     new Set(packageJson.files),
-    new Set(["extension", "scripts", "skills", "docs/architecture.md", "docs/model-policy.md", "README.md", "LICENSE"])
+    new Set(["extension", "skills", "docs/architecture.md", "docs/model-policy.md", "README.md", "LICENSE"])
   );
 });
