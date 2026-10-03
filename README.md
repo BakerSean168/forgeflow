@@ -30,6 +30,20 @@ Provider infrastructure remains below Pi model selection. ForgeFlow logical role
 may resolve to physical models, while endpoint selection, credentials, channel
 health, weights, quotas, and transport belong to the provider layer.
 
+## Antigravity delegation
+
+When the installed `pi-subagents` owner is present, ForgeFlow also registers two
+external agents backed by the locally authenticated Antigravity CLI (`agy`):
+
+- `antigravity` (alias `agy`) runs Antigravity in read-only `plan` mode;
+- `antigravity-writer` (alias `agy-writer`) runs in `accept-edits` mode.
+
+`pi-subagents` still owns child lifecycle, status, timeout, and stop. ForgeFlow only
+bridges its stdin handoff to `agy --print`; Antigravity keeps its own authentication,
+model selection, quota, and execution runtime. The bridge is local-only and requires
+`agy` on `PATH`. It does not turn Antigravity subscription quota into a Pi model
+provider.
+
 See [`docs/model-policy.md`](./docs/model-policy.md) for logical-model policy and
 [`docs/architecture.md`](./docs/architecture.md) for the ownership boundary.
 

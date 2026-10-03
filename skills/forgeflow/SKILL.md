@@ -39,6 +39,13 @@ ForgeFlow.
 Use `pi-subagents` for child execution, reviewer runs, review loops, typed gates,
 and runtime acceptance evidence. Treat it as the single orchestration owner.
 
+When the operator explicitly asks to delegate work to Antigravity, use
+`antigravity`/`agy` for read-only analysis or `antigravity-writer`/`agy-writer` for
+workspace changes. Those agents consume the local Antigravity CLI's own
+subscription quota; they are external agents, not ForgeFlow physical model roles.
+Never run an Antigravity writer concurrently with another writer in the same
+worktree.
+
 Use installed engineering Skills such as `test-driven-development`,
 `spec-driven-development`, `pr-gate`, and `delivery-verification` for reusable
 workflow methods. Exact-head CI, test execution, artifact identity, and deployment

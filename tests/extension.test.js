@@ -7,13 +7,30 @@ import registerForgeFlow from "../extension/index.js";
 test("extension registers Pi lifecycle hooks and injects policy without a model call", () => {
   const handlers = new Map();
   const virtualModels = [];
+  const runtimeAgentRequests = [];
+  const disposedRuntimeAgents = [];
   const pi = {
     on(event, handler) {
       handlers.set(event, handler);
       return () => handlers.delete(event);
     },
+    registerTool() {},
     registerVirtualModel(definition) {
       virtualModels.push(definition);
+    },
+    events: {
+      emit(event, request) {
+        if (event !== "pi-subagents:runtime-agent-register:v1") return;
+        runtimeAgentRequests.push(request);
+        request.result = {
+          ok: true,
+          registration: {
+            dispose() {
+              disposedRuntimeAgents.push(request.name);
+            }
+          }
+        };
+      }
     }
   };
 
@@ -56,8 +73,13 @@ test("extension registers Pi lifecycle hooks and injects policy without a model 
     () => registerRequiredChildExtensions({ sessionId, extensions: [] }),
     /already registered/
   );
+  assert.deepEqual(
+    runtimeAgentRequests.map(({ name }) => name),
+    ["antigravity", "antigravity-writer"]
+  );
 
   assert.doesNotThrow(() => handlers.get("session_shutdown")());
+  assert.deepEqual(disposedRuntimeAgents, ["antigravity-writer", "antigravity"]);
   const afterShutdown = registerRequiredChildExtensions({ sessionId, extensions: [] });
   afterShutdown.dispose();
 });

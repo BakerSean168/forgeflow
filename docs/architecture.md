@@ -30,6 +30,20 @@ workflow state, provider/channel routing, worktrees, or resume, it belongs in Pi
 an existing plugin. If it is an engineering method or delivery procedure, it belongs
 in a Skill. Provider/channel routing remains in the provider layer.
 
+### External coding agents
+
+ForgeFlow may register a thin transport adapter when an installed coding agent cannot
+consume the `pi-subagents` stdin contract directly. The Antigravity integration is
+one example: `pi-subagents` remains the orchestration owner, while a small bridge
+converts the assembled stdin prompt into one `agy --print=<prompt>` argument.
+
+The bridge owns no sessions, retries, workflow state, model routing, credentials, or
+quota. `agy` remains the authority for Antigravity authentication, model entitlement,
+and subscription usage. Two runtime agents are exposed when the `pi-subagents`
+registration owner is present: `antigravity`/`agy` for plan-mode analysis and
+`antigravity-writer`/`agy-writer` for explicit workspace mutation. Generic external
+CLI runners are local-only under the current `pi-subagents` contract.
+
 ## Model policy boundary
 
 ForgeFlow registers stable logical roles as Pi virtual models. Their physical model

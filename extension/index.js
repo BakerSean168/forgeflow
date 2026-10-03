@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 
 import { registerRequiredChildExtensions } from "pi-subagents/required-child-extensions";
+import { registerAntigravityAgents } from "./antigravity.js";
 import { renderPreflight } from "./invariants.js";
 import { registerForgeFlowVirtualModels } from "./model-policy.js";
 
@@ -23,6 +24,7 @@ export default function registerForgeFlow(pi) {
   registerForgeFlowVirtualModels(pi);
 
   let requiredChildRegistration;
+  let antigravityRegistration;
 
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.sections.forgeflow_policy = buildForgeFlowPromptSection(event.prompt);
@@ -30,14 +32,18 @@ export default function registerForgeFlow(pi) {
 
   pi.on("session_start", (_event, ctx) => {
     requiredChildRegistration?.dispose();
+    antigravityRegistration?.dispose();
 
     requiredChildRegistration = registerRequiredChildExtensions({
       sessionId: ctx.sessionManager.getSessionId(),
       extensions: [{ id: "forgeflow", path: FORGEFLOW_EXTENSION_PATH }]
     });
+    antigravityRegistration = registerAntigravityAgents(pi);
   });
 
   pi.on("session_shutdown", () => {
+    antigravityRegistration?.dispose();
+    antigravityRegistration = undefined;
     requiredChildRegistration?.dispose();
     requiredChildRegistration = undefined;
   });
