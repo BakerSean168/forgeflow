@@ -45,7 +45,7 @@ The pinned `pi-subagents@0.75.0` includes the child-runtime fixes required for P
 }
 ```
 
-The parent Pi session can select `forgeflow/planner` when the parent is acting as the planning/orchestration role. ForgeFlow's trusted `forgeflow.review` and `forgeflow.accept` workflows explicitly request `forgeflow/reviewer`, so the workflow owns the stable reviewer role while operator policy remains free to change the physical reviewer model without editing workflow code.
+The parent Pi session can select `forgeflow/planner` when acting as the planning/orchestration role. Reviewer and acceptance plugins should select `forgeflow/reviewer` when they need the stable reviewer role; operator policy remains free to change the physical reviewer model without editing plugin workflows or agent definitions.
 
 `pi-subagents@0.75.0` contains the upstream child-runtime fixes for queued virtual-model registration and logical-selection verification (#2636 and #2638). ForgeFlow also registers its own extension as a required native-child extension for each Pi session, because local foreground children intentionally do not load the parent's ambient extensions. This makes the `forgeflow/*` virtual models available in foreground, detached, nested, and recovery child sessions without hard-coding an installation path in operator profile settings. External CLI runners remain excluded by pi-subagents. ForgeFlow therefore does not carry a virtual-child compatibility shim.
 

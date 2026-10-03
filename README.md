@@ -1,65 +1,36 @@
 # ForgeFlow
 
-> Thin software-engineering governance for Pi Agent.
+> Thin software-engineering policy for Pi Agent.
 
-ForgeFlow is a Pi package, not a coding-agent runtime. Pi owns execution and
-`pi-subagents` owns delegation, child lifecycle, worktree isolation, missions,
-schedules, resume, background execution, and external-agent runners.
+ForgeFlow is a Pi package, not an agent runtime or workflow engine. Pi and its
+plugins own execution. ForgeFlow keeps only policy that is useful across those
+plugins.
 
-ForgeFlow adds only engineering policy that is not already a Pi primitive.
+## What ForgeFlow owns
 
-## Architecture
+- stable logical model roles:
+  `forgeflow/planner`, `worker`, `reviewer`, `scout`, and `oracle`;
+- deterministic engineering-invariant preflight;
+- the one-writer-per-worktree rule;
+- policy reminders that bind delivery evidence to the current candidate.
 
-```text
-Pi Agent
-  |
-  +-- pi-subagents
-  |    +-- worker / reviewer / scout / oracle
-  |    +-- worktrees / missions / schedules / resume
-  |    +-- external-cli / external-job agents
-  |
-  +-- ForgeFlow
-       +-- stable logical model roles via Pi virtual models
-       +-- deterministic invariant preflight
-       +-- one-writer policy
-       +-- independent review workflow
-       +-- exact-head GitHub acceptance
-```
+## What ForgeFlow does not own
 
-The governing rule is:
+Pi and installed plugins own child execution, review loops, acceptance gates,
+worktrees, missions, schedules, resume, background jobs, external-agent runners,
+and pull-request gating.
 
-> Agent success is evidence, not engineering acceptance.
+Use `pi-subagents` for delegation, reviewers, and runtime acceptance evidence.
+When `pi-gauntlet` is installed, use its `gatekeep-pr` skill for exact-head PR
+verification and merge safety. ForgeFlow deliberately does not wrap or duplicate
+those surfaces.
 
-ForgeFlow deliberately does **not** implement sessions, provider/channel routing,
-generic agent execution, durable workflow state, a second worktree manager, or
-a second scheduler. It can map stable engineering roles such as `forgeflow/worker`
-to physical Pi models, while credentials, endpoints, channel weights, quotas, and
-transport remain owned by Pi/provider infrastructure.
+Provider infrastructure remains below Pi model selection. ForgeFlow logical roles
+may resolve to physical models, while endpoint selection, credentials, channel
+health, weights, quotas, and transport belong to the provider layer.
 
-See [`docs/model-policy.md`](./docs/model-policy.md) for the logical-model policy and provider boundary.
-
-## Workflows
-
-### `forgeflow.review`
-
-Runs a fresh Pi reviewer on the stable `forgeflow/reviewer` virtual model,
-persists the full report under `.pi/subagents/`, and uses a Pi typed gate to
-validate the reviewer's canonical final merge verdict. Malformed or missing
-verdicts fail closed.
-
-### `forgeflow.accept`
-
-Binds final acceptance to one exact committed candidate:
-
-1. the local worktree must be clean and at the requested HEAD;
-2. a fresh independent reviewer must return a clean typed verdict;
-3. the local HEAD must remain unchanged during review;
-4. the authoritative open PR must still target the expected base and exact HEAD;
-5. every configured required GitHub check must have a successful terminal result.
-
-A new push changes the candidate and invalidates prior acceptance evidence.
-
-See [`docs/architecture.md`](./docs/architecture.md) for the ownership boundary.
+See [`docs/model-policy.md`](./docs/model-policy.md) for logical-model policy and
+[`docs/architecture.md`](./docs/architecture.md) for the ownership boundary.
 
 ## Development
 
