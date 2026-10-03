@@ -29,7 +29,7 @@ or resume, it belongs in Pi/pi-subagents or the provider layer rather than Forge
 
 ## Model policy boundary
 
-ForgeFlow registers stable logical roles as Pi virtual models. Their physical model mapping is read from operator policy rather than hard-coded into workflows or subagent definitions. New user/direct requests resolve the current mapping, while continuation/retry requests stay on the physical model already handling the turn to preserve prompt-cache and reasoning-signature continuity.
+ForgeFlow registers stable logical roles as Pi virtual models. Their physical model mapping is read from operator policy rather than hard-coded into workflows or subagent definitions. For native pi-subagents children, ForgeFlow registers its own extension as a required child extension so those virtual roles are present even though local foreground children intentionally skip parent ambient-extension discovery. New user/direct requests resolve the current mapping, while continuation/retry requests stay on the physical model already handling the turn to preserve prompt-cache and reasoning-signature continuity.
 
 Project-local `.pi/forgeflow-models.json` is considered only when Pi reports the project trusted. User-level policy under `~/.pi/forgeflow-models.json` remains available for untrusted projects. `FORGEFLOW_MODEL_POLICY` is an explicit operator override.
 

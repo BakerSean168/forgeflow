@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { registerRequiredChildExtensions } from "pi-subagents/required-child-extensions";
 import registerForgeFlow from "../extension/index.js";
 
 test("extension registers Pi lifecycle hooks and injects policy without a model call", () => {
@@ -40,14 +41,23 @@ test("extension registers Pi lifecycle hooks and injects policy without a model 
   assert.match(event.systemPromptOptions.sections.forgeflow_policy, /INV-CUTOVER-001/);
   assert.match(event.systemPromptOptions.sections.forgeflow_policy, /INV-REPLAY-001/);
 
+  const sessionId = "forgeflow-pi-native-test";
   assert.doesNotThrow(() => {
     handlers.get("session_start")(
       {},
       {
         cwd: process.cwd(),
-        sessionManager: { getSessionId: () => "forgeflow-pi-native-test" }
+        sessionManager: { getSessionId: () => sessionId }
       }
     );
   });
+
+  assert.throws(
+    () => registerRequiredChildExtensions({ sessionId, extensions: [] }),
+    /already registered/
+  );
+
   assert.doesNotThrow(() => handlers.get("session_shutdown")());
+  const afterShutdown = registerRequiredChildExtensions({ sessionId, extensions: [] });
+  afterShutdown.dispose();
 });
