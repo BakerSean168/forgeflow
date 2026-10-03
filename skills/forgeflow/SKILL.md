@@ -11,8 +11,9 @@ description: |
 ForgeFlow is policy for Pi, not another agent runtime.
 
 Use Pi as the execution kernel. Reuse installed plugins for delegation, review,
-acceptance, worktrees, missions, schedules, resume, and PR gating. Do not recreate
-those mechanisms inside ForgeFlow.
+acceptance, worktrees, missions, schedules, and resume. Reuse host Skills for TDD,
+SDD, PR gating, and delivery verification. Do not recreate those mechanisms inside
+ForgeFlow.
 
 ## Core rules
 
@@ -36,11 +37,13 @@ those mechanisms inside ForgeFlow.
 ## Reuse plugin surfaces
 
 Use `pi-subagents` for child execution, reviewer runs, review loops, typed gates,
-and runtime acceptance evidence.
+and runtime acceptance evidence. Treat it as the single orchestration owner.
 
-When `pi-gauntlet` is installed, use its `gatekeep-pr` skill for pull-request
-verification and merge gating. It owns exact-head CI evidence, freshness checks,
-review orchestration, and head-matched merge safety.
+Use installed engineering Skills such as `test-driven-development`,
+`spec-driven-development`, `pr-gate`, and `delivery-verification` for reusable
+workflow methods. Exact-head CI, test execution, artifact identity, and deployment
+state remain deterministic external evidence rather than model-owned state.
 
-Do not add ForgeFlow-specific wrappers around those plugin surfaces unless a
-concrete missing policy cannot be expressed through the existing plugin contract.
+Do not add ForgeFlow-specific wrappers or a second workflow runtime unless a concrete
+missing mechanism cannot be expressed through Pi, pi-subagents, Skills, or existing
+deterministic tooling.
