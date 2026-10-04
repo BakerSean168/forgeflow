@@ -34,6 +34,8 @@ const THINKING_LEVELS = Object.freeze([
 const THINKING_LEVEL_SET = new Set(THINKING_LEVELS);
 const TASK_CLASS_SET = new Set(FORGEFLOW_TASK_CLASSES);
 const ROUTE_ID_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+const SUPPLY_ID_RE = ROUTE_ID_RE;
+const SUPPLY_GROUP_RE = /^[a-z0-9][a-z0-9._-]{0,95}$/;
 const TASK_CLASS_MARKER_RE = /\[\[forgeflow:task=([a-z0-9-]+)\]\]/i;
 
 function modelPolicyCandidates(cwd, env = process.env, home = homedir(), options = {}) {
@@ -193,6 +195,121 @@ function validateV2RolePolicy(role, value, source) {
   };
 }
 
+function validateSupplyGroups(rawSupplies, source) {
+  if (rawSupplies === undefined) return {};
+  if (!rawSupplies || typeof rawSupplies !== "object" || Array.isArray(rawSupplies)) {
+    throw new Error(`ForgeFlow model policy '${source}' 'supplies' must be an object.`);
+  }
+
+  const supplies = {};
+  for (const [groupId, value] of Object.entries(rawSupplies)) {
+    const subject = `ForgeFlow model policy '${source}' supply group '${groupId}'`;
+    if (!SUPPLY_GROUP_RE.test(groupId)) {
+      throw new Error(`${subject} has an invalid group id.`);
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`${subject} must be an object.`);
+    }
+    if (!Array.isArray(value.sources) || value.sources.length === 0) {
+      throw new Error(`${subject} requires a non-empty 'sources' array.`);
+    }
+
+    const sourceIds = new Set();
+    const sources = value.sources.map((entry, index) => {
+      const sourceSubject = `${subject} source #${index + 1}`;
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error(`${sourceSubject} must be an object.`);
+      }
+      if (typeof entry.id !== "string" || !SUPPLY_ID_RE.test(entry.id)) {
+        throw new Error(`${sourceSubject} requires a safe non-empty 'id'.`);
+      }
+      if (sourceIds.has(entry.id)) {
+        throw new Error(`${subject} has duplicate source id '${entry.id}'.`);
+      }
+      sourceIds.add(entry.id);
+      const priority = entry.priority ?? (index + 1) * 10;
+      if (!Number.isSafeInteger(priority) || priority < 0) {
+        throw new Error(`${sourceSubject} requires a non-negative integer 'priority'.`);
+      }
+      return {
+        supplyId: entry.id,
+        priority,
+        ...parseQualifiedPhysicalModel(entry.model, `${subject} source '${entry.id}'`)
+      };
+    });
+
+    sources.sort((left, right) => left.priority - right.priority || left.supplyId.localeCompare(right.supplyId));
+    supplies[groupId] = { groupId, sources };
+  }
+  return supplies;
+}
+
+function validateV3RolePolicy(role, value, source, supplies) {
+  const subject = `ForgeFlow model policy '${source}' role '${role}'`;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${subject} must be an object.`);
+  }
+  if (!Array.isArray(value.routes) || value.routes.length === 0) {
+    throw new Error(`${subject} requires a non-empty 'routes' array.`);
+  }
+
+  const routeIds = new Set();
+  const routes = value.routes.map((route, index) => {
+    const routeSubject = `${subject} route #${index + 1}`;
+    if (!route || typeof route !== "object" || Array.isArray(route)) {
+      throw new Error(`${routeSubject} must be an object.`);
+    }
+    if (typeof route.id !== "string" || !ROUTE_ID_RE.test(route.id)) {
+      throw new Error(`${routeSubject} requires a safe non-empty 'id'.`);
+    }
+    if (routeIds.has(route.id)) {
+      throw new Error(`${subject} has duplicate route id '${route.id}'.`);
+    }
+    routeIds.add(route.id);
+
+    const hasModel = route.model !== undefined;
+    const hasSupplyGroup = route.supplyGroup !== undefined;
+    if (hasModel === hasSupplyGroup) {
+      throw new Error(`${subject} route '${route.id}' requires exactly one of 'model' or 'supplyGroup'.`);
+    }
+
+    let target;
+    if (hasSupplyGroup) {
+      if (typeof route.supplyGroup !== "string" || !Object.hasOwn(supplies, route.supplyGroup)) {
+        throw new Error(`${subject} route '${route.id}' references unknown supply group '${String(route.supplyGroup)}'.`);
+      }
+      target = { supplyGroup: route.supplyGroup };
+    } else {
+      target = parseQualifiedPhysicalModel(route.model, `${subject} route '${route.id}'`);
+    }
+
+    return {
+      routeId: route.id,
+      ...target,
+      taskClasses: validateTaskClasses(route.taskClasses, `${subject} route '${route.id}'`),
+      ...validateThinkingPolicy(route, `${subject} route '${route.id}'`)
+    };
+  });
+
+  if (typeof value.defaultRoute !== "string" || !routeIds.has(value.defaultRoute)) {
+    throw new Error(`${subject} 'defaultRoute' must name one configured route.`);
+  }
+
+  let defaultTaskClass;
+  if (value.defaultTaskClass !== undefined) {
+    if (typeof value.defaultTaskClass !== "string" || !TASK_CLASS_SET.has(value.defaultTaskClass)) {
+      throw new Error(`${subject} has invalid 'defaultTaskClass'.`);
+    }
+    defaultTaskClass = value.defaultTaskClass;
+  }
+
+  return {
+    routes,
+    defaultRoute: value.defaultRoute,
+    ...(defaultTaskClass !== undefined ? { defaultTaskClass } : {})
+  };
+}
+
 export function parseModelPolicy(text, source = "<memory>") {
   let raw;
   try {
@@ -206,19 +323,22 @@ export function parseModelPolicy(text, source = "<memory>") {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`ForgeFlow model policy '${source}' must be a JSON object.`);
   }
-  if (raw.version !== 1 && raw.version !== 2) {
-    throw new Error(`ForgeFlow model policy '${source}' requires version 1 or 2.`);
+  if (raw.version !== 1 && raw.version !== 2 && raw.version !== 3) {
+    throw new Error(`ForgeFlow model policy '${source}' requires version 1, 2, or 3.`);
   }
   if (!raw.roles || typeof raw.roles !== "object" || Array.isArray(raw.roles)) {
     throw new Error(`ForgeFlow model policy '${source}' requires a 'roles' object.`);
   }
 
+  const supplies = raw.version === 3 ? validateSupplyGroups(raw.supplies, source) : {};
   const roles = {};
   for (const role of FORGEFLOW_MODEL_ROLES) {
     if (raw.roles[role] === undefined) continue;
     roles[role] = raw.version === 1
       ? validateV1RolePolicy(role, raw.roles[role], source)
-      : validateV2RolePolicy(role, raw.roles[role], source);
+      : raw.version === 2
+        ? validateV2RolePolicy(role, raw.roles[role], source)
+        : validateV3RolePolicy(role, raw.roles[role], source, supplies);
   }
 
   for (const role of Object.keys(raw.roles)) {
@@ -227,7 +347,7 @@ export function parseModelPolicy(text, source = "<memory>") {
     }
   }
 
-  return { version: raw.version, roles };
+  return { version: raw.version, roles, ...(raw.version === 3 ? { supplies } : {}) };
 }
 
 export function loadModelPolicy(cwd, env = process.env, home = homedir(), options = {}) {
@@ -333,14 +453,7 @@ function routeCandidates(rolePolicy, requestedThinking, taskClass) {
   return indexed.map((entry) => entry.route);
 }
 
-function stickyRoute(request) {
-  if (request.reason === "retry" && request.failed) {
-    return {
-      model: request.failed.model,
-      thinkingLevel: request.failed.thinkingLevel ?? request.thinkingLevel,
-      ...(request.state !== undefined ? { state: request.state } : {})
-    };
-  }
+function continuationRoute(request) {
   if (request.reason === "continuation" && request.previous) {
     return {
       model: request.previous.model,
@@ -351,8 +464,76 @@ function stickyRoute(request) {
   return undefined;
 }
 
-function resolvePhysicalModel(ctx, route) {
-  const model = ctx.modelRegistry.find(route.provider, route.id);
+function failedStickyRoute(request) {
+  if (request.reason !== "retry" || !request.failed) return undefined;
+  return {
+    model: request.failed.model,
+    thinkingLevel: request.failed.thinkingLevel ?? request.thinkingLevel,
+    ...(request.state !== undefined ? { state: request.state } : {})
+  };
+}
+
+function errorText(messageOrText) {
+  if (typeof messageOrText === "string") return messageOrText;
+  if (!messageOrText || typeof messageOrText !== "object") return "";
+  const values = [
+    messageOrText.errorMessage,
+    messageOrText.rawStopReason,
+    ...(Array.isArray(messageOrText.diagnostics)
+      ? messageOrText.diagnostics.flatMap((entry) => [entry?.error?.message, entry?.error?.code])
+      : [])
+  ];
+  return values.filter((value) => typeof value === "string" || typeof value === "number").join(" ");
+}
+
+/**
+ * Classify only failures that are plausibly specific to the current supply source.
+ * Semantic/request failures deliberately return undefined so retries stay sticky.
+ */
+export function classifySupplyFailure(messageOrText) {
+  const text = errorText(messageOrText).toLowerCase();
+  if (!text) return undefined;
+
+  const requestFailures = [
+    /context.{0,24}(length|window|limit|overflow|too long)/,
+    /maximum context/,
+    /too many (input )?tokens/,
+    /content.?policy/,
+    /safety (policy|filter|violation)/,
+    /invalid[_ -]?request/,
+    /bad request/,
+    /malformed/,
+    /invalid (tool|schema|json|parameter|argument)/,
+    /tool.{0,24}(error|invalid|schema)/
+  ];
+  if (requestFailures.some((pattern) => pattern.test(text))) return undefined;
+
+  if (/(?:http\s*)?429\b|too many requests|rate[_ -]?limit|rate limit|throttl/.test(text)) {
+    return "rate_limited";
+  }
+  if (/insufficient[_ -]?quota|quota.{0,32}(exceed|exhaust|limit|deplet)|usage.{0,24}(limit|exhaust)|credit.{0,24}(exhaust|deplet|insufficient)|plan.{0,24}(limit|exhaust)/.test(text)) {
+    return "quota_exhausted";
+  }
+  if (/overloaded|over capacity|capacity.{0,24}(exceed|unavailable|full)|server busy|temporar(?:y|ily) unavailable/.test(text)) {
+    return "capacity_unavailable";
+  }
+  if (/(?:http\s*)?(502|503|504)\b|bad gateway|service unavailable|gateway timeout|upstream.{0,32}(error|fail|timeout|unavailable)/.test(text)) {
+    return "transient_upstream";
+  }
+  if (/econnreset|econnrefused|etimedout|connection (?:reset|refused|closed|failed)|network (?:error|failure)|socket hang up|dns.{0,16}(fail|error)|fetch failed/.test(text)) {
+    return "transport_unavailable";
+  }
+  if (/(?:http\s*)?401\b|unauthori[sz]ed|authentication.{0,24}(fail|expired|required)|invalid api key|api key.{0,24}(invalid|expired)|token.{0,24}(expired|invalid)/.test(text)) {
+    return "auth_unavailable";
+  }
+  if (/model[_ -]?not[_ -]?found|model not found|model.{0,24}(not available|unavailable|unsupported)|not authorized.{0,24}model|not authorised.{0,24}model/.test(text)) {
+    return "model_unavailable";
+  }
+  return undefined;
+}
+
+function resolvePhysicalModel(ctx, target) {
+  const model = ctx.modelRegistry.find(target.provider, target.id);
   if (!model || model.api === "pi-virtual") return undefined;
   return model;
 }
@@ -375,7 +556,16 @@ function routeV1(role, request, ctx, path, target) {
   };
 }
 
-function routeV2(role, request, ctx, path, target) {
+function emitDecision(options, decision, ctx) {
+  if (typeof options.onDecision !== "function") return;
+  try {
+    options.onDecision(decision, ctx);
+  } catch {
+    // Usage/telemetry must never break routing.
+  }
+}
+
+function routeV2(role, request, ctx, path, target, options) {
   const taskClass = explicitTaskClass(request.messages);
   const candidates = routeCandidates(target, request.thinkingLevel, taskClass);
   const attempted = [];
@@ -386,20 +576,18 @@ function routeV2(role, request, ctx, path, target) {
     if (!model) continue;
 
     const thinkingLevel = resolveThinkingLevel(request.thinkingLevel, route);
-    return {
-      model,
+    const state = {
+      decisionVersion: 1,
+      policyVersion: 2,
+      role,
+      routeId: route.routeId,
+      taskClass: taskClass ?? target.defaultTaskClass ?? null,
+      model: `${route.provider}/${route.id}`,
       thinkingLevel,
-      state: {
-        decisionVersion: 1,
-        policyVersion: 2,
-        role,
-        routeId: route.routeId,
-        taskClass: taskClass ?? target.defaultTaskClass ?? null,
-        model: `${route.provider}/${route.id}`,
-        thinkingLevel,
-        basis: taskClass ? "explicit-task-class" : "effort-envelope"
-      }
+      basis: taskClass ? "explicit-task-class" : "effort-envelope"
     };
+    emitDecision(options, state, ctx);
+    return { model, thinkingLevel, state };
   }
 
   throw new Error(
@@ -407,12 +595,145 @@ function routeV2(role, request, ctx, path, target) {
   );
 }
 
+function supplyTargets(policy, route) {
+  if (!route.supplyGroup) return [{ ...route, supplyGroup: null, supplyId: null, priority: null }];
+  const group = policy.supplies?.[route.supplyGroup];
+  if (!group) return [];
+  return group.sources.map((source) => ({ ...source, supplyGroup: route.supplyGroup }));
+}
+
+function v3DecisionState({ role, target, route, taskClass, source, thinkingLevel, basis, failoverReason, failedSupplyId, priorState }) {
+  const physical = `${source.provider}/${source.id}`;
+  return {
+    decisionVersion: 2,
+    policyVersion: 3,
+    role,
+    routeId: route.routeId,
+    taskClass: taskClass ?? target.defaultTaskClass ?? priorState?.taskClass ?? null,
+    logicalModel: route.supplyGroup ?? physical,
+    supplyGroup: source.supplyGroup ?? null,
+    supplyId: source.supplyId ?? null,
+    supplyPriority: source.priority ?? null,
+    model: physical,
+    thinkingLevel,
+    basis,
+    ...(failoverReason ? { failoverReason } : {}),
+    ...(failedSupplyId ? { failedSupplyId } : {}),
+    ...(basis === "supply-failover" ? { failoverCount: (priorState?.failoverCount ?? 0) + 1 } : {})
+  };
+}
+
+function routeV3(role, request, ctx, path, policy, target, options) {
+  const taskClass = explicitTaskClass(request.messages);
+  const routes = routeCandidates(target, request.thinkingLevel, taskClass);
+  const attempted = [];
+
+  for (const route of routes) {
+    for (const source of supplyTargets(policy, route)) {
+      attempted.push(`${source.provider}/${source.id}`);
+      const model = resolvePhysicalModel(ctx, source);
+      if (!model) continue;
+
+      const thinkingLevel = resolveThinkingLevel(request.thinkingLevel, route);
+      const state = v3DecisionState({
+        role,
+        target,
+        route,
+        taskClass,
+        source,
+        thinkingLevel,
+        basis: taskClass ? "explicit-task-class" : route.supplyGroup ? "supply-priority" : "effort-envelope"
+      });
+      emitDecision(options, state, ctx);
+      return { model, thinkingLevel, state };
+    }
+  }
+
+  throw new Error(
+    `ForgeFlow role '${role}' has no available physical route in '${path}'. Tried: ${attempted.join(", ")}.`
+  );
+}
+
+function sourceMatchesModel(source, model) {
+  return Boolean(model) && source.provider === model.provider && source.id === model.id;
+}
+
+function findRetryRoute(target, state, supplyGroup) {
+  if (state?.routeId) {
+    const exact = target.routes.find((route) => route.routeId === state.routeId && route.supplyGroup === supplyGroup);
+    if (exact) return exact;
+  }
+  return target.routes.find((route) => route.supplyGroup === supplyGroup);
+}
+
+function findSupplyGroupForFailedModel(policy, failedModel) {
+  for (const group of Object.values(policy.supplies ?? {})) {
+    const source = group.sources.find((candidate) => sourceMatchesModel(candidate, failedModel));
+    if (source) return { group, source };
+  }
+  return undefined;
+}
+
+function retryV3(role, request, ctx, path, policy, target, options) {
+  if (request.reason !== "retry" || !request.failed) return undefined;
+  const failureClass = classifySupplyFailure(request.failed.message);
+  if (!failureClass) return failedStickyRoute(request);
+
+  const priorState = request.state && typeof request.state === "object" ? request.state : undefined;
+  let groupId = typeof priorState?.supplyGroup === "string" ? priorState.supplyGroup : undefined;
+  let group = groupId ? policy.supplies?.[groupId] : undefined;
+  let failedSource = group?.sources.find((source) => sourceMatchesModel(source, request.failed.model));
+
+  if (!group || !failedSource) {
+    const found = findSupplyGroupForFailedModel(policy, request.failed.model);
+    group = found?.group;
+    failedSource = found?.source;
+    groupId = group?.groupId;
+  }
+  if (!group || !failedSource || !groupId) return failedStickyRoute(request);
+
+  const route = findRetryRoute(target, priorState, groupId);
+  if (!route) return failedStickyRoute(request);
+
+  const failedIndex = group.sources.findIndex((source) => source.supplyId === failedSource.supplyId);
+  const nextSources = group.sources.slice(failedIndex + 1);
+  for (const source of nextSources) {
+    const model = resolvePhysicalModel(ctx, source);
+    if (!model) continue;
+    const requestedThinking = request.failed.thinkingLevel ?? request.thinkingLevel;
+    const thinkingLevel = resolveThinkingLevel(requestedThinking, route);
+    const state = v3DecisionState({
+      role,
+      target,
+      route,
+      taskClass: priorState?.taskClass ?? explicitTaskClass(request.messages),
+      source: { ...source, supplyGroup: groupId },
+      thinkingLevel,
+      basis: "supply-failover",
+      failoverReason: failureClass,
+      failedSupplyId: failedSource.supplyId,
+      priorState
+    });
+    emitDecision(options, state, ctx);
+    return { model, thinkingLevel, state };
+  }
+
+  return failedStickyRoute(request);
+}
+
 export function createRoleRouter(role, options = {}) {
   const loadPolicy = options.loadPolicy ?? loadModelPolicy;
 
   return function route(request, ctx) {
-    const sticky = stickyRoute(request);
-    if (sticky) return sticky;
+    const continuation = continuationRoute(request);
+    if (continuation) return continuation;
+    if (
+      request.reason === "retry"
+      && request.failed
+      && (!request.state || request.state.policyVersion !== 3)
+    ) {
+      return failedStickyRoute(request);
+    }
 
     const allowProject = typeof ctx.isProjectTrusted === "function" && ctx.isProjectTrusted();
     const { path, policy } = loadPolicy(ctx.cwd, process.env, homedir(), { allowProject });
@@ -423,9 +744,16 @@ export function createRoleRouter(role, options = {}) {
       );
     }
 
-    return policy.version === 1
-      ? routeV1(role, request, ctx, path, target)
-      : routeV2(role, request, ctx, path, target);
+    if (request.reason === "retry" && request.failed) {
+      if (policy.version === 3) {
+        return retryV3(role, request, ctx, path, policy, target, options);
+      }
+      return failedStickyRoute(request);
+    }
+
+    if (policy.version === 1) return routeV1(role, request, ctx, path, target);
+    if (policy.version === 2) return routeV2(role, request, ctx, path, target, options);
+    return routeV3(role, request, ctx, path, policy, target, options);
   };
 }
 

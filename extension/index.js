@@ -4,6 +4,7 @@ import { registerRequiredChildExtensions } from "pi-subagents/required-child-ext
 import { registerAntigravityAgents } from "./antigravity.js";
 import { renderPreflight } from "./invariants.js";
 import { registerForgeFlowVirtualModels } from "./model-policy.js";
+import { createUsageRecorder } from "./usage.js";
 
 const FORGEFLOW_EXTENSION_PATH = fileURLToPath(import.meta.url);
 
@@ -22,13 +23,22 @@ export function buildForgeFlowPromptSection(prompt) {
 }
 
 export default function registerForgeFlow(pi) {
-  registerForgeFlowVirtualModels(pi);
+  const usageRecorder = createUsageRecorder();
+  registerForgeFlowVirtualModels(pi, { onDecision: usageRecorder.recordDecision });
 
   let requiredChildRegistration;
   let antigravityRegistration;
 
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.sections.forgeflow_policy = buildForgeFlowPromptSection(event.prompt);
+  });
+
+  pi.on("message_end", (event, ctx) => {
+    try {
+      usageRecorder.recordMessage(event, ctx);
+    } catch {
+      // Observability is best-effort and must never break an agent turn.
+    }
   });
 
   pi.on("session_start", (_event, ctx) => {

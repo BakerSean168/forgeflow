@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   FORGEFLOW_MODEL_PROVIDER,
   FORGEFLOW_MODEL_ROLES,
+  classifySupplyFailure,
   createRoleRouter,
   parseModelPolicy,
   registerForgeFlowVirtualModels,
@@ -677,4 +678,188 @@ test("worker policy can prefer native Codex Team GPT-6.1 Sol and fall back when 
   const fallbackMedium = route({ reason: "user", thinkingLevel: "medium", messages: [] }, withoutCodex);
   assert.equal(fallbackMedium.model, astra);
   assert.equal(fallbackMedium.state.routeId, "standard");
+});
+
+test("v3 supply groups separate logical model capability from quota source", () => {
+  const policy = parseModelPolicy(JSON.stringify({
+    version: 3,
+    supplies: {
+      "gpt-6.1-sol": {
+        sources: [
+          { id: "commercial-relay", model: "litellm/gpt-6.1-sol", priority: 20 },
+          { id: "business-team", model: "openai-codex/gpt-6.1-sol", priority: 10 }
+        ]
+      }
+    },
+    roles: {
+      worker: {
+        defaultRoute: "frontier",
+        defaultTaskClass: "implementation",
+        routes: [{
+          id: "frontier",
+          supplyGroup: "gpt-6.1-sol",
+          taskClasses: ["implementation", "debug"],
+          defaultThinkingLevel: "medium",
+          minThinkingLevel: "low",
+          maxThinkingLevel: "high"
+        }]
+      }
+    }
+  }), "v3.json");
+
+  assert.equal(policy.version, 3);
+  assert.deepEqual(
+    policy.supplies["gpt-6.1-sol"].sources.map(({ supplyId, priority, provider, id }) => ({ supplyId, priority, provider, id })),
+    [
+      { supplyId: "business-team", priority: 10, provider: "openai-codex", id: "gpt-6.1-sol" },
+      { supplyId: "commercial-relay", priority: 20, provider: "litellm", id: "gpt-6.1-sol" }
+    ]
+  );
+  assert.equal(policy.roles.worker.routes[0].supplyGroup, "gpt-6.1-sol");
+});
+
+test("v3 route prefers Business Team supply and only fails over on supply failures", () => {
+  const team = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses" };
+  const relay = { provider: "litellm", id: "gpt-6.1-sol", api: "openai-completions" };
+  const policy = parseModelPolicy(JSON.stringify({
+    version: 3,
+    supplies: {
+      "gpt-6.1-sol": {
+        sources: [
+          { id: "business-team", model: "openai-codex/gpt-6.1-sol", priority: 10 },
+          { id: "commercial-relay", model: "litellm/gpt-6.1-sol", priority: 20 }
+        ]
+      }
+    },
+    roles: {
+      worker: {
+        defaultRoute: "frontier",
+        defaultTaskClass: "implementation",
+        routes: [{
+          id: "frontier",
+          supplyGroup: "gpt-6.1-sol",
+          taskClasses: ["implementation", "debug"],
+          defaultThinkingLevel: "medium",
+          minThinkingLevel: "low",
+          maxThinkingLevel: "high"
+        }]
+      }
+    }
+  }));
+  const decisions = [];
+  const route = createRoleRouter("worker", {
+    loadPolicy: () => ({ path: "/policy-v3.json", policy }),
+    onDecision: (decision) => decisions.push(decision)
+  });
+  const ctx = {
+    cwd: "/repo",
+    isProjectTrusted: () => true,
+    modelRegistry: {
+      find(provider, id) {
+        if (`${provider}/${id}` === "openai-codex/gpt-6.1-sol") return team;
+        if (`${provider}/${id}` === "litellm/gpt-6.1-sol") return relay;
+      }
+    }
+  };
+
+  const initial = route({ reason: "user", thinkingLevel: "medium", messages: [] }, ctx);
+  assert.equal(initial.model, team);
+  assert.equal(initial.state.supplyId, "business-team");
+  assert.equal(initial.state.logicalModel, "gpt-6.1-sol");
+  assert.equal(initial.state.basis, "supply-priority");
+
+  const retry = route({
+    reason: "retry",
+    thinkingLevel: "medium",
+    state: initial.state,
+    messages: [],
+    failed: {
+      model: team,
+      thinkingLevel: "medium",
+      message: { role: "assistant", stopReason: "error", errorMessage: "HTTP 429 rate limit exceeded" }
+    }
+  }, ctx);
+  assert.equal(retry.model, relay);
+  assert.equal(retry.state.supplyId, "commercial-relay");
+  assert.equal(retry.state.failedSupplyId, "business-team");
+  assert.equal(retry.state.failoverReason, "rate_limited");
+  assert.equal(retry.state.basis, "supply-failover");
+  assert.equal(retry.state.failoverCount, 1);
+  assert.equal(decisions.length, 2);
+});
+
+test("v3 retry stays on Business Team for request and context failures", () => {
+  const team = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses" };
+  const relay = { provider: "litellm", id: "gpt-6.1-sol", api: "openai-completions" };
+  const policy = parseModelPolicy(JSON.stringify({
+    version: 3,
+    supplies: {
+      "gpt-6.1-sol": { sources: [
+        { id: "business-team", model: "openai-codex/gpt-6.1-sol", priority: 10 },
+        { id: "commercial-relay", model: "litellm/gpt-6.1-sol", priority: 20 }
+      ] }
+    },
+    roles: {
+      worker: {
+        defaultRoute: "frontier",
+        routes: [{ id: "frontier", supplyGroup: "gpt-6.1-sol", minThinkingLevel: "low", maxThinkingLevel: "high" }]
+      }
+    }
+  }));
+  const route = createRoleRouter("worker", { loadPolicy: () => ({ path: "/policy.json", policy }) });
+  const ctx = {
+    cwd: "/repo",
+    isProjectTrusted: () => true,
+    modelRegistry: {
+      find(provider, id) {
+        if (provider === "openai-codex" && id === "gpt-6.1-sol") return team;
+        if (provider === "litellm" && id === "gpt-6.1-sol") return relay;
+      }
+    }
+  };
+  const initial = route({ reason: "user", thinkingLevel: "medium", messages: [] }, ctx);
+  const retry = route({
+    reason: "retry",
+    thinkingLevel: "medium",
+    state: initial.state,
+    messages: [],
+    failed: {
+      model: team,
+      thinkingLevel: "medium",
+      message: { role: "assistant", stopReason: "error", errorMessage: "maximum context length exceeded" }
+    }
+  }, ctx);
+  assert.equal(retry.model, team);
+  assert.equal(retry.state, initial.state);
+});
+
+test("supply failure classifier is intentionally narrow", () => {
+  assert.equal(classifySupplyFailure("429 Too Many Requests"), "rate_limited");
+  assert.equal(classifySupplyFailure("insufficient_quota: usage limit reached"), "quota_exhausted");
+  assert.equal(classifySupplyFailure("503 Service Unavailable"), "transient_upstream");
+  assert.equal(classifySupplyFailure("ECONNRESET upstream connection reset"), "transport_unavailable");
+  assert.equal(classifySupplyFailure("401 unauthorized token expired"), "auth_unavailable");
+  assert.equal(classifySupplyFailure("model_not_found"), "model_unavailable");
+  assert.equal(classifySupplyFailure("context window exceeded"), undefined);
+  assert.equal(classifySupplyFailure("400 bad request invalid parameter"), undefined);
+  assert.equal(classifySupplyFailure("content policy violation"), undefined);
+});
+
+test("v3 policy fails closed on invalid or unknown supply references", () => {
+  assert.throws(
+    () => parseModelPolicy(JSON.stringify({
+      version: 3,
+      supplies: {},
+      roles: { worker: { defaultRoute: "x", routes: [{ id: "x", supplyGroup: "missing" }] } }
+    }), "missing-supply.json"),
+    /unknown supply group/
+  );
+  assert.throws(
+    () => parseModelPolicy(JSON.stringify({
+      version: 3,
+      supplies: { x: { sources: [{ id: "a", model: "litellm/a", priority: -1 }] } },
+      roles: { worker: { defaultRoute: "x", routes: [{ id: "x", supplyGroup: "x" }] } }
+    }), "bad-priority.json"),
+    /non-negative integer 'priority'/
+  );
 });

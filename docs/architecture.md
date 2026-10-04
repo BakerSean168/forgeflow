@@ -56,17 +56,23 @@ ambient-extension discovery, so this keeps the `forgeflow/*` roles available in
 foreground, detached, nested, and recovery child sessions without hard-coding an
 installation path in operator profile settings.
 
-New user/direct requests resolve the current role mapping. Policy v2 may expose several
-physical candidates for one role; ForgeFlow deterministically selects exactly one from
-explicit task class plus thinking-effort policy before provider execution. Pi then owns
-the request lifecycle, while LiteLLM may choose among channels for that already-selected
-physical model. Continuation/retry requests stay on the physical model already handling
-the turn to preserve cache and reasoning-signature continuity.
+New user/direct requests resolve the current role mapping. Policy v3 separates model
+capability from supply: a role chooses a logical model/effort, then an ordered supply
+group chooses the physical Pi model that pays for it. The current GPT-6.1 Sol supply
+order is Business Team (`openai-codex`) before the commercial relay (`litellm`).
+LiteLLM then chooses only among channels for the already-selected commercial physical
+model.
 
-The router records its v2 decision in Pi's native virtual-model state rather than a
-ForgeFlow database. Explicit task classes use `[[forgeflow:task=<class>]]` in the delegated
-prompt; ForgeFlow deliberately does not add a hidden LLM classifier or per-turn semantic
-router.
+Continuations remain sticky. Retries remain sticky unless the failed response is
+classified as a narrow supply failure (quota/rate/capacity/upstream/transport/auth/model
+availability); only then may v3 move to the next source in the same supply group. Context,
+request, policy, and tool/schema failures do not consume the next paid source.
+
+The router records its decision in Pi's native virtual-model state. ForgeFlow additionally
+maintains a credential-free local usage JSONL projection for subscription/native-provider
+traffic, while LiteLLM SpendLogs remain authoritative for commercial relay/channel spend.
+Explicit task classes use `[[forgeflow:task=<class>]]`; ForgeFlow deliberately does not add
+a hidden LLM classifier or per-turn semantic router.
 
 Project-local `.pi/forgeflow-models.json` is considered only when Pi reports the
 project trusted. User-level policy under `~/.pi/forgeflow-models.json` remains
@@ -77,7 +83,7 @@ Provider gateways such as LiteLLM sit below this boundary: ForgeFlow chooses a
 logical role and Pi resolves its physical model; the provider plane chooses the
 endpoint/channel/key for that already-selected physical model.
 
-See `docs/model-policy.md` for the v1 schema and role mapping.
+See `docs/model-policy.md` for policy schemas, supply priority, failure classification, and usage projection.
 
 ## Invariant preflight
 

@@ -27,8 +27,14 @@ as `test-driven-development`, `spec-driven-development`, `pr-gate`, and
 does not wrap or duplicate those surfaces.
 
 Provider infrastructure remains below Pi model selection. ForgeFlow logical roles
-may resolve to physical models, while endpoint selection, credentials, channel
-health, weights, quotas, and transport belong to the provider layer.
+choose model capability and thinking effort; policy v3 can also order equivalent quota
+sources (for example Business Team before a commercial relay). Endpoint selection,
+credentials, channel health, and transport remain provider-layer concerns. LiteLLM still
+owns commercial-channel selection after ForgeFlow has selected the commercial physical
+model.
+
+ForgeFlow records credential-free local model/supply usage in `~/.pi/forgeflow-usage.jsonl`;
+`forgeflow-usage` summarizes it. LiteLLM SpendLogs remain authoritative for relay-channel spend.
 
 ## Antigravity delegation
 

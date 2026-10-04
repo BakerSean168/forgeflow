@@ -45,6 +45,7 @@ test("extension registers Pi lifecycle hooks and injects policy without a model 
     "forgeflow/oracle"
   ]);
   assert.equal(typeof handlers.get("before_agent_start"), "function");
+  assert.equal(typeof handlers.get("message_end"), "function");
   assert.equal(typeof handlers.get("session_start"), "function");
   assert.equal(typeof handlers.get("session_shutdown"), "function");
 

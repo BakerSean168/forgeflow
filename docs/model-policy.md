@@ -7,13 +7,15 @@ The model path is:
 ```text
 ForgeFlow role policy
     ↓
-Pi virtual model
+model capability + thinking effort
     ↓
-physical model
+supply policy (subscription/team before commercial relay)
+    ↓
+Pi physical model
     ↓
 provider gateway / native provider
     ↓
-channel, credential, quota, transport
+channel, credential, transport
 ```
 
 This keeps fast-moving physical model names out of ForgeFlow workflows and agent definitions. A model upgrade should normally be a policy-file change, not a ForgeFlow code change.
@@ -137,7 +139,7 @@ The selected virtual level participates in route choice. A `worker` at `low` can
 
 ### Decision telemetry
 
-For the current operator policy, `forgeflow/worker` prefers the native `openai-codex/gpt-6.1-sol` route. This is the Codex Team/Media execution lane; `Media` is the product/quota lane name, while the physical Pi model id remains `openai-codex/gpt-6.1-sol`. If that physical model is not present in Pi's registry, deterministic routing falls through to the configured LiteLLM worker routes without changing provider/channel ownership.
+For the current operator policy, GPT-6.1 Sol roles use the `gpt-6.1-sol` supply group. Its first source is native `openai-codex/gpt-6.1-sol` (Business Team / Codex Team; `Media` is the product/quota lane label), followed by `litellm/gpt-6.1-sol` as the commercial relay. If the native source is absent from Pi's registry, a new request selects the commercial source immediately; if it fails at runtime with a qualifying supply error, retry advances to the commercial source.
 
 Version 2 returns a small JSON-serializable routing decision as Pi virtual-model state. Pi stores that state on the session branch as its native `pi.virtual-model-state` entry, so ForgeFlow does not create a second telemetry database. A decision records:
 
@@ -152,23 +154,76 @@ selection basis (explicit task class or effort envelope)
 
 This is enough to audit why a launch used a model and to build routing data later without introducing a learned router now.
 
-### Version 1 compatibility
+### Policy schema v3: supply priority
 
-Version 1 single-model policies remain valid. They keep their previous semantics and can be migrated gradually. Version 2 is preferred for operator policy because it separates a stable role from the physical model pool behind that role.
+Version 3 separates **what model capability the role needs** from **which quota source should pay for that model**. A supply group is an ordered list of physical Pi models that represent the same logical model capability:
+
+```json
+{
+  "version": 3,
+  "supplies": {
+    "gpt-6.1-sol": {
+      "sources": [
+        {
+          "id": "business-team",
+          "model": "openai-codex/gpt-6.1-sol",
+          "priority": 10
+        },
+        {
+          "id": "commercial-relay",
+          "model": "litellm/gpt-6.1-sol",
+          "priority": 20
+        }
+      ]
+    }
+  },
+  "roles": {
+    "worker": {
+      "defaultRoute": "frontier",
+      "defaultTaskClass": "implementation",
+      "routes": [
+        {
+          "id": "frontier",
+          "supplyGroup": "gpt-6.1-sol",
+          "taskClasses": ["mechanical", "implementation", "debug"],
+          "defaultThinkingLevel": "medium",
+          "minThinkingLevel": "low",
+          "maxThinkingLevel": "high"
+        }
+      ]
+    }
+  }
+}
+```
+
+For a new request ForgeFlow tries the lowest numeric supply priority whose physical model exists in Pi's model registry. With the operator policy above, `openai-codex/gpt-6.1-sol` consumes Business Team/Codex Team quota first; `litellm/gpt-6.1-sol` is the commercial-relay source. The `Media` label is a product/quota lane name rather than a distinct physical model id.
+
+A supply failover is allowed only on a narrow set of source-specific failures: rate limiting, exhausted quota/credits, capacity/overload, 502/503/504-style upstream failures, transport failures, authentication expiry, or source-specific model unavailability. Context overflow, malformed/bad requests, content-policy failures, tool/schema errors, and other request-semantic failures stay on the current source. This prevents a bad request from silently burning a second paid channel.
+
+Continuation requests stay on the last successful physical model. On a retry caused by a qualifying supply failure, ForgeFlow moves only to the next source in that logical supply group and records the reason in virtual-model state. Once the commercial relay is selected, LiteLLM remains responsible for endpoint/channel routing inside that physical model group; ForgeFlow does not select ACS versus 4Router.
+
+### Usage projection
+
+ForgeFlow writes a compact local JSONL usage projection to `~/.pi/forgeflow-usage.jsonl` by default. Override it with the absolute `FORGEFLOW_USAGE_LOG` path. The projection contains only routing metadata and Pi's normalized assistant usage; it never records credentials or request payloads.
+
+Each v3 route decision records the role, route, logical model, supply id/priority, physical model, effective thinking level, and any supply-failover reason. Each assistant `message_end` records provider/model, stop status, normalized input/output/cache/reasoning token counts, and Pi's normalized cost fields. Use:
+
+```bash
+forgeflow-usage
+forgeflow-usage --json
+```
+
+Business Team usage is therefore visible from Pi/ForgeFlow even though it bypasses LiteLLM. Commercial API truth remains in LiteLLM's `LiteLLM_SpendLogs`, which additionally identifies the actual relay endpoint/deployment such as ACS or 4Router. The two logs intentionally preserve their own authority rather than pretending a subscription-backed Codex request passed through LiteLLM.
+
+### Version 1/2 compatibility
+
+Version 1 single-model policies and version 2 multi-route policies remain valid. Version 3 is preferred for operator policy when one logical model can be supplied by multiple quota sources.
 
 ## Turn stickiness
 
-Pi documents that continuation requests should normally remain on the model that handled the turn, and retries should remain on the failed request's physical model unless a router deliberately performs a recovery switch.
+Pi documents that continuation requests should normally remain on the model that handled the turn. ForgeFlow keeps that rule. Version 1/2 retries also stay on the failed physical model. Version 3 permits one explicit exception: a retry whose failure is classified as supply-specific may move to the next source in the same logical supply group.
 
-ForgeFlow v1 follows that conservative rule:
-
-- `continuation` → reuse `previous`;
-- `retry` → reuse `failed`;
-- new `user` or `direct` request → resolve the current role policy again.
-
-This preserves provider prompt caches and reasoning signatures inside a turn while still allowing model policy to change between user turns.
-
-Cross-model retry escalation can be added later as an explicit policy version rather than hidden fallback behavior.
+This preserves provider prompt caches and reasoning signatures during healthy execution while making quota/capacity exhaustion recoverable without re-launching the whole child. The switch is source failover, not semantic model replacement.
 
 ## Provider boundary
 
