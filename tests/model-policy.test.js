@@ -283,3 +283,325 @@ test("ForgeFlow registers stable logical roles as Pi virtual models", () => {
     assert.equal(typeof registration.route, "function");
   }
 });
+
+test("v2 model policy parses deterministic multi-model routes", () => {
+  const policy = parseModelPolicy(JSON.stringify({
+    version: 2,
+    roles: {
+      worker: {
+        defaultRoute: "fast",
+        defaultTaskClass: "mechanical",
+        routes: [
+          {
+            id: "fast",
+            model: "litellm/deepseek-v4-flash",
+            taskClasses: ["mechanical", "implementation"],
+            defaultThinkingLevel: "low",
+            minThinkingLevel: "minimal",
+            maxThinkingLevel: "low"
+          },
+          {
+            id: "standard",
+            model: "litellm/gpt-6-astra",
+            taskClasses: ["implementation", "debug"],
+            defaultThinkingLevel: "medium",
+            minThinkingLevel: "medium",
+            maxThinkingLevel: "medium"
+          }
+        ]
+      }
+    }
+  }), "v2.json");
+
+  assert.equal(policy.version, 2);
+  assert.equal(policy.roles.worker.defaultRoute, "fast");
+  assert.equal(policy.roles.worker.defaultTaskClass, "mechanical");
+  assert.deepEqual(
+    policy.roles.worker.routes.map((route) => route.routeId),
+    ["fast", "standard"]
+  );
+  assert.equal(policy.roles.worker.routes[1].provider, "litellm");
+  assert.equal(policy.roles.worker.routes[1].id, "gpt-6-astra");
+});
+
+test("v2 router selects a physical model by effort and records the decision in router state", () => {
+  const deepseek = { provider: "litellm", id: "deepseek-v4-flash", api: "openai-completions" };
+  const astra = { provider: "litellm", id: "gpt-6-astra", api: "openai-responses" };
+  const models = new Map([
+    ["litellm/deepseek-v4-flash", deepseek],
+    ["litellm/gpt-6-astra", astra]
+  ]);
+  const route = createRoleRouter("worker", {
+    loadPolicy() {
+      return {
+        path: "/policy-v2.json",
+        policy: parseModelPolicy(JSON.stringify({
+          version: 2,
+          roles: {
+            worker: {
+              defaultRoute: "fast",
+              defaultTaskClass: "mechanical",
+              routes: [
+                {
+                  id: "fast",
+                  model: "litellm/deepseek-v4-flash",
+                  taskClasses: ["mechanical", "implementation"],
+                  minThinkingLevel: "minimal",
+                  maxThinkingLevel: "low"
+                },
+                {
+                  id: "standard",
+                  model: "litellm/gpt-6-astra",
+                  taskClasses: ["implementation", "debug"],
+                  minThinkingLevel: "medium",
+                  maxThinkingLevel: "medium"
+                }
+              ]
+            }
+          }
+        }))
+      };
+    }
+  });
+  const ctx = {
+    cwd: "/repo",
+    isProjectTrusted: () => true,
+    modelRegistry: {
+      find(provider, id) {
+        return models.get(`${provider}/${id}`);
+      }
+    }
+  };
+
+  const low = route({ reason: "user", thinkingLevel: "low", messages: [] }, ctx);
+  assert.equal(low.model, deepseek);
+  assert.equal(low.thinkingLevel, "low");
+  assert.deepEqual(low.state, {
+    decisionVersion: 1,
+    policyVersion: 2,
+    role: "worker",
+    routeId: "fast",
+    taskClass: "mechanical",
+    model: "litellm/deepseek-v4-flash",
+    thinkingLevel: "low",
+    basis: "effort-envelope"
+  });
+
+  const medium = route({ reason: "user", thinkingLevel: "medium", messages: [] }, ctx);
+  assert.equal(medium.model, astra);
+  assert.equal(medium.thinkingLevel, "medium");
+  assert.equal(medium.state.routeId, "standard");
+});
+
+test("explicit task-class marker overrides the cheap route and clamps effort inside the selected route", () => {
+  const deepseek = { provider: "litellm", id: "deepseek-v4-flash", api: "openai-completions" };
+  const astra = { provider: "litellm", id: "gpt-6-astra", api: "openai-responses" };
+  const route = createRoleRouter("worker", {
+    loadPolicy() {
+      return {
+        path: "/policy-v2.json",
+        policy: parseModelPolicy(JSON.stringify({
+          version: 2,
+          roles: {
+            worker: {
+              defaultRoute: "fast",
+              routes: [
+                {
+                  id: "fast",
+                  model: "litellm/deepseek-v4-flash",
+                  taskClasses: ["mechanical", "implementation"],
+                  minThinkingLevel: "minimal",
+                  maxThinkingLevel: "low"
+                },
+                {
+                  id: "standard",
+                  model: "litellm/gpt-6-astra",
+                  taskClasses: ["implementation", "debug"],
+                  minThinkingLevel: "medium",
+                  maxThinkingLevel: "medium"
+                }
+              ]
+            }
+          }
+        }))
+      };
+    }
+  });
+  const ctx = {
+    cwd: "/repo",
+    isProjectTrusted: () => true,
+    modelRegistry: {
+      find(provider, id) {
+        if (`${provider}/${id}` === "litellm/deepseek-v4-flash") return deepseek;
+        if (`${provider}/${id}` === "litellm/gpt-6-astra") return astra;
+      }
+    }
+  };
+
+  const result = route({
+    reason: "user",
+    thinkingLevel: "low",
+    messages: [{ role: "user", content: [{ type: "text", text: "[[forgeflow:task=debug]] fix the race" }] }]
+  }, ctx);
+
+  assert.equal(result.model, astra);
+  assert.equal(result.thinkingLevel, "medium");
+  assert.equal(result.state.taskClass, "debug");
+  assert.equal(result.state.basis, "explicit-task-class");
+});
+
+test("v2 router can select a different Oracle model for product judgement", () => {
+  const sol = { provider: "litellm", id: "gpt-6.1-sol", api: "openai-completions" };
+  const opus = { provider: "litellm", id: "claude-opus-5-5", api: "openai-responses" };
+  const route = createRoleRouter("oracle", {
+    loadPolicy() {
+      return {
+        path: "/policy-v2.json",
+        policy: parseModelPolicy(JSON.stringify({
+          version: 2,
+          roles: {
+            oracle: {
+              defaultRoute: "reasoning",
+              defaultTaskClass: "root-cause",
+              routes: [
+                {
+                  id: "reasoning",
+                  model: "litellm/gpt-6.1-sol",
+                  taskClasses: ["root-cause", "architecture"],
+                  minThinkingLevel: "high",
+                  maxThinkingLevel: "xhigh"
+                },
+                {
+                  id: "product",
+                  model: "litellm/claude-opus-5-5",
+                  taskClasses: ["product-judgment"],
+                  minThinkingLevel: "high",
+                  maxThinkingLevel: "xhigh"
+                }
+              ]
+            }
+          }
+        }))
+      };
+    }
+  });
+  const ctx = {
+    cwd: "/repo",
+    isProjectTrusted: () => true,
+    modelRegistry: {
+      find(provider, id) {
+        if (`${provider}/${id}` === "litellm/gpt-6.1-sol") return sol;
+        if (`${provider}/${id}` === "litellm/claude-opus-5-5") return opus;
+      }
+    }
+  };
+
+  const result = route({
+    reason: "user",
+    thinkingLevel: "high",
+    messages: [{ role: "user", content: "[[forgeflow:task=product-judgment]] choose the better UX tradeoff" }]
+  }, ctx);
+  assert.equal(result.model, opus);
+  assert.equal(result.state.routeId, "product");
+});
+
+test("v2 route selection skips an unavailable candidate but does not cross an explicit task-class boundary", () => {
+  const fallback = { provider: "litellm", id: "available", api: "openai-completions" };
+  const policy = parseModelPolicy(JSON.stringify({
+    version: 2,
+    roles: {
+      worker: {
+        defaultRoute: "preferred",
+        routes: [
+          { id: "preferred", model: "litellm/missing", minThinkingLevel: "low", maxThinkingLevel: "low" },
+          { id: "available", model: "litellm/available", minThinkingLevel: "medium", maxThinkingLevel: "medium" }
+        ]
+      },
+      oracle: {
+        defaultRoute: "reasoning",
+        routes: [
+          { id: "reasoning", model: "litellm/available", taskClasses: ["root-cause"], minThinkingLevel: "high", maxThinkingLevel: "xhigh" },
+          { id: "product", model: "litellm/missing", taskClasses: ["product-judgment"], minThinkingLevel: "high", maxThinkingLevel: "xhigh" }
+        ]
+      }
+    }
+  }));
+  const loadPolicy = () => ({ path: "/policy-v2.json", policy });
+  const ctx = {
+    cwd: "/repo",
+    isProjectTrusted: () => true,
+    modelRegistry: { find: (_provider, id) => id === "available" ? fallback : undefined }
+  };
+
+  const worker = createRoleRouter("worker", { loadPolicy });
+  const result = worker({ reason: "user", thinkingLevel: "low", messages: [] }, ctx);
+  assert.equal(result.model, fallback);
+  assert.equal(result.state.routeId, "available");
+  assert.equal(result.thinkingLevel, "medium");
+
+  const oracle = createRoleRouter("oracle", { loadPolicy });
+  assert.throws(
+    () => oracle({
+      reason: "user",
+      thinkingLevel: "high",
+      messages: [{ role: "user", content: "[[forgeflow:task=product-judgment]] decide" }]
+    }, ctx),
+    /no available physical route/
+  );
+});
+
+test("v2 policy rejects bad route identities, task classes, and default routes", () => {
+  assert.throws(
+    () => parseModelPolicy(JSON.stringify({
+      version: 2,
+      roles: { worker: { defaultRoute: "missing", routes: [{ id: "fast", model: "litellm/a" }] } }
+    }), "missing-default.json"),
+    /defaultRoute/
+  );
+  assert.throws(
+    () => parseModelPolicy(JSON.stringify({
+      version: 2,
+      roles: {
+        worker: {
+          defaultRoute: "fast",
+          routes: [{ id: "fast", model: "litellm/a", taskClasses: ["mystery"] }]
+        }
+      }
+    }), "bad-class.json"),
+    /invalid task class/
+  );
+});
+
+test("task-class markers do not leak from an older user turn", () => {
+  const cheap = { provider: "litellm", id: "cheap", api: "openai-completions" };
+  const expensive = { provider: "litellm", id: "expensive", api: "openai-completions" };
+  const policy = parseModelPolicy(JSON.stringify({
+    version: 2,
+    roles: {
+      worker: {
+        defaultRoute: "cheap",
+        defaultTaskClass: "mechanical",
+        routes: [
+          { id: "cheap", model: "litellm/cheap", minThinkingLevel: "low", maxThinkingLevel: "low" },
+          { id: "expensive", model: "litellm/expensive", taskClasses: ["debug"], minThinkingLevel: "medium", maxThinkingLevel: "medium" }
+        ]
+      }
+    }
+  }));
+  const route = createRoleRouter("worker", { loadPolicy: () => ({ path: "/policy.json", policy }) });
+  const result = route({
+    reason: "user",
+    thinkingLevel: "low",
+    messages: [
+      { role: "user", content: "[[forgeflow:task=debug]] old turn" },
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+      { role: "user", content: "new unclassified turn" }
+    ]
+  }, {
+    cwd: "/repo",
+    isProjectTrusted: () => true,
+    modelRegistry: { find: (_provider, id) => id === "cheap" ? cheap : expensive }
+  });
+  assert.equal(result.model, cheap);
+  assert.equal(result.state.basis, "effort-envelope");
+});

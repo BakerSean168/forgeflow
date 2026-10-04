@@ -63,58 +63,96 @@ ForgeFlow resolves the physical mapping in this order:
 
 An explicit `FORGEFLOW_MODEL_POLICY` path is authoritative, must be absolute, and fails closed if it does not exist. Requiring an absolute operator path prevents a globally inherited relative environment value from resolving to a file supplied by an untrusted checkout. Project-local policy is ignored for untrusted projects so a checked-out repository cannot silently redirect prompts to another provider.
 
-Policy schema v1:
+### Policy schema v2
+
+Version 2 makes a role a **candidate-route policy** instead of a permanent alias for one physical model. Each request still resolves to exactly one physical model before provider execution.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "roles": {
-    "planner": {
-      "model": "gateway/frontier-reasoning",
-      "defaultThinkingLevel": "high",
-      "minThinkingLevel": "medium",
-      "maxThinkingLevel": "xhigh"
-    },
     "worker": {
-      "model": "gateway/fast-coder",
-      "defaultThinkingLevel": "low",
-      "minThinkingLevel": "minimal",
-      "maxThinkingLevel": "medium"
-    },
-    "reviewer": {
-      "model": "gateway/frontier-review",
-      "defaultThinkingLevel": "high",
-      "minThinkingLevel": "high",
-      "maxThinkingLevel": "xhigh"
-    },
-    "scout": {
-      "model": "gateway/fast-general",
-      "defaultThinkingLevel": "low",
-      "minThinkingLevel": "off",
-      "maxThinkingLevel": "medium"
-    },
-    "oracle": {
-      "model": "gateway/frontier-reasoning",
-      "defaultThinkingLevel": "xhigh",
-      "minThinkingLevel": "high",
-      "maxThinkingLevel": "xhigh"
+      "defaultRoute": "fast",
+      "defaultTaskClass": "mechanical",
+      "routes": [
+        {
+          "id": "fast",
+          "model": "litellm/deepseek-v4-flash",
+          "taskClasses": ["mechanical", "implementation"],
+          "defaultThinkingLevel": "low",
+          "minThinkingLevel": "minimal",
+          "maxThinkingLevel": "low"
+        },
+        {
+          "id": "standard",
+          "model": "litellm/gpt-6-astra",
+          "taskClasses": ["implementation", "debug"],
+          "defaultThinkingLevel": "medium",
+          "minThinkingLevel": "medium",
+          "maxThinkingLevel": "medium"
+        }
+      ]
     }
   }
 }
 ```
 
-`model` must be a fully qualified **physical** Pi model, `provider/model`. Model IDs may contain additional slashes. A role may not point at another `forgeflow/*` virtual model.
+`model` must be a fully qualified **physical** Pi model, `provider/model`. A route may not point at another `forgeflow/*` virtual model. Route ids are stable operator-facing names, not model ids.
 
-Thinking effort is part of the role policy, not an afterthought. The adaptive fields are:
+Supported task classes are:
 
-- `defaultThinkingLevel`: used when the caller does not request a level;
-- `minThinkingLevel`: floor for the role, preventing an underpowered call;
-- `maxThinkingLevel`: ceiling for the role, preventing routine work from consuming frontier effort;
-- legacy `thinkingLevel`: an exact fixed pin retained for backwards compatibility. It cannot be combined with the adaptive fields.
+- `recon` — repository search, inventory, fact gathering;
+- `mechanical` — small, well-scoped, mechanically verifiable edits;
+- `implementation` — ordinary feature implementation;
+- `debug` — diagnosis and repair of a concrete failure;
+- `review` — diff/acceptance/risk review;
+- `architecture` — system design and cross-cutting tradeoffs;
+- `product-judgment` — UX, intent, taste, and ambiguous product tradeoffs;
+- `root-cause` — difficult cross-system diagnosis or causal analysis.
 
-When the caller explicitly selects a virtual thinking level, ForgeFlow preserves that request inside the configured envelope. For example a planner configured as `medium..xhigh` can run at `high` or escalate to `xhigh`, while a worker capped at `medium` cannot accidentally consume `xhigh`. `max` remains available in the schema, but operator policy should only enable it for a physical model whose registry metadata explicitly supports that level. Continuations and retries keep the already-selected physical model and effort for turn stability.
+A parent can explicitly classify a delegated request by putting this marker in the delegated user prompt:
 
-The policy file is read when a new user/direct request is routed, so changing a mapping does not require changing ForgeFlow code. Pi still records the actual physical model on every assistant response.
+```text
+[[forgeflow:task=debug]]
+```
+
+The marker is deterministic routing metadata. ForgeFlow does **not** use an LLM or keyword classifier to guess a task class. If the marker is absent, routes are ranked by how closely their thinking envelope matches the selected virtual thinking level; `defaultRoute` breaks equal-distance ties. `defaultTaskClass` is only the recorded semantic default for unclassified requests.
+
+When a task class is explicit, ForgeFlow only considers routes that declare that class (or a generic route with no `taskClasses` if no exact class route exists). It does not silently cross a semantic boundary such as `product-judgment` → `root-cause` merely because another model is available.
+
+If the best unclassified route names a model that is not present in Pi's physical model registry, ForgeFlow deterministically tries the next compatible route. Runtime provider/channel failures are **not** model fallback signals: once a launch has selected a physical model, LiteLLM owns channel failover for that model and Pi surfaces an exhausted model failure back to the parent.
+
+### Thinking effort
+
+Thinking effort is part of each route policy:
+
+- `defaultThinkingLevel`: used when a caller does not provide a level;
+- `minThinkingLevel`: floor for the route;
+- `maxThinkingLevel`: ceiling for the route;
+- legacy `thinkingLevel`: an exact fixed pin retained for version-1 compatibility and single-route policies.
+
+The supported levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. `max` should only be enabled when the physical model's registry metadata explicitly supports it.
+
+The selected virtual level participates in route choice. A `worker` at `low` can therefore resolve to a cheap implementation model while the same `forgeflow/worker` selected at `medium` resolves to a stronger implementation model. After route selection, the level is clamped to that route's configured envelope.
+
+### Decision telemetry
+
+Version 2 returns a small JSON-serializable routing decision as Pi virtual-model state. Pi stores that state on the session branch as its native `pi.virtual-model-state` entry, so ForgeFlow does not create a second telemetry database. A decision records:
+
+```text
+role
+routeId
+taskClass
+physical model
+effective thinking level
+selection basis (explicit task class or effort envelope)
+```
+
+This is enough to audit why a launch used a model and to build routing data later without introducing a learned router now.
+
+### Version 1 compatibility
+
+Version 1 single-model policies remain valid. They keep their previous semantics and can be migrated gradually. Version 2 is preferred for operator policy because it separates a stable role from the physical model pool behind that role.
 
 ## Turn stickiness
 

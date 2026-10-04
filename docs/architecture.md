@@ -56,9 +56,17 @@ ambient-extension discovery, so this keeps the `forgeflow/*` roles available in
 foreground, detached, nested, and recovery child sessions without hard-coding an
 installation path in operator profile settings.
 
-New user/direct requests resolve the current role mapping. Continuation/retry
-requests stay on the physical model already handling the turn to preserve cache and
-reasoning-signature continuity.
+New user/direct requests resolve the current role mapping. Policy v2 may expose several
+physical candidates for one role; ForgeFlow deterministically selects exactly one from
+explicit task class plus thinking-effort policy before provider execution. Pi then owns
+the request lifecycle, while LiteLLM may choose among channels for that already-selected
+physical model. Continuation/retry requests stay on the physical model already handling
+the turn to preserve cache and reasoning-signature continuity.
+
+The router records its v2 decision in Pi's native virtual-model state rather than a
+ForgeFlow database. Explicit task classes use `[[forgeflow:task=<class>]]` in the delegated
+prompt; ForgeFlow deliberately does not add a hidden LLM classifier or per-turn semantic
+router.
 
 Project-local `.pi/forgeflow-models.json` is considered only when Pi reports the
 project trusted. User-level policy under `~/.pi/forgeflow-models.json` remains
