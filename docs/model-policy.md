@@ -22,11 +22,15 @@ This keeps fast-moving physical model names out of ForgeFlow workflows and agent
 
 ForgeFlow registers these Pi virtual models:
 
-- `forgeflow/planner`
-- `forgeflow/worker`
-- `forgeflow/reviewer`
-- `forgeflow/scout`
-- `forgeflow/oracle`
+| Role | Purpose | Typical effort envelope |
+| --- | --- | --- |
+| `forgeflow/planner` | decompose work, architecture, execution planning | `high` by default, up to `xhigh` |
+| `forgeflow/worker` | implementation, focused debugging, routine code changes | `low` by default, up to `medium` |
+| `forgeflow/reviewer` | diff review, acceptance reasoning, risk checks | `high` by default, up to `xhigh` |
+| `forgeflow/scout` | repository exploration, cheap search, fact gathering | `low` by default, up to `medium` |
+| `forgeflow/oracle` | expensive expert escalation for ambiguous, cross-system, or hard root-cause questions | `xhigh` by default and capped at `xhigh` |
+
+`oracle` is an engineering consultation role, not Oracle Cloud or the Oracle2 host. It should be invoked sparingly when the planner/reviewer needs a higher-cost second opinion or a difficult decision resolved; it is not the default implementation worker.
 
 The names are stable contracts. The physical model behind each role is operator policy.
 
@@ -67,23 +71,33 @@ Policy schema v1:
   "roles": {
     "planner": {
       "model": "gateway/frontier-reasoning",
-      "thinkingLevel": "high"
+      "defaultThinkingLevel": "high",
+      "minThinkingLevel": "medium",
+      "maxThinkingLevel": "xhigh"
     },
     "worker": {
       "model": "gateway/fast-coder",
-      "thinkingLevel": "low"
+      "defaultThinkingLevel": "low",
+      "minThinkingLevel": "minimal",
+      "maxThinkingLevel": "medium"
     },
     "reviewer": {
       "model": "gateway/frontier-review",
-      "thinkingLevel": "high"
+      "defaultThinkingLevel": "high",
+      "minThinkingLevel": "high",
+      "maxThinkingLevel": "xhigh"
     },
     "scout": {
       "model": "gateway/fast-general",
-      "thinkingLevel": "low"
+      "defaultThinkingLevel": "low",
+      "minThinkingLevel": "off",
+      "maxThinkingLevel": "medium"
     },
     "oracle": {
       "model": "gateway/frontier-reasoning",
-      "thinkingLevel": "high"
+      "defaultThinkingLevel": "xhigh",
+      "minThinkingLevel": "high",
+      "maxThinkingLevel": "xhigh"
     }
   }
 }
@@ -91,7 +105,14 @@ Policy schema v1:
 
 `model` must be a fully qualified **physical** Pi model, `provider/model`. Model IDs may contain additional slashes. A role may not point at another `forgeflow/*` virtual model.
 
-`thinkingLevel` is optional. When omitted, the selected virtual thinking level is passed through to the physical model.
+Thinking effort is part of the role policy, not an afterthought. The adaptive fields are:
+
+- `defaultThinkingLevel`: used when the caller does not request a level;
+- `minThinkingLevel`: floor for the role, preventing an underpowered call;
+- `maxThinkingLevel`: ceiling for the role, preventing routine work from consuming frontier effort;
+- legacy `thinkingLevel`: an exact fixed pin retained for backwards compatibility. It cannot be combined with the adaptive fields.
+
+When the caller explicitly selects a virtual thinking level, ForgeFlow preserves that request inside the configured envelope. For example a planner configured as `medium..xhigh` can run at `high` or escalate to `xhigh`, while a worker capped at `medium` cannot accidentally consume `xhigh`. `max` remains available in the schema, but operator policy should only enable it for a physical model whose registry metadata explicitly supports that level. Continuations and retries keep the already-selected physical model and effort for turn stability.
 
 The policy file is read when a new user/direct request is routed, so changing a mapping does not require changing ForgeFlow code. Pi still records the actual physical model on every assistant response.
 

@@ -69,17 +69,56 @@ function validateRolePolicy(role, value, source) {
     );
   }
 
-  let thinkingLevel;
-  if (value.thinkingLevel !== undefined) {
-    if (typeof value.thinkingLevel !== "string" || !THINKING_LEVELS.has(value.thinkingLevel)) {
+  function optionalThinkingLevel(field) {
+    if (value[field] === undefined) return undefined;
+    if (typeof value[field] !== "string" || !THINKING_LEVELS.has(value[field])) {
       throw new Error(
-        `ForgeFlow model policy '${source}' role '${role}' has invalid 'thinkingLevel'.`
+        `ForgeFlow model policy '${source}' role '${role}' has invalid '${field}'.`
       );
     }
-    thinkingLevel = value.thinkingLevel;
+    return value[field];
   }
 
-  return { provider, id, thinkingLevel };
+  const thinkingLevel = optionalThinkingLevel("thinkingLevel");
+  const defaultThinkingLevel = optionalThinkingLevel("defaultThinkingLevel");
+  const minThinkingLevel = optionalThinkingLevel("minThinkingLevel");
+  const maxThinkingLevel = optionalThinkingLevel("maxThinkingLevel");
+
+  const adaptiveFields = [defaultThinkingLevel, minThinkingLevel, maxThinkingLevel];
+  if (thinkingLevel !== undefined && adaptiveFields.some((entry) => entry !== undefined)) {
+    throw new Error(
+      `ForgeFlow model policy '${source}' role '${role}' cannot combine legacy 'thinkingLevel' with adaptive thinking fields.`
+    );
+  }
+
+  const rank = (level) => level === undefined ? undefined : [...THINKING_LEVELS].indexOf(level);
+  const minRank = rank(minThinkingLevel);
+  const maxRank = rank(maxThinkingLevel);
+  const defaultRank = rank(defaultThinkingLevel);
+  if (minRank !== undefined && maxRank !== undefined && minRank > maxRank) {
+    throw new Error(
+      `ForgeFlow model policy '${source}' role '${role}' has minThinkingLevel above maxThinkingLevel.`
+    );
+  }
+  if (defaultRank !== undefined && minRank !== undefined && defaultRank < minRank) {
+    throw new Error(
+      `ForgeFlow model policy '${source}' role '${role}' has defaultThinkingLevel below minThinkingLevel.`
+    );
+  }
+  if (defaultRank !== undefined && maxRank !== undefined && defaultRank > maxRank) {
+    throw new Error(
+      `ForgeFlow model policy '${source}' role '${role}' has defaultThinkingLevel above maxThinkingLevel.`
+    );
+  }
+
+  return {
+    provider,
+    id,
+    ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+    ...(defaultThinkingLevel !== undefined ? { defaultThinkingLevel } : {}),
+    ...(minThinkingLevel !== undefined ? { minThinkingLevel } : {}),
+    ...(maxThinkingLevel !== undefined ? { maxThinkingLevel } : {})
+  };
 }
 
 export function parseModelPolicy(text, source = "<memory>") {
@@ -133,6 +172,30 @@ export function loadModelPolicy(cwd, env = process.env, home = homedir(), option
   };
 }
 
+function resolveThinkingLevel(requested, target) {
+  if (target.thinkingLevel !== undefined) {
+    return target.thinkingLevel;
+  }
+
+  let level = requested ?? target.defaultThinkingLevel;
+  if (level === undefined) return undefined;
+
+  const ordered = [...THINKING_LEVELS];
+  const rank = ordered.indexOf(level);
+  if (rank === -1) return target.defaultThinkingLevel;
+
+  const minRank = target.minThinkingLevel === undefined
+    ? undefined
+    : ordered.indexOf(target.minThinkingLevel);
+  const maxRank = target.maxThinkingLevel === undefined
+    ? undefined
+    : ordered.indexOf(target.maxThinkingLevel);
+
+  if (minRank !== undefined && rank < minRank) level = target.minThinkingLevel;
+  if (maxRank !== undefined && ordered.indexOf(level) > maxRank) level = target.maxThinkingLevel;
+  return level;
+}
+
 function stickyRoute(request) {
   if (request.reason === "retry" && request.failed) {
     return {
@@ -181,7 +244,7 @@ export function createRoleRouter(role, options = {}) {
 
     return {
       model,
-      thinkingLevel: target.thinkingLevel ?? request.thinkingLevel
+      thinkingLevel: resolveThinkingLevel(request.thinkingLevel, target)
     };
   };
 }

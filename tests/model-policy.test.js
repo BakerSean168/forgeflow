@@ -18,7 +18,12 @@ test("model policy keeps physical model ids outside ForgeFlow code paths", () =>
     version: 1,
     roles: {
       worker: { model: "litellm/gpt-fast", thinkingLevel: "low" },
-      reviewer: { model: "newapi/reasoner/v2", thinkingLevel: "high" }
+      reviewer: {
+        model: "newapi/reasoner/v2",
+        defaultThinkingLevel: "high",
+        minThinkingLevel: "medium",
+        maxThinkingLevel: "xhigh"
+      }
     }
   }));
 
@@ -30,7 +35,9 @@ test("model policy keeps physical model ids outside ForgeFlow code paths", () =>
   assert.deepEqual(policy.roles.reviewer, {
     provider: "newapi",
     id: "reasoner/v2",
-    thinkingLevel: "high"
+    defaultThinkingLevel: "high",
+    minThinkingLevel: "medium",
+    maxThinkingLevel: "xhigh"
   });
 });
 
@@ -57,6 +64,57 @@ test("model policy fails closed on virtual recursion, unknown roles, and unquali
       roles: { worker: { model: "unqualified" } }
     }), "bare.json"),
     /qualified physical model/
+  );
+});
+
+test("adaptive thinking policy applies role floors, ceilings, and defaults", () => {
+  const physical = { provider: "litellm", id: "reasoner-next" };
+  const route = createRoleRouter("planner", {
+    loadPolicy() {
+      return {
+        path: "/policy.json",
+        policy: {
+          version: 1,
+          roles: {
+            planner: {
+              provider: "litellm",
+              id: "reasoner-next",
+              defaultThinkingLevel: "high",
+              minThinkingLevel: "medium",
+              maxThinkingLevel: "xhigh"
+            }
+          }
+        }
+      };
+    }
+  });
+  const ctx = {
+    cwd: "/repo",
+    isProjectTrusted: () => true,
+    modelRegistry: { find: () => physical }
+  };
+
+  assert.deepEqual(route({ reason: "user" }, ctx), { model: physical, thinkingLevel: "high" });
+  assert.deepEqual(route({ reason: "user", thinkingLevel: "low" }, ctx), { model: physical, thinkingLevel: "medium" });
+  assert.deepEqual(route({ reason: "user", thinkingLevel: "max" }, ctx), { model: physical, thinkingLevel: "xhigh" });
+  assert.deepEqual(route({ reason: "user", thinkingLevel: "high" }, ctx), { model: physical, thinkingLevel: "high" });
+});
+
+test("model policy rejects invalid adaptive thinking envelopes", () => {
+  assert.throws(
+    () => parseModelPolicy(JSON.stringify({
+      version: 1,
+      roles: { worker: { model: "litellm/model", minThinkingLevel: "high", maxThinkingLevel: "low" } }
+    }), "range.json"),
+    /minThinkingLevel above maxThinkingLevel/
+  );
+
+  assert.throws(
+    () => parseModelPolicy(JSON.stringify({
+      version: 1,
+      roles: { worker: { model: "litellm/model", thinkingLevel: "low", maxThinkingLevel: "high" } }
+    }), "mixed.json"),
+    /cannot combine legacy 'thinkingLevel'/
   );
 });
 
