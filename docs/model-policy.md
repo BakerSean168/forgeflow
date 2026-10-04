@@ -25,7 +25,7 @@ ForgeFlow registers these Pi virtual models:
 | Role | Purpose | Typical effort envelope |
 | --- | --- | --- |
 | `forgeflow/planner` | decompose work, architecture, execution planning | `high` by default, up to `xhigh` |
-| `forgeflow/worker` | implementation, focused debugging, routine code changes | `low` by default, up to `medium` |
+| `forgeflow/worker` | implementation, focused debugging, routine code changes | prefers Codex Team `gpt-6.1-sol` at `medium`; falls back by policy |
 | `forgeflow/reviewer` | diff review, acceptance reasoning, risk checks | `high` by default, up to `xhigh` |
 | `forgeflow/scout` | repository exploration, cheap search, fact gathering | `low` by default, up to `medium` |
 | `forgeflow/oracle` | expensive expert escalation for ambiguous, cross-system, or hard root-cause questions | `xhigh` by default and capped at `xhigh` |
@@ -136,6 +136,8 @@ The supported levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and
 The selected virtual level participates in route choice. A `worker` at `low` can therefore resolve to a cheap implementation model while the same `forgeflow/worker` selected at `medium` resolves to a stronger implementation model. After route selection, the level is clamped to that route's configured envelope.
 
 ### Decision telemetry
+
+For the current operator policy, `forgeflow/worker` prefers the native `openai-codex/gpt-6.1-sol` route. This is the Codex Team/Media execution lane; `Media` is the product/quota lane name, while the physical Pi model id remains `openai-codex/gpt-6.1-sol`. If that physical model is not present in Pi's registry, deterministic routing falls through to the configured LiteLLM worker routes without changing provider/channel ownership.
 
 Version 2 returns a small JSON-serializable routing decision as Pi virtual-model state. Pi stores that state on the session branch as its native `pi.virtual-model-state` entry, so ForgeFlow does not create a second telemetry database. A decision records:
 

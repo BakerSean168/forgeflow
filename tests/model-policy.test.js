@@ -605,3 +605,76 @@ test("task-class markers do not leak from an older user turn", () => {
   assert.equal(result.model, cheap);
   assert.equal(result.state.basis, "effort-envelope");
 });
+
+test("worker policy can prefer native Codex Team GPT-6.1 Sol and fall back when unavailable", () => {
+  const codex = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses" };
+  const astra = { provider: "litellm", id: "gpt-6-astra", api: "openai-responses" };
+  const deepseek = { provider: "litellm", id: "deepseek-v4-flash", api: "openai-completions" };
+  const policy = parseModelPolicy(JSON.stringify({
+    version: 2,
+    roles: {
+      worker: {
+        defaultRoute: "codex-team",
+        defaultTaskClass: "implementation",
+        routes: [
+          {
+            id: "codex-team",
+            model: "openai-codex/gpt-6.1-sol",
+            taskClasses: ["mechanical", "implementation", "debug"],
+            defaultThinkingLevel: "medium",
+            minThinkingLevel: "low",
+            maxThinkingLevel: "high"
+          },
+          {
+            id: "standard",
+            model: "litellm/gpt-6-astra",
+            taskClasses: ["implementation", "debug"],
+            minThinkingLevel: "medium",
+            maxThinkingLevel: "medium"
+          },
+          {
+            id: "fast",
+            model: "litellm/deepseek-v4-flash",
+            taskClasses: ["mechanical", "implementation"],
+            minThinkingLevel: "minimal",
+            maxThinkingLevel: "low"
+          }
+        ]
+      }
+    }
+  }));
+  const route = createRoleRouter("worker", { loadPolicy: () => ({ path: "/policy.json", policy }) });
+
+  const withCodex = {
+    cwd: "/repo",
+    isProjectTrusted: () => true,
+    modelRegistry: {
+      find(provider, id) {
+        if (`${provider}/${id}` === "openai-codex/gpt-6.1-sol") return codex;
+        if (`${provider}/${id}` === "litellm/gpt-6-astra") return astra;
+        if (`${provider}/${id}` === "litellm/deepseek-v4-flash") return deepseek;
+      }
+    }
+  };
+  const preferred = route({ reason: "user", thinkingLevel: "low", messages: [] }, withCodex);
+  assert.equal(preferred.model, codex);
+  assert.equal(preferred.thinkingLevel, "low");
+  assert.equal(preferred.state.routeId, "codex-team");
+
+  const withoutCodex = {
+    ...withCodex,
+    modelRegistry: {
+      find(provider, id) {
+        if (`${provider}/${id}` === "litellm/gpt-6-astra") return astra;
+        if (`${provider}/${id}` === "litellm/deepseek-v4-flash") return deepseek;
+      }
+    }
+  };
+  const fallbackLow = route({ reason: "user", thinkingLevel: "low", messages: [] }, withoutCodex);
+  assert.equal(fallbackLow.model, deepseek);
+  assert.equal(fallbackLow.state.routeId, "fast");
+
+  const fallbackMedium = route({ reason: "user", thinkingLevel: "medium", messages: [] }, withoutCodex);
+  assert.equal(fallbackMedium.model, astra);
+  assert.equal(fallbackMedium.state.routeId, "standard");
+});
