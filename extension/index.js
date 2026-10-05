@@ -1,14 +1,17 @@
 import { fileURLToPath } from "node:url";
 
 import { registerRequiredChildExtensions } from "pi-subagents/required-child-extensions";
+import { registerAntigravityAgents } from "./antigravity.js";
 import { renderPreflight } from "./invariants.js";
 import { registerForgeFlowVirtualModels } from "./model-policy.js";
+import { createUsageRecorder } from "./usage.js";
 
 const FORGEFLOW_EXTENSION_PATH = fileURLToPath(import.meta.url);
 
 const CORE_POLICY = [
   "ForgeFlow is a thin engineering-governance extension for Pi; Pi and installed plugins own execution, sessions, delegation, review loops, acceptance gates, worktrees, missions, schedules, and resume.",
   "ForgeFlow may define stable logical model roles, but Pi owns virtual-model dispatch and the provider layer owns channel, credential, quota, and transport routing.",
+  "When delegating through forgeflow/* roles, classify the task explicitly when useful by prefixing the delegated prompt with [[forgeflow:task=<class>]], where class is recon, mechanical, implementation, debug, review, architecture, product-judgment, or root-cause. Omit the marker when the role's effort-based default routing is desired.",
   "Do not create a second agent runtime, workflow database, provider gateway, reviewer runtime, PR gate, or duplicate subagent scheduler inside ForgeFlow.",
   "Keep one mutation writer per working tree. Independent reviewers must not mutate the candidate under review.",
   "Agent completion is evidence, not authority. For PR delivery, final acceptance must be tied to the authoritative current head and stale evidence must be invalidated after every new push.",
@@ -20,24 +23,38 @@ export function buildForgeFlowPromptSection(prompt) {
 }
 
 export default function registerForgeFlow(pi) {
-  registerForgeFlowVirtualModels(pi);
+  const usageRecorder = createUsageRecorder();
+  registerForgeFlowVirtualModels(pi, { onDecision: usageRecorder.recordDecision });
 
   let requiredChildRegistration;
+  let antigravityRegistration;
 
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.sections.forgeflow_policy = buildForgeFlowPromptSection(event.prompt);
   });
 
+  pi.on("message_end", (event, ctx) => {
+    try {
+      usageRecorder.recordMessage(event, ctx);
+    } catch {
+      // Observability is best-effort and must never break an agent turn.
+    }
+  });
+
   pi.on("session_start", (_event, ctx) => {
     requiredChildRegistration?.dispose();
+    antigravityRegistration?.dispose();
 
     requiredChildRegistration = registerRequiredChildExtensions({
       sessionId: ctx.sessionManager.getSessionId(),
       extensions: [{ id: "forgeflow", path: FORGEFLOW_EXTENSION_PATH }]
     });
+    antigravityRegistration = registerAntigravityAgents(pi);
   });
 
   pi.on("session_shutdown", () => {
+    antigravityRegistration?.dispose();
+    antigravityRegistration = undefined;
     requiredChildRegistration?.dispose();
     requiredChildRegistration = undefined;
   });

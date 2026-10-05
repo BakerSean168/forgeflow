@@ -71,6 +71,6 @@ test("Pi package has one explicit runtime entrypoint and one plugin dependency",
   assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.99.0");
   assert.deepEqual(
     new Set(packageJson.files),
-    new Set(["extension", "skills", "docs/architecture.md", "docs/model-policy.md", "README.md", "LICENSE"])
+    new Set(["bin", "extension", "skills", "docs/architecture.md", "docs/model-policy.md", "README.md", "LICENSE"])
   );
 });
