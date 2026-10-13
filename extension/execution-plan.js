@@ -68,7 +68,6 @@ export function buildExecutionPlan(policy, tasks, options = {}) {
       const launch = {
         agent: resolved.agent,
         task: approvedTask(task),
-        async: true,
         ...(resolved.model ? { model: resolved.model } : {}),
         ...(resolved.isolation === "managed-worktree" ? { worktree: true } : {}),
         ...(resolved.isolation === "prepared-worktree" ? { cwd: task.cwd } : {}),
@@ -76,7 +75,9 @@ export function buildExecutionPlan(policy, tasks, options = {}) {
       if (resolved.runtime === "pi") {
         native.push({ key: task.id, ...launch });
       } else {
-        external.push({ key: task.id, ...launch, ownerVerificationRequired: resolved.access === "write" });
+        external.push({ taskId: task.id,
+          subagent: { ...launch, async: true },
+          ownerVerificationRequired: resolved.access === "write" });
       }
     }
     return {

@@ -168,11 +168,16 @@ surfaces**:
 - `nativeRunsAll`: native Pi children that can be issued via
   `runs.all([...])` in a standard pi-subagents workflow, with
   `worktree: true` on mutation-capable children.
-- `externalSubagentCalls`: separate asynchronous
-  `subagent({ agent, task, cwd, async: true })` calls for external ACP agents.
-  These are **not** placed in a `runs.all` batch, because the generic
-  external-CLI adapter does not support managed worktrees or per-child cwd
-  in that workflow helper.
+  **Do not add `async: true` to individual `runs.all` items:** that returns
+  incomplete *launch receipts*, not awaited final results. Run the enclosing
+  workflow asynchronously while its children retain final-result semantics.
+
+- `externalSubagentCalls`: entries with `taskId`, `ownerVerificationRequired`
+  and a strict `subagent` argument object containing only valid fields
+  (`agent`, `task`, `cwd`, `async: true`).
+  Call the tool as `subagent(entry.subagent)` after verifying owner state.
+  These are **not** placed in `runs.all` because generic external CLI
+  runners do not support plugin-managed worktrees or per-child cwd in that helper.
 
 **No worker is launched by the policy tool.** The Pi Planner takes the
 returned dispatch contract and issues it through pi-subagents. The next wave

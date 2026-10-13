@@ -47,12 +47,14 @@ test("P2 external writer gets exact cwd and no Pi model override or managed work
   assert.equal(p.waves.length,1);
   assert.equal(p.waves[0].nativeRunsAll.length,0);
   const call=p.waves[0].externalSubagentCalls[0];
-  assert.equal(call.agent,"zcode-agent-writer");
-  assert.equal(call.cwd,f.tree);
-  assert.equal(call.model,undefined);
-  assert.equal(call.worktree,undefined);
-  assert.equal(call.async,true);
+  assert.equal(call.taskId,"ui");
   assert.equal(call.ownerVerificationRequired,true);
+  assert.equal(call.subagent.agent,"zcode-agent-writer");
+  assert.equal(call.subagent.cwd,f.tree);
+  assert.equal(call.subagent.model,undefined);
+  assert.equal(call.subagent.worktree,undefined);
+  assert.equal(call.subagent.async,true);
+  assert.deepEqual(Object.keys(call.subagent).sort(),["agent","async","cwd","task"]);
 });
 
 test("P2 native Pi workers use managed worktrees and explicit virtual models",()=>{
@@ -61,6 +63,8 @@ test("P2 native Pi workers use managed worktrees and explicit virtual models",()
   assert.equal(p.waves.length,1);
   assert.deepEqual(p.waves[0].nativeRunsAll.map(x=>x.agent),["worker","worker"]);
   assert.ok(p.waves[0].nativeRunsAll.every(x=>x.worktree===true));
+  assert.ok(p.waves[0].nativeRunsAll.every(x=>x.async===undefined),
+    "runs.all children must await completion rather than return launch receipts");
   assert.ok(p.waves[0].nativeRunsAll.every(x=>x.model==="forgeflow/worker:low"));
   assert.equal(p.waves[0].externalSubagentCalls.length,0);
 });
