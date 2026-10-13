@@ -76,11 +76,11 @@ test("extension registers Pi lifecycle hooks and injects policy without a model 
   );
   assert.deepEqual(
     runtimeAgentRequests.map(({ name }) => name),
-    ["antigravity", "antigravity-writer"]
+    ["antigravity", "antigravity-writer", "glm-agent", "glm-agent-writer", "zcode-agent", "zcode-agent-writer", "dsh-agent-writer"]
   );
 
   assert.doesNotThrow(() => handlers.get("session_shutdown")());
-  assert.deepEqual(disposedRuntimeAgents, ["antigravity-writer", "antigravity"]);
+  assert.deepEqual(disposedRuntimeAgents, ["dsh-agent-writer", "zcode-agent-writer", "zcode-agent", "glm-agent-writer", "glm-agent", "antigravity-writer", "antigravity"]);
   const afterShutdown = registerRequiredChildExtensions({ sessionId, extensions: [] });
   afterShutdown.dispose();
 });

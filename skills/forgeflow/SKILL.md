@@ -46,7 +46,15 @@ subscription quota; they are external agents, not ForgeFlow physical model roles
 Never run an Antigravity writer concurrently with another writer in the same
 worktree.
 
-Use installed engineering Skills such as `test-driven-development`,
+When explicitly delegating to external coding Agents, use
+`glm-agent`/`zcode-agent` for analysis and `glm-agent-writer`,
+`zcode-agent-writer` or `dsh-agent-writer` for assigned, scoped writes.
+These are local, asynchronous `pi-subagents` runners; they use their own
+model/channel configuration. Never silently replace a failed native child
+with a different external Agent; first verify worktree and run state, and
+honor the owner's approval and exact acceptance criteria.
+
+Use installed engineering SkillsUse installed engineering Skills such as `test-driven-development`,
 `spec-driven-development`, `pr-gate`, and `delivery-verification` for reusable
 workflow methods. Exact-head CI, test execution, artifact identity, and deployment
 state remain deterministic external evidence rather than model-owned state.

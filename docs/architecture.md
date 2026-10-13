@@ -44,6 +44,21 @@ registration owner is present: `antigravity`/`agy` for plan-mode analysis and
 `antigravity-writer`/`agy-writer` for explicit workspace mutation. Generic external
 CLI runners are local-only under the current `pi-subagents` contract.
 
+### External ACP delegation
+
+GLM Agent, ZCode and DSH have local ACP executables. ForgeFlow registers a
+thin `pi-subagents external-cli` adapter for them and translates one assembled
+subagent prompt into a bounded ACP session. The adapter grants no client-side
+filesystem or terminal capability, never forwards raw upstream diagnostics, and
+rejects `end_turn` without final text. Reader roles choose ACP analysis modes
+when advertised and deny permission requests. Writer roles require explicit
+names and retain one-writer-per-worktree governance.
+
+The adapter does not inherit Pi model selections or reuse T3 sessions: each
+external Agent owns its own model/provider settings. It adds no persisted
+state, cross-agent failover or autonomous mission scheduler. See
+[external-agent-delegation.md](./external-agent-delegation.md).
+
 ## Model policy boundary
 
 ForgeFlow registers stable logical roles as Pi virtual models. Their physical model
