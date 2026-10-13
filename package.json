@@ -1,14 +1,16 @@
 {
   "name": "forgeflow-pi",
-  "version": "3.0.0-alpha.2",
+  "version": "3.0.0-alpha.3",
   "description": "Thin software-engineering governance for Pi Agent and pi-subagents.",
   "type": "module",
   "license": "MIT",
   "files": [
+    "config",
     "bin",
     "extension",
     "skills",
     "docs/external-agent-delegation.md",
+    "docs/execution-policy.md",
     "docs/architecture.md",
     "docs/model-policy.md",
     "README.md",
@@ -58,9 +60,10 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "npm test && node --check bin/agy-subagent.mjs && node --check bin/acp-subagent.mjs && node --check extension/external-agents.js && node --check bin/forgeflow-usage.mjs && node --check extension/antigravity.js && node --check extension/index.js && node --check extension/model-policy.js && node --check extension/usage.js && node --check extension/invariants.js"
+    "check": "npm test && node --check bin/agy-subagent.mjs && node --check bin/acp-subagent.mjs && node --check extension/external-agents.js && node --check bin/forgeflow-usage.mjs && node --check extension/antigravity.js && node --check extension/index.js && node --check extension/model-policy.js && node --check extension/usage.js && node --check extension/invariants.js && node --check bin/forgeflow-execution.mjs && node --check extension/execution-policy.js && node --check extension/execution-runtime.js && node --check extension/execution-plan.js && node --check extension/execution-git.js && node --check extension/execution-recovery.js && node --check extension/execution-tool.js"
   },
   "bin": {
-    "forgeflow-usage": "./bin/forgeflow-usage.mjs"
+    "forgeflow-usage": "./bin/forgeflow-usage.mjs",
+    "forgeflow-execution": "./bin/forgeflow-execution.mjs"
   }
 }

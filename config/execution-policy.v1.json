@@ -1,0 +1,224 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "zcode-fast-writer",
+      "agent": "zcode-agent-writer",
+      "runtime": "external-cli",
+      "modelLabel": "glm-5.3",
+      "providerLabel": "windhub-direct",
+      "executable": "zcode-acp-t3",
+      "kinds": [
+        "mechanical",
+        "implementation"
+      ],
+      "complexities": [
+        "low",
+        "medium"
+      ],
+      "access": "write",
+      "rank": 10,
+      "isolation": "prepared-worktree",
+      "health": "verified",
+      "enabled": true
+    },
+    {
+      "id": "pi-fast-writer",
+      "agent": "worker",
+      "runtime": "pi",
+      "model": "forgeflow/worker:low",
+      "kinds": [
+        "mechanical",
+        "implementation"
+      ],
+      "complexities": [
+        "low",
+        "medium"
+      ],
+      "access": "write",
+      "rank": 20,
+      "isolation": "managed-worktree",
+      "health": "verified",
+      "enabled": true,
+      "expectedPhysicalModels": [
+        "litellm/deepseek-v4.1-flash"
+      ]
+    },
+    {
+      "id": "pi-core-writer",
+      "agent": "worker",
+      "runtime": "pi",
+      "model": "forgeflow/worker:high",
+      "kinds": [
+        "implementation",
+        "debug"
+      ],
+      "complexities": [
+        "high",
+        "critical"
+      ],
+      "access": "write",
+      "rank": 10,
+      "isolation": "managed-worktree",
+      "health": "verified",
+      "enabled": true,
+      "expectedPhysicalModels": [
+        "openai-codex/gpt-6.1-sol"
+      ]
+    },
+    {
+      "id": "pi-max-writer",
+      "agent": "worker",
+      "runtime": "pi",
+      "model": "forgeflow/worker:max",
+      "kinds": [
+        "implementation",
+        "debug"
+      ],
+      "complexities": [
+        "critical"
+      ],
+      "access": "write",
+      "rank": 60,
+      "isolation": "managed-worktree",
+      "health": "verified",
+      "enabled": true,
+      "expectedPhysicalModels": [
+        "openai-codex/gpt-6-luna"
+      ]
+    },
+    {
+      "id": "pi-scout",
+      "agent": "scout",
+      "runtime": "pi",
+      "model": "forgeflow/scout:low",
+      "kinds": [
+        "recon"
+      ],
+      "complexities": [
+        "low",
+        "medium"
+      ],
+      "access": "read",
+      "rank": 10,
+      "isolation": "none",
+      "health": "verified",
+      "enabled": true,
+      "expectedPhysicalModels": [
+        "litellm/deepseek-v4.1-flash"
+      ]
+    },
+    {
+      "id": "glm-advisor",
+      "agent": "glm-agent",
+      "runtime": "external-cli",
+      "modelLabel": "glm-5.3",
+      "providerLabel": "windhub-direct",
+      "executable": "glm-acp-t3",
+      "kinds": [
+        "recon",
+        "review",
+        "architecture",
+        "root-cause"
+      ],
+      "complexities": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "access": "read",
+      "rank": 15,
+      "isolation": "none",
+      "health": "verified",
+      "enabled": true
+    },
+    {
+      "id": "zcode-advisor",
+      "agent": "zcode-agent",
+      "runtime": "external-cli",
+      "modelLabel": "glm-5.3",
+      "providerLabel": "windhub-direct",
+      "executable": "zcode-acp-t3",
+      "kinds": [
+        "recon",
+        "review"
+      ],
+      "complexities": [
+        "low",
+        "medium"
+      ],
+      "access": "read",
+      "rank": 25,
+      "isolation": "none",
+      "health": "verified",
+      "enabled": true
+    },
+    {
+      "id": "glm-alternative-writer",
+      "agent": "glm-agent-writer",
+      "runtime": "external-cli",
+      "modelLabel": "glm-5.3",
+      "providerLabel": "windhub-direct",
+      "executable": "glm-acp-t3",
+      "kinds": [
+        "mechanical",
+        "implementation",
+        "debug"
+      ],
+      "complexities": [
+        "low",
+        "medium"
+      ],
+      "access": "write",
+      "rank": 30,
+      "isolation": "prepared-worktree",
+      "health": "verified",
+      "enabled": true
+    },
+    {
+      "id": "pi-reviewer-writer",
+      "agent": "reviewer",
+      "runtime": "pi",
+      "model": "forgeflow/reviewer:high",
+      "kinds": [
+        "review"
+      ],
+      "complexities": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "access": "write",
+      "rank": 15,
+      "isolation": "managed-worktree",
+      "health": "verified",
+      "enabled": true,
+      "expectedPhysicalModels": [
+        "openai-codex/gpt-6.1-sol"
+      ]
+    },
+    {
+      "id": "dsh-writer",
+      "agent": "dsh-agent-writer",
+      "runtime": "external-cli",
+      "modelLabel": "dsh-configured",
+      "providerLabel": "dsh-profile",
+      "executable": "dsh",
+      "kinds": [
+        "mechanical",
+        "implementation"
+      ],
+      "complexities": [
+        "low",
+        "medium"
+      ],
+      "access": "write",
+      "rank": 90,
+      "isolation": "prepared-worktree",
+      "health": "blocked",
+      "enabled": false
+    }
+  ]
+}

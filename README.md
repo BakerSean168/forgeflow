@@ -36,6 +36,24 @@ model.
 ForgeFlow records credential-free local model/supply usage in `~/.pi/forgeflow-usage.jsonl`;
 `forgeflow-usage` summarizes it. LiteLLM SpendLogs remain authoritative for relay-channel spend.
 
+## Execution Policy V1 (P0–P3)
+
+`forgeflow_execution` is a read-only Pi tool for execution inventory,
+deterministic Agent/Model selection, dependency-safe Worker waves, Git
+checkpoint fingerprints and evidence-gated cross-Agent handoff. It does **not**
+spawn Agents or replace `pi-subagents`.
+
+The default config is `config/execution-policy.v1.json`. It prefers a verified
+ZCode + GLM-5.3 writer when an independent clean worktree is provided, otherwise
+uses Pi's managed worktree and `forgeflow/worker:low` (DeepSeek Fast after the
+operator Model Policy V3 low-effort tie is corrected). Complex work uses
+`forgeflow/worker:high` (GPT-6.1 Sol); DSH remains disabled until usable.
+
+Use `forgeflow_execution({ action: "inventory" })` inside a Pi session, or
+`forgeflow-execution inventory` in the shell. See
+[Execution Policy V1](./docs/execution-policy.md) for profile contracts,
+dependency/Worktree rules, verified run handoffs and limitations.
+
 ## External ACP coding agents
 
 ForgeFlow can register local `pi-subagents` delegates for GLM Agent, ZCode and

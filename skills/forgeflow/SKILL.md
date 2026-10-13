@@ -34,6 +34,29 @@ ForgeFlow.
   infrastructure owns endpoints, credentials, channel health, weights, quotas, and
   transport.
 
+## Execution Policy V1
+
+For an authorized multi-agent software task with a frozen plan, first query
+`forgeflow_execution({ action: "inventory" })`. Classify each bounded ticket
+explicitly as `kind`, `complexity`, `access`, dependencies and acceptance;
+never infer a permission escalation. Use `select` or `plan` to obtain a
+deterministic Agent + Model profile. Follow the returned rejection reasons.
+
+Run selected children through **pi-subagents**. Native Pi write profiles
+use plugin-managed `worktree: true`; ACP writers require a separately
+registered clean worktree and a `cwd` in the individual child call.
+Before an external writer starts, check actual pi-subagents active owners.
+A generated `plan` has launched nothing. Move to the next wave only after
+accepted run results and current-head tests/CI.
+
+For errors, inspect retained status and prefer same-run resume. If a
+cross-Agent writer handoff is explicitly authorized, capture `snapshot`,
+provide reviewed run/checkpoint/approval records to `recover`, and recheck
+the live writer roster. The helper decides eligibility only; it does not
+perform replacement execution. DSH currently remains disabled by policy.
+
+Full contract: `docs/execution-policy.md`.
+
 ## Reuse plugin surfaces
 
 Use `pi-subagents` for child execution, reviewer runs, review loops, typed gates,
@@ -54,7 +77,7 @@ model/channel configuration. Never silently replace a failed native child
 with a different external Agent; first verify worktree and run state, and
 honor the owner's approval and exact acceptance criteria.
 
-Use installed engineering SkillsUse installed engineering Skills such as `test-driven-development`,
+Use installed engineering Skills such as `test-driven-development`,
 `spec-driven-development`, `pr-gate`, and `delivery-verification` for reusable
 workflow methods. Exact-head CI, test execution, artifact identity, and deployment
 state remain deterministic external evidence rather than model-owned state.
