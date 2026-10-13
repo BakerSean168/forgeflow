@@ -59,6 +59,24 @@ external Agent owns its own model/provider settings. It adds no persisted
 state, cross-agent failover or autonomous mission scheduler. See
 [external-agent-delegation.md](./external-agent-delegation.md).
 
+### Execution Policy V1
+
+ForgeFlow also owns a deterministic, **read-only** policy compiler that maps
+approved engineering tasks onto declared Agent + Model execution profiles,
+orders dependency waves, validates writer worktrees and assesses explicit
+cross-Agent takeover evidence. `forgeflow_execution` returns work instructions
+for the *existing* pi-subagents runtime; it does not launch, persist, resume,
+retry, monitor, schedule, or accept child work.
+
+Pi model profiles use `forgeflow/*` virtual selectors and Model Policy V3.
+External ACP profiles use their Agent-owned model/Provider; the model label is
+display-only. A missing or unhealthy Agent, incompatible model route, unknown
+permissions, dirty/preclaimed external worktree or stale checkpoint fails
+closed. No T3 ProviderInstance or arbitrary model-router cross-product is
+inferred.
+
+See [execution-policy.md](./execution-policy.md) for the exact contract.
+
 ## Model policy boundary
 
 ForgeFlow registers stable logical roles as Pi virtual models. Their physical model
@@ -73,10 +91,9 @@ installation path in operator profile settings.
 
 New user/direct requests resolve the current role mapping. Policy v3 separates model
 capability from supply: a role chooses a logical model/effort, then an ordered supply
-group chooses the physical Pi model that pays for it. The current GPT-6.1 Sol supply
-order is Business Team (`openai-codex`) before the commercial relay (`litellm`).
-LiteLLM then chooses only among channels for the already-selected commercial physical
-model.
+group chooses the physical Pi model that pays for it. The current GPT-6.1 Sol supply group contains only Business Team
+(`openai-codex`); no commercial-relay failover source is currently active.
+LiteLLM chooses channels only for selected physical LiteLLM model routes.
 
 Continuations remain sticky. Retries remain sticky unless the failed response is
 classified as a narrow supply failure (quota/rate/capacity/upstream/transport/auth/model
