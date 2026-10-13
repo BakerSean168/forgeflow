@@ -36,6 +36,25 @@ model.
 ForgeFlow records credential-free local model/supply usage in `~/.pi/forgeflow-usage.jsonl`;
 `forgeflow-usage` summarizes it. LiteLLM SpendLogs remain authoritative for relay-channel spend.
 
+## External ACP coding agents
+
+ForgeFlow can register local `pi-subagents` delegates for GLM Agent, ZCode and
+DSH without owning an ACP runtime or model-provider gateway:
+
+- `glm-agent` / `glm-agent-writer`: GLM ACP analysis and explicit write roles.
+- `zcode-agent` / `zcode-agent-writer`: ZCode ACP plan and explicit build roles.
+- `dsh-agent-writer`: DSH native `dsh acp` worker; DSH does not advertise an
+  enforceable read-only mode.
+
+Delegations are local, async-only and use each executable's configured model,
+account and credentials. Reader modes deny ACP permission requests, but are not
+substitutes for OS-level isolation. Each writer still requires exclusive worktree
+ownership. No T3 Provider-instance model routing or automatic cross-Agent quota
+failover is implied.
+
+See [external-agent delegation](./docs/external-agent-delegation.md) for the
+exact roles, executable configuration, protocol safeguards and smoke tests.
+
 ## Antigravity delegation
 
 When the installed `pi-subagents` owner is present, ForgeFlow also registers two
