@@ -6,7 +6,7 @@ metadata:
 spec:
   type: software-engineering-control-plane
   domain: products
-  lifecycle: active
+  lifecycle: archived
   repository:
     url: https://github.com/BakerSean168/forgeflow.git
     visibility: public
